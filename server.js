@@ -22,7 +22,7 @@ const corsOptions = {
   origin: [
     "http://localhost:3000", // React local
     "http://localhost:5173", // Vite local
-    "https://inventorysystem-opal.vercel.app" // production frontend
+    "https://erp-dash-board.vercel.app" // production frontend
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],

@@ -14,6 +14,7 @@ import District from "./routes/districtRoute.js"
 import ladger from "./routes/ledgerRoutes.js"
 import Bill from "./routes/billRoute.js"
 import Activity from "./routes/activityRoutes.js"
+import exchange from "./routes/Exchange.js"
 dotenv.config();
 
 const app = express();
@@ -22,7 +23,7 @@ const corsOptions = {
   origin: [
     "http://localhost:3000", // React local
     "http://localhost:5173", // Vite local
-    "https://erp-dash-board.vercel.app" // production frontend
+    "https://inventorysystem-opal.vercel.app" // production frontend
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
@@ -58,6 +59,7 @@ app.use('/District',District)
 app.use('/ladger',ladger)
 app.use('/bill',Bill)
 app.use('/Activity',Activity)
+app.use('/exchange',exchange)
 // Test route
 app.get("/", (req, res) => {
   res.status(200).json({

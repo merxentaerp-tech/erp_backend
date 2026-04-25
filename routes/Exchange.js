@@ -1,5 +1,5 @@
 import express from "express";
-import { createExchange , getExchangeDashboard,getInvoiceForExchange} from "../controller/exchangeController.js";
+import { createExchange , getExchangeDashboard,getInvoiceForExchange} from "../controller/exchangecontroller.js";
 
 const router = express.Router();
 

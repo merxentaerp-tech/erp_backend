@@ -13,6 +13,12 @@ const InventoryAuditItem = sequelize.define(
     audit_id: {
       type: DataTypes.BIGINT,
       allowNull: false,
+      references: {
+        model: "inventory_audits",
+        key: "id",
+      },
+      onDelete: "CASCADE",
+      onUpdate: "CASCADE",
     },
 
     item_id: {
@@ -77,7 +83,7 @@ const InventoryAuditItem = sequelize.define(
     audit_result: {
       type: DataTypes.STRING(30),
       allowNull: false,
-      defaultValue: "pending", // present / missing / pending
+      defaultValue: "pending",
     },
 
     is_checked: {
@@ -145,7 +151,7 @@ const InventoryAuditItem = sequelize.define(
     escalation_status: {
       type: DataTypes.STRING(30),
       allowNull: false,
-      defaultValue: "none", // none / reason_pending / under_review
+      defaultValue: "none",
     },
 
     image_url: {

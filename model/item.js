@@ -99,6 +99,16 @@ const Item = sequelize.define(
       allowNull: false,
       defaultValue: "gram",
     },
+    isItemAudit: {
+  type: DataTypes.BOOLEAN,
+  allowNull: false,
+  defaultValue: false,
+},
+
+itemAuditAt: {
+  type: DataTypes.DATE,
+  allowNull: true,
+},
 
     current_status: {
       type: DataTypes.ENUM(

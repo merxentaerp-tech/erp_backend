@@ -15,6 +15,7 @@ import ladger from "./routes/ledgerRoutes.js"
 import Bill from "./routes/billRoute.js"
 import Activity from "./routes/activityRoutes.js"
 import exchange from "./routes/Exchange.js"
+import tracklocation from "./routes/transferlocation.js"
 dotenv.config();
 
 const app = express();
@@ -60,6 +61,7 @@ app.use('/ladger',ladger)
 app.use('/bill',Bill)
 app.use('/Activity',Activity)
 app.use('/exchange',exchange)
+app.use('/track',tracklocation)
 // Test route
 app.get("/", (req, res) => {
   res.status(200).json({

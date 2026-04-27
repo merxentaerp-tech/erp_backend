@@ -21,13 +21,11 @@ const StockTransfer = sequelize.define(
       allowNull: true,
     },
 
-    // Store.id
     from_organization_id: {
       type: DataTypes.BIGINT,
       allowNull: false,
     },
 
-    // Store.id
     to_organization_id: {
       type: DataTypes.BIGINT,
       allowNull: false,
@@ -86,6 +84,48 @@ const StockTransfer = sequelize.define(
       type: DataTypes.BIGINT,
       allowNull: true,
     },
+
+    // ✅ TRACKING FIELDS
+    pickup_lat: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+
+    pickup_lng: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+
+    last_latitude: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+
+    last_longitude: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+
+    last_tracked_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    tracking_started_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    tracking_stopped_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    fake_tracking_enabled: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
   },
   {
     tableName: "stock_transfers",
@@ -98,6 +138,7 @@ const StockTransfer = sequelize.define(
       { fields: ["from_organization_id"] },
       { fields: ["to_organization_id"] },
       { fields: ["transfer_date"] },
+      { fields: ["last_tracked_at"] },
     ],
   }
 );

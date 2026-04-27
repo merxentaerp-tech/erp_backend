@@ -183,7 +183,7 @@ export const getDashboardSummary = async (req, res) => {
     }
 
     // =========================================================
-    // 1) TOP CARDS (CURRENT INVENTORY STATE)
+    // 1) TOP CARDS
     // =========================================================
     const stockSummary = await Stock.findOne({
       attributes: [
@@ -200,18 +200,14 @@ export const getDashboardSummary = async (req, res) => {
     const deadStockItems = await Stock.count({
       where: {
         ...(stockScope || {}),
-        dead_qty: {
-          [Op.gt]: 0,
-        },
+        dead_qty: { [Op.gt]: 0 },
       },
     });
 
     const transitGoods = await Stock.count({
       where: {
         ...(stockScope || {}),
-        transit_qty: {
-          [Op.gt]: 0,
-        },
+        transit_qty: { [Op.gt]: 0 },
       },
     });
 
@@ -220,9 +216,7 @@ export const getDashboardSummary = async (req, res) => {
     // =========================================================
     const goldRate = await MetalRate.findOne({
       where: {
-        [metalTypeKey]: {
-          [Op.iLike]: "gold",
-        },
+        [metalTypeKey]: { [Op.iLike]: "gold" },
       },
       order: [[metalCreatedKey, "DESC"]],
       raw: true,
@@ -230,27 +224,23 @@ export const getDashboardSummary = async (req, res) => {
 
     const silverRate = await MetalRate.findOne({
       where: {
-        [metalTypeKey]: {
-          [Op.iLike]: "silver",
-        },
+        [metalTypeKey]: { [Op.iLike]: "silver" },
       },
       order: [[metalCreatedKey, "DESC"]],
       raw: true,
     });
 
     // =========================================================
-    // 3) SALES TREND + CATEGORY (FROM STOCK MOVEMENTS)
-    // IMPORTANT FIX: INDIA DATE + TODAY INCLUDED
+    // 3) SALES TREND + CATEGORY
     // =========================================================
     const labels = getLast7DaysLabelsIndia();
-    const startDate = labels[0].fullDate; // oldest
-    const endDate = labels[labels.length - 1].fullDate; // today
+    const startDate = labels[0].fullDate;
+    const endDate = labels[labels.length - 1].fullDate;
 
     let salesTrendRaw = [];
     let salesByCategory = [];
 
     try {
-      // ---------- SALES TREND ----------
       const salesTrendQuery = `
         SELECT 
           DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS date,
@@ -272,8 +262,6 @@ export const getDashboardSummary = async (req, res) => {
         type: QueryTypes.SELECT,
       });
 
-      // ---------- SALES BY CATEGORY ----------
-      // Since stock_movements has item_id, category item table se nikalegi
       const salesByCategoryQuery = `
         SELECT 
           COALESCE(i.category, 'Other') AS category,
@@ -323,9 +311,10 @@ export const getDashboardSummary = async (req, res) => {
     }));
 
     // =========================================================
-    // 4) PENDING TASKS
+    // 4) PENDING TASKS WITH CARD DETAILS
     // =========================================================
     let pendingTasks = [];
+
     try {
       pendingTasks = await Task.findAll({
         where: {
@@ -336,6 +325,162 @@ export const getDashboardSummary = async (req, res) => {
         limit: 5,
         raw: true,
       });
+
+      const now = new Date();
+
+      pendingTasks = pendingTasks.map((task) => {
+        const createdRaw =
+          task[taskCreatedKey] ||
+          task.created_at ||
+          task.createdAt ||
+          new Date();
+
+        const createdAt = new Date(createdRaw);
+
+        const diffMs = now - createdAt;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHrs / 24);
+
+        let timeAgo = "Just now";
+
+        if (diffDays > 0) {
+          timeAgo = `${diffDays} day(s) ago`;
+        } else if (diffHrs > 0) {
+          timeAgo = `${diffHrs} hour(s) ago`;
+        } else if (diffMinutes > 0) {
+          timeAgo = `${diffMinutes} minute(s) ago`;
+        }
+
+        const meta =
+          task.meta && typeof task.meta === "object"
+            ? task.meta
+            : {};
+
+        const priority =
+          task.priority ||
+          meta.priority ||
+          "medium";
+
+        const moduleName =
+          task.module_name ||
+          task.task_type ||
+          task.type ||
+          meta.module_name ||
+          meta.task_type ||
+          meta.type ||
+          "Task";
+
+        const title =
+          task.title ||
+          meta.title ||
+          task.name ||
+          "Pending Task";
+
+        const description =
+          task.description ||
+          meta.description ||
+          task.remark ||
+          "Task requires your attention";
+
+        const itemsPending =
+          task.items_pending ||
+          meta.items_pending ||
+          meta.pending_items ||
+          meta.item_count ||
+          null;
+
+        const customerName =
+          task.customer_name ||
+          meta.customer_name ||
+          meta.customer ||
+          meta.client_name ||
+          null;
+
+        const rawAmount =
+          task.amount ||
+          task.total_amount ||
+          meta.amount ||
+          meta.total_amount ||
+          null;
+
+        const amountNumber =
+          rawAmount !== null && rawAmount !== undefined && rawAmount !== ""
+            ? Number(rawAmount)
+            : null;
+
+        const dueRaw =
+          task.due_date ||
+          task.dueDate ||
+          task.deadline ||
+          task.end_date ||
+          meta.due_date ||
+          meta.deadline ||
+          null;
+
+        let progressPercent = 0;
+        let remainingTime = null;
+
+        if (dueRaw) {
+          const dueDate = new Date(dueRaw);
+          const totalMs = dueDate - createdAt;
+          const usedMs = now - createdAt;
+
+          if (totalMs > 0) {
+            progressPercent = Math.min(
+              100,
+              Math.max(0, Math.round((usedMs / totalMs) * 100))
+            );
+          }
+
+          const remainMs = dueDate - now;
+
+          if (remainMs > 0) {
+            const remainMinutes = Math.floor(remainMs / (1000 * 60));
+            const remainHrs = Math.floor(remainMs / (1000 * 60 * 60));
+            const remainDays = Math.floor(remainHrs / 24);
+
+            if (remainDays > 0) {
+              remainingTime = `${remainDays} day(s) left`;
+            } else if (remainHrs > 0) {
+              remainingTime = `${remainHrs} hour(s) left`;
+            } else {
+              remainingTime = `${remainMinutes} minute(s) left`;
+            }
+          } else {
+            remainingTime = "Overdue";
+            progressPercent = 100;
+          }
+        }
+
+        return {
+          ...task,
+
+          // extra frontend fields only
+          priority,
+          module_name: moduleName,
+          title,
+          description,
+
+          time_ago: timeAgo,
+          pending_since: timeAgo,
+          created_time: createdAt.toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+          }),
+
+          progress_percent: progressPercent,
+          remaining_time: remainingTime,
+
+          items_pending: itemsPending,
+          customer_name: customerName,
+
+          amount: amountNumber,
+          amount_text:
+            amountNumber !== null && !Number.isNaN(amountNumber)
+              ? `₹${amountNumber.toLocaleString("en-IN")}`
+              : null,
+        };
+      });
     } catch (err) {
       console.warn("⚠️ Pending task query skipped:", err.message);
       pendingTasks = [];
@@ -345,6 +490,7 @@ export const getDashboardSummary = async (req, res) => {
     // 5) RECENT ACTIVITIES
     // =========================================================
     let recentActivities = [];
+
     try {
       recentActivities = await SystemActivity.findAll({
         where: activityScope || {},
@@ -385,7 +531,6 @@ export const getDashboardSummary = async (req, res) => {
     });
   }
 };
-
 export const getAllReports = async (req, res) => {
   try {
     const totalCustomers = await Customer.count();

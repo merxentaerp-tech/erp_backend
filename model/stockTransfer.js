@@ -85,13 +85,87 @@ const StockTransfer = sequelize.define(
       allowNull: true,
     },
 
-    // ✅ TRACKING FIELDS
+    driver_name: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+
+    driver_phone: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+
+    vehicle_number: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+    },
+
+    tracking_number: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+    },
+
+    driver_photo_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    pickup_address: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    delivery_address: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    expected_delivery_date: {
+      type: DataTypes.DATEONLY,
+      allowNull: true,
+    },
+
+    expected_delivery_time: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+
+    additional_notes: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    dispatch_image_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    dispatch_video_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    driver_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
+
     pickup_lat: {
       type: DataTypes.DECIMAL(10, 7),
       allowNull: true,
     },
 
     pickup_lng: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+
+    drop_lat: {
+      type: DataTypes.DECIMAL(10, 7),
+      allowNull: true,
+    },
+
+    drop_lng: {
       type: DataTypes.DECIMAL(10, 7),
       allowNull: true,
     },

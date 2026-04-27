@@ -252,23 +252,6 @@ export const getTodayAuditItems = async (req, res) => {
     const scope = await getUserScope(user);
     const finalAuditDate = audit_date || getTodayDate();
 
-    // ✅ 24 HOURS BAAD ITEM AUDIT FALSE
-    await Item.update(
-      {
-        isItemAudit: false,
-        itemAuditAt: null,
-      },
-      {
-        where: {
-          organization_id: scope.organization_id,
-          isItemAudit: true,
-          itemAuditAt: {
-            [Op.lt]: new Date(Date.now() - 24 * 60 * 60 * 1000),
-          },
-        },
-      }
-    );
-
     const itemWhere = {};
     const stockWhere = {};
 
@@ -302,6 +285,9 @@ export const getTodayAuditItems = async (req, res) => {
       ];
     }
 
+    // =================================================
+    // FETCH INVENTORY ITEMS
+    // =================================================
     const items = await Item.findAll({
       attributes: [
         "id",
@@ -320,10 +306,6 @@ export const getTodayAuditItems = async (req, res) => {
         "unit",
         "current_status",
         "organization_id",
-
-        // ✅ ADD THIS
-        "isItemAudit",
-        "itemAuditAt",
       ],
       where: itemWhere,
       include: [
@@ -351,6 +333,9 @@ export const getTodayAuditItems = async (req, res) => {
       order: [["id", "DESC"]],
     });
 
+    // =================================================
+    // FIND TODAY'S AUDIT
+    // =================================================
     const todayAudit = await InventoryAudit.findOne({
       where: {
         organization_id: scope.organization_id,
@@ -388,6 +373,9 @@ export const getTodayAuditItems = async (req, res) => {
       );
     }
 
+    // =================================================
+    // SPLIT INTO AUDITED + PENDING
+    // =================================================
     const auditedItems = [];
     const pendingItems = [];
 
@@ -420,6 +408,7 @@ export const getTodayAuditItems = async (req, res) => {
         system_weight: safeNum(stock?.available_weight),
         stock_id: stock?.id || null,
 
+        // audit state
         audit_item_id: auditItem ? safeNum(auditItem.id) : null,
         audit_result: auditItem?.audit_result || "pending",
         is_checked: auditItem ? !!auditItem.is_checked : false,
@@ -433,10 +422,6 @@ export const getTodayAuditItems = async (req, res) => {
         missing_reason: auditItem?.missing_reason || "",
         escalation_status: auditItem?.escalation_status || "none",
         is_selected: auditItem ? !!auditItem.is_checked : false,
-
-        // ✅ ADD THIS IN RESPONSE
-        isItemAudit: !!item.isItemAudit,
-        itemAuditAt: item.itemAuditAt || null,
       };
 
       if (auditItem && auditItem.is_checked) {
@@ -475,6 +460,7 @@ export const getTodayAuditItems = async (req, res) => {
     });
   }
 };
+
 /* =========================================================
    2) CREATE DAILY AUDIT
    - selected items => present/missing
@@ -516,7 +502,6 @@ export const createDailyAudit = async (req, res) => {
       });
     }
 
-    // full stock items of this org
     const itemWhere = {
       organization_id: scope.organization_id,
     };
@@ -553,9 +538,63 @@ export const createDailyAudit = async (req, res) => {
     }
 
     const submittedMap = new Map();
+
     for (const row of items) {
       const itemId = safeNum(row.item_id, null);
       if (itemId) submittedMap.set(itemId, row);
+    }
+
+    // ✅ MAIN VALIDATION: submit true hai to unchecked/missing/pending item ka reason required
+    if (submit) {
+      const reasonErrors = [];
+
+      for (const dbItem of dbItems) {
+        const itemId = safeNum(dbItem.id);
+        const submittedRow = submittedMap.get(itemId);
+
+        if (!submittedRow) {
+          reasonErrors.push({
+            item_id: itemId,
+            article_code: dbItem.article_code || null,
+            sku_code: dbItem.sku_code || null,
+            item_name: dbItem.item_name || null,
+            message: "Item not selected. Reason is required.",
+          });
+          continue;
+        }
+
+        const auditResult = String(
+          submittedRow.audit_result || ""
+        ).toLowerCase();
+
+        const reason = String(
+          submittedRow.missing_reason ||
+            submittedRow.reason ||
+            submittedRow.checklist_note ||
+            ""
+        ).trim();
+
+        if (["missing", "pending"].includes(auditResult) && !reason) {
+          reasonErrors.push({
+            item_id: itemId,
+            article_code: dbItem.article_code || null,
+            sku_code: dbItem.sku_code || null,
+            item_name: dbItem.item_name || null,
+            audit_result: auditResult,
+            message: "Reason is required for missing/pending item.",
+          });
+        }
+      }
+
+      if (reasonErrors.length > 0) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Reason required for unchecked/missing/pending items",
+          count: reasonErrors.length,
+          data: reasonErrors,
+        });
+      }
     }
 
     const auditHeader = await InventoryAudit.create(
@@ -614,9 +653,13 @@ export const createDailyAudit = async (req, res) => {
           submittedRow.audit_result || ""
         ).toLowerCase();
 
-        finalResult = ["present", "missing", "pending", "mismatch", "extra"].includes(
-          requestedResult
-        )
+        finalResult = [
+          "present",
+          "missing",
+          "pending",
+          "mismatch",
+          "extra",
+        ].includes(requestedResult)
           ? requestedResult
           : "pending";
 
@@ -635,7 +678,9 @@ export const createDailyAudit = async (req, res) => {
             : 0;
 
         checklistNote = submittedRow.checklist_note || submittedRow.note || null;
-        missingReason = submittedRow.missing_reason || null;
+
+        missingReason =
+          submittedRow.missing_reason || submittedRow.reason || null;
       }
 
       if (finalResult !== "pending") checked++;
@@ -692,7 +737,23 @@ export const createDailyAudit = async (req, res) => {
         { transaction: t }
       );
 
-      // missing item followup
+      // ✅ Item checked/missing/mismatch/extra hua to item flag true
+      if (finalResult !== "pending") {
+        await Item.update(
+          {
+            isItemAudit: true,
+            itemAuditAt: new Date(),
+          },
+          {
+            where: {
+              id: dbItem.id,
+              organization_id: scope.organization_id,
+            },
+            transaction: t,
+          }
+        );
+      }
+
       if (finalResult === "missing" && !missingReason) {
         await InventoryAuditFollowup.create(
           {
@@ -709,7 +770,6 @@ export const createDailyAudit = async (req, res) => {
         );
       }
 
-      // non-selected / pending item followup
       if (finalResult === "pending") {
         await InventoryAuditFollowup.create(
           {

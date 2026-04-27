@@ -1,24 +1,69 @@
-import { getGoldRate } from "../service/goldService";
+import axios from "axios";
 
-export const fetchGoldRate = async (req, res) => {
+const OUNCE_TO_GRAM = 31.1034768;
+
+const defaultRate = () => ({
+  price_gram_24k: 0,
+  price_gram_22k: 0,
+  price_gram_18k: 0,
+  silver_price_gram: 0,
+  silver_high_rate: 0,
+  gold_change_percent: 0,
+  silver_change_percent: 0,
+  currency: "INR",
+  timestamp: null,
+});
+
+export const getGoldRate = async () => {
   try {
-    const data = await getGoldRate();
+    const apiKey = process.env.GOLD_API_KEY;
 
-    res.status(200).json({
-      success: true,
-      message: "Gold rate fetched successfully",
-      data: {
-        price_gram_24k: data.price_gram_24k,
-        price_gram_22k: data.price_gram_22k,
-        price_gram_18k: data.price_gram_18k,
-        currency: data.currency,
-        timestamp: data.timestamp,
-      },
+    if (!apiKey) {
+      console.error("GOLD_API_KEY missing in .env");
+      return defaultRate();
+    }
+
+    const headers = {
+      "x-access-token": apiKey,
+      "Content-Type": "application/json",
+    };
+
+    const goldRes = await axios.get("https://www.goldapi.io/api/XAU/INR", {
+      headers,
     });
+
+    const silverRes = await axios.get("https://www.goldapi.io/api/XAG/INR", {
+      headers,
+    });
+
+    const goldData = goldRes.data;
+    const silverData = silverRes.data;
+
+    const goldPerOunce = Number(goldData.price || 0);
+    const silverPerOunce = Number(silverData.price || 0);
+
+    if (!goldPerOunce) {
+      return defaultRate();
+    }
+
+    const goldGram24k = goldPerOunce / OUNCE_TO_GRAM;
+    const goldGram22k = goldGram24k * (22 / 24);
+    const goldGram18k = goldGram24k * (18 / 24);
+    const silverGram = silverPerOunce / OUNCE_TO_GRAM;
+
+    return {
+      price_gram_24k: Number(goldGram24k.toFixed(2)),
+      price_gram_22k: Number(goldGram22k.toFixed(2)),
+      price_gram_18k: Number(goldGram18k.toFixed(2)),
+      silver_price_gram: Number(silverGram.toFixed(2)),
+      silver_high_rate: Number(silverGram.toFixed(2)),
+      gold_change_percent: Number(goldData.chp || 0),
+      silver_change_percent: Number(silverData.chp || 0),
+      currency: "INR",
+      timestamp: goldData.timestamp || new Date().toISOString(),
+    };
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch gold rate",
-    });
+    console.error("getGoldRate error:", error.response?.data || error.message);
+    return defaultRate();
   }
 };

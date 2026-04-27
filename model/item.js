@@ -76,6 +76,16 @@ const Item = sequelize.define(
       allowNull: false,
       defaultValue: 0,
     },
+    isItemAudit: {
+  type: DataTypes.BOOLEAN,
+  allowNull: false,
+  defaultValue: false,
+},
+
+itemAuditAt: {
+  type: DataTypes.DATE,
+  allowNull: true,
+},
 
     purchase_rate: {
       type: DataTypes.DECIMAL(14, 2),

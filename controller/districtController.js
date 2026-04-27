@@ -1398,80 +1398,126 @@ export const getDistrictDashboard = async (req, res) => {
     const storeNameField = getStoreNameField();
     const storeCodeField = getStoreCodeField();
 
-    // ✅ LIVE GOLD / SILVER RATE
-    let liveRate = {
-      gold_rate_24k: 0,
-      gold_rate_22k: 0,
-      gold_rate_18k: 0,
-      silver_rate: 0,
+    // =========================================================
+    // LIVE GOLD / SILVER RATE
+    // =========================================================
+   let liveRate = {
+  gold_price: 0,
+  silver_price: 0,
 
-      gold_change_percent: 0,
-      silver_change_percent: 0,
+  gold_rate_24k: 0,
+  gold_rate_22k: 0,
+  gold_rate_18k: 0,
+  silver_rate: 0,
 
-      gold_trend: "up",
-      silver_trend: "up",
+  gold_change_percent: 0,
+  silver_change_percent: 0,
 
-      currency: "INR",
-      updated_at: null,
-    };
+  gold_trend: "up",
+  silver_trend: "up",
 
-    try {
-      const rateData = await getGoldRate();
+  currency: "INR",
+  updated_at: null,
+};
 
-      console.log("LIVE RATE DATA:", rateData);
+try {
+  const rateData = await getGoldRate();
 
-      const gold24 = Number(rateData?.price_gram_24k || 0);
-      const gold22 = Number(rateData?.price_gram_22k || 0);
-      const gold18 = Number(rateData?.price_gram_18k || 0);
+  let gold24PerGram = Number(rateData?.price_gram_24k || 0);
+  let gold22PerGram = Number(rateData?.price_gram_22k || 0);
+  let gold18PerGram = Number(rateData?.price_gram_18k || 0);
 
-      const silverRate = Number(
-        rateData?.silver_price_gram ||
-          rateData?.silver_price ||
-          rateData?.price_gram_silver ||
-          0
-      );
+  let silverPerGram = Number(
+    rateData?.silver_price_gram ||
+      rateData?.silver_high_rate ||
+      rateData?.silver_price ||
+      rateData?.price_gram_silver ||
+      0
+  );
 
-      const goldChange = Number(
-        rateData?.gold_change_percent ||
-          rateData?.change_percent ||
-          rateData?.chp ||
-          rateData?.change_pct ||
-          0
-      );
+  let goldChange = Number(rateData?.gold_change_percent || 0);
+  let silverChange = Number(rateData?.silver_change_percent || 0);
 
-      const silverChange = Number(
-        rateData?.silver_change_percent ||
-          rateData?.silver_chp ||
-          rateData?.silver_change_pct ||
-          0
-      );
+  // ✅ API fail ho to DB MetalRate fallback
+  if (!gold24PerGram && typeof MetalRate !== "undefined") {
+    const dbGoldRate = await MetalRate.findOne({
+      where: {
+        metal_type: {
+          [Op.iLike]: "gold",
+        },
+      },
+      order: [["created_at", "DESC"]],
+      raw: true,
+    });
 
-      liveRate = {
-        gold_rate_24k: gold24,
-        gold_rate_22k: gold22,
-        gold_rate_18k: gold18,
-        silver_rate: silverRate,
+    const dbGold = Number(
+      dbGoldRate?.rate || dbGoldRate?.metal_rate || dbGoldRate?.price || 0
+    );
 
-        gold_change_percent: Number(goldChange.toFixed(2)),
-        silver_change_percent: Number(silverChange.toFixed(2)),
-
-        gold_trend: goldChange >= 0 ? "up" : "down",
-        silver_trend: silverChange >= 0 ? "up" : "down",
-
-        currency: rateData?.currency || "INR",
-        updated_at: rateData?.timestamp || null,
-      };
-    } catch (err) {
-      console.error("Live rate fetch error:", err.message);
+    // DB me agar 10 gram ka rate saved hai
+    if (dbGold > 0) {
+      gold24PerGram = dbGold / 10;
+      gold22PerGram = gold24PerGram * (22 / 24);
+      gold18PerGram = gold24PerGram * (18 / 24);
     }
+  }
 
+  if (!silverPerGram && typeof MetalRate !== "undefined") {
+    const dbSilverRate = await MetalRate.findOne({
+      where: {
+        metal_type: {
+          [Op.iLike]: "silver",
+        },
+      },
+      order: [["created_at", "DESC"]],
+      raw: true,
+    });
+
+    silverPerGram = Number(
+      dbSilverRate?.rate ||
+        dbSilverRate?.metal_rate ||
+        dbSilverRate?.price ||
+        0
+    );
+  }
+
+  liveRate = {
+    // ✅ main card: 24K gold 10g
+    gold_price: Number((gold24PerGram * 10).toFixed(2)),
+
+    // ✅ main card: silver high/current rate
+    silver_price: Number(silverPerGram.toFixed(2)),
+
+    gold_rate_24k: Number(gold24PerGram.toFixed(2)),
+    gold_rate_22k: Number(gold22PerGram.toFixed(2)),
+    gold_rate_18k: Number(gold18PerGram.toFixed(2)),
+    silver_rate: Number(silverPerGram.toFixed(2)),
+
+    gold_change_percent: Number(goldChange.toFixed(2)),
+    silver_change_percent: Number(silverChange.toFixed(2)),
+
+    gold_trend: goldChange >= 0 ? "up" : "down",
+    silver_trend: silverChange >= 0 ? "up" : "down",
+
+    currency: rateData?.currency || "INR",
+    updated_at: rateData?.timestamp || new Date().toISOString(),
+  };
+} catch (err) {
+  console.error("Live rate fetch error:", err.message);
+}
+
+    // =========================================================
+    // STORES
+    // =========================================================
     let districtStores = [];
 
     try {
       districtStores = await Store.findAll({
         where: {
           [Op.or]: [
-            ...(hasAttr(Store, "district_id") ? [{ district_id: districtId }] : []),
+            ...(hasAttr(Store, "district_id")
+              ? [{ district_id: districtId }]
+              : []),
             ...(districtCode && hasAttr(Store, "district_code")
               ? [{ district_code: districtCode }]
               : []),
@@ -1490,53 +1536,21 @@ export const getDistrictDashboard = async (req, res) => {
 
     const storeIds = districtStores.map((s) => Number(s.id)).filter(Boolean);
 
+    // =========================================================
+    // STOCK DATA
+    // =========================================================
     let districtStockRows = [];
+    let storeStockRows = [];
+
     try {
       districtStockRows = await Stock.findAll({
-        where: {
-          organization_id: districtId,
-        },
-        attributes: [
-          "id",
-          "organization_id",
-          "item_id",
-          "available_qty",
-          "available_weight",
-          "reserved_qty",
-          "reserved_weight",
-          "transit_qty",
-          "transit_weight",
-          "damaged_qty",
-          "damaged_weight",
-          "dead_qty",
-          "dead_weight",
-          ...(hasAttr(Stock, "created_at") ? ["created_at"] : []),
-          ...(hasAttr(Stock, "updated_at") ? ["updated_at"] : []),
-        ],
-        include: [
-          {
-            model: Item,
-            required: false,
-            attributes: [
-              "id",
-              ...(hasAttr(Item, "item_name") ? ["item_name"] : []),
-              ...(hasAttr(Item, "article_code") ? ["article_code"] : []),
-              ...(hasAttr(Item, "sku_code") ? ["sku_code"] : []),
-              ...(hasAttr(Item, "metal_type") ? ["metal_type"] : []),
-              ...(hasAttr(Item, "category") ? ["category"] : []),
-              ...(hasAttr(Item, "purity") ? ["purity"] : []),
-              ...(hasAttr(Item, "sale_rate") ? ["sale_rate"] : []),
-              ...(hasAttr(Item, "purchase_rate") ? ["purchase_rate"] : []),
-              ...(hasAttr(Item, "current_status") ? ["current_status"] : []),
-            ],
-          },
-        ],
+        where: { organization_id: districtId },
+        include: [{ model: Item, required: false }],
       });
     } catch (err) {
       districtStockRows = [];
     }
 
-    let storeStockRows = [];
     try {
       if (storeIds.length) {
         storeStockRows = await Stock.findAll({
@@ -1545,41 +1559,7 @@ export const getDistrictDashboard = async (req, res) => {
               [Op.in]: storeIds,
             },
           },
-          attributes: [
-            "id",
-            "organization_id",
-            "item_id",
-            "available_qty",
-            "available_weight",
-            "reserved_qty",
-            "reserved_weight",
-            "transit_qty",
-            "transit_weight",
-            "damaged_qty",
-            "damaged_weight",
-            "dead_qty",
-            "dead_weight",
-            ...(hasAttr(Stock, "created_at") ? ["created_at"] : []),
-            ...(hasAttr(Stock, "updated_at") ? ["updated_at"] : []),
-          ],
-          include: [
-            {
-              model: Item,
-              required: false,
-              attributes: [
-                "id",
-                ...(hasAttr(Item, "item_name") ? ["item_name"] : []),
-                ...(hasAttr(Item, "article_code") ? ["article_code"] : []),
-                ...(hasAttr(Item, "sku_code") ? ["sku_code"] : []),
-                ...(hasAttr(Item, "metal_type") ? ["metal_type"] : []),
-                ...(hasAttr(Item, "category") ? ["category"] : []),
-                ...(hasAttr(Item, "purity") ? ["purity"] : []),
-                ...(hasAttr(Item, "sale_rate") ? ["sale_rate"] : []),
-                ...(hasAttr(Item, "purchase_rate") ? ["purchase_rate"] : []),
-                ...(hasAttr(Item, "current_status") ? ["current_status"] : []),
-              ],
-            },
-          ],
+          include: [{ model: Item, required: false }],
         });
       }
     } catch (err) {
@@ -1614,9 +1594,7 @@ export const getDistrictDashboard = async (req, res) => {
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (deadQty > 0 || deadWeight > 0) {
-        deadStockItems += 1;
-      }
+      if (deadQty > 0 || deadWeight > 0) deadStockItems += 1;
 
       const rate = safeNum(row.Item?.sale_rate || row.Item?.purchase_rate);
       const valueBase = totalWeight > 0 ? totalWeight : totalQty;
@@ -1629,22 +1607,6 @@ export const getDistrictDashboard = async (req, res) => {
         stock_id: row.id,
         item_id: row.item_id,
         item_name: row.Item?.item_name || null,
-        article_code: row.Item?.article_code || null,
-        sku_code: row.Item?.sku_code || null,
-        category: row.Item?.category || null,
-        metal_type: row.Item?.metal_type || null,
-        purity: row.Item?.purity || null,
-        available_qty: availableQty,
-        available_weight: availableWeight,
-        reserved_qty: reservedQty,
-        reserved_weight: reservedWeight,
-        transit_qty: transitQty,
-        transit_weight: transitWeight,
-        dead_qty: deadQty,
-        dead_weight: deadWeight,
-        sale_rate: safeNum(row.Item?.sale_rate),
-        purchase_rate: safeNum(row.Item?.purchase_rate),
-        current_status: row.Item?.current_status || null,
       });
     }
 
@@ -1657,18 +1619,16 @@ export const getDistrictDashboard = async (req, res) => {
       const availableWeight = safeNum(row.available_weight);
       const reservedWeight = safeNum(row.reserved_weight);
       const transitWeight = safeNum(row.transit_weight);
-      const deadWeight = safeNum(row.dead_weight);
 
       const totalQty = availableQty + reservedQty + transitQty;
-      const totalWeight = availableWeight + reservedWeight + transitWeight;
+      const totalWeight =
+        availableWeight + reservedWeight + transitWeight;
 
       retailStoresStocks += totalQty;
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (deadQty > 0 || deadWeight > 0) {
-        deadStockItems += 1;
-      }
+      if (deadQty > 0) deadStockItems += 1;
 
       const rate = safeNum(row.Item?.sale_rate || row.Item?.purchase_rate);
       const valueBase = totalWeight > 0 ? totalWeight : totalQty;
@@ -1678,6 +1638,9 @@ export const getDistrictDashboard = async (req, res) => {
       if (metalType === "silver") silverPriceValue += valueBase * rate;
     }
 
+    // =========================================================
+    // STORE PERFORMANCE
+    // =========================================================
     const storePerformance = districtStores.map((store, index) => {
       const rows = storeStockRows.filter(
         (x) => Number(x.organization_id) === Number(store.id)
@@ -1710,6 +1673,9 @@ export const getDistrictDashboard = async (req, res) => {
       };
     });
 
+    // =========================================================
+    // PROFIT LOSS
+    // =========================================================
     const profitLoss = [
       { month: "Jan", amount: 520 },
       { month: "Feb", amount: 550 },
@@ -1719,166 +1685,132 @@ export const getDistrictDashboard = async (req, res) => {
       { month: "Jun", amount: 650 },
     ];
 
+    // =========================================================
+    // PENDING TASKS (SELF UPDATED)
+    // =========================================================
+    let pendingTasks = [];
+
     try {
-      const invoiceDateField = hasAttr(Invoice, "created_at")
-        ? "created_at"
-        : hasAttr(Invoice, "createdAt")
-        ? "createdAt"
-        : null;
+      pendingTasks = await Task.findAll({
+        where: {
+          status: "pending",
+          [Op.or]: [
+            { assigned_to: user.id },
+            ...(districtCode ? [{ district_code: districtCode }] : []),
+            ...(user.store_code ? [{ store_code: user.store_code }] : []),
+          ],
+        },
+        order: [["created_at", "DESC"]],
+        limit: 5,
+        raw: true,
+      });
 
-      const invoiceStoreField = hasAttr(Invoice, "organization_id")
-        ? "organization_id"
-        : hasAttr(Invoice, "branch_id")
-        ? "branch_id"
-        : hasAttr(Invoice, "store_id")
-        ? "store_id"
-        : null;
+      const now = new Date();
 
-      const invoiceTotalField = hasAttr(Invoice, "total_amount")
-        ? "total_amount"
-        : hasAttr(Invoice, "grand_total")
-        ? "grand_total"
-        : hasAttr(Invoice, "net_amount")
-        ? "net_amount"
-        : null;
-
-      if (invoiceDateField && invoiceStoreField && invoiceTotalField && storeIds.length) {
-        const currentYear = new Date().getFullYear();
-
-        const monthlySales = await sequelize.query(
-          `
-          SELECT
-            EXTRACT(MONTH FROM "${invoiceDateField}") AS month_no,
-            COALESCE(SUM("${invoiceTotalField}"), 0) AS amount
-          FROM invoices
-          WHERE "${invoiceStoreField}" IN (:storeIds)
-            AND EXTRACT(YEAR FROM "${invoiceDateField}") = :currentYear
-          GROUP BY EXTRACT(MONTH FROM "${invoiceDateField}")
-          ORDER BY month_no ASC
-          `,
-          {
-            replacements: { storeIds, currentYear },
-            type: QueryTypes.SELECT,
-          }
+      pendingTasks = pendingTasks.map((task) => {
+        const createdAt = new Date(
+          task.created_at || task.createdAt || new Date()
         );
 
-        const monthMap = {
-          1: "Jan",
-          2: "Feb",
-          3: "Mar",
-          4: "Apr",
-          5: "May",
-          6: "Jun",
-        };
+        const diffMs = now - createdAt;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHrs / 24);
 
-        const merged = {
-          Jan: 520,
-          Feb: 550,
-          Mar: 580,
-          Apr: 560,
-          May: 620,
-          Jun: 650,
-        };
+        let timeAgo = "Just now";
 
-        for (const row of monthlySales) {
-          const monthName = monthMap[Number(row.month_no)];
-          if (monthName) {
-            merged[monthName] = safeNum(row.amount);
-          }
+        if (diffDays > 0) {
+          timeAgo = `${diffDays} day(s) ago`;
+        } else if (diffHrs > 0) {
+          timeAgo = `${diffHrs} hour(s) ago`;
+        } else if (diffMinutes > 0) {
+          timeAgo = `${diffMinutes} minute(s) ago`;
         }
 
-        profitLoss.splice(
-          0,
-          profitLoss.length,
-          ...Object.entries(merged).map(([month, amount]) => ({
-            month,
-            amount,
-          }))
-        );
-      }
+        const meta =
+          task.meta && typeof task.meta === "object"
+            ? task.meta
+            : {};
+
+        const rawAmount =
+          task.amount ||
+          task.total_amount ||
+          meta.amount ||
+          meta.total_amount ||
+          null;
+
+        const amountNumber =
+          rawAmount !== null &&
+          rawAmount !== undefined &&
+          rawAmount !== ""
+            ? Number(rawAmount)
+            : null;
+
+        return {
+          ...task,
+          priority: task.priority || meta.priority || "medium",
+
+          module_name:
+            task.module_name ||
+            task.task_type ||
+            task.type ||
+            meta.module_name ||
+            "Task",
+
+          title:
+            task.title ||
+            meta.title ||
+            task.name ||
+            "Pending Task",
+
+          description:
+            task.description ||
+            meta.description ||
+            task.remark ||
+            "Task requires your attention",
+
+          time_ago: timeAgo,
+          pending_since: timeAgo,
+
+          created_time: createdAt.toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+          }),
+
+          items_pending:
+            task.items_pending ||
+            meta.items_pending ||
+            meta.pending_items ||
+            null,
+
+          customer_name:
+            task.customer_name ||
+            meta.customer_name ||
+            meta.customer ||
+            null,
+
+          amount: amountNumber,
+          amount_text:
+            amountNumber !== null &&
+            !Number.isNaN(amountNumber)
+              ? `₹${amountNumber.toLocaleString("en-IN")}`
+              : null,
+        };
+      });
     } catch (err) {
-      // fallback placeholder hi rahega
+      pendingTasks = [];
     }
 
-    let recentActivities = [];
-
-    try {
-      const createdField = hasAttr(ActivityLog, "created_at")
-        ? "created_at"
-        : hasAttr(ActivityLog, "createdAt")
-        ? "createdAt"
-        : null;
-
-      if (createdField) {
-        recentActivities = await ActivityLog.findAll({
-          where: {
-            [Op.or]: [
-              ...(hasAttr(ActivityLog, "district_id") ? [{ district_id: districtId }] : []),
-              ...(hasAttr(ActivityLog, "organization_id")
-                ? [{ organization_id: districtId }]
-                : []),
-              ...(districtCode && hasAttr(ActivityLog, "district_code")
-                ? [{ district_code: districtCode }]
-                : []),
-            ],
-          },
-          attributes: [
-            "id",
-            ...(hasAttr(ActivityLog, "module") ? ["module"] : []),
-            ...(hasAttr(ActivityLog, "action") ? ["action"] : []),
-            ...(hasAttr(ActivityLog, "description") ? ["description"] : []),
-            createdField,
-          ],
-          order: [[createdField, "DESC"]],
-          limit: 5,
-          raw: true,
-        });
-      }
-    } catch (err) {
-      recentActivities = [];
-    }
-
-    if (!recentActivities.length) {
-      recentActivities = [
-        {
-          id: 1,
-          title: "2 Neckless in Transit",
-          subtitle: "from Karnal to Gurgaon",
-          time_ago: "5 minutes ago",
-        },
-        {
-          id: 2,
-          title: "Stock Updated",
-          subtitle: "Latest System Activities and updates",
-          time_ago: "15 minutes ago",
-        },
-        {
-          id: 3,
-          title: "Setting Updated",
-          subtitle: "System",
-          time_ago: "1 hour ago",
-        },
-        {
-          id: 4,
-          title: "Sales Transaction",
-          subtitle: "Sale completed - $4,500",
-          time_ago: "7 hours ago",
-        },
-        {
-          id: 5,
-          title: "Stock Alert",
-          subtitle: "Low stock alert from #2461",
-          time_ago: "22 hours ago",
-        },
-      ];
-    } else {
-      recentActivities = recentActivities.map((item) => ({
-        id: item.id,
-        title: item.action || item.module || "Activity",
-        subtitle: item.description || "System update",
-        time_ago: item.created_at || item.createdAt || null,
-      }));
-    }
+    // =========================================================
+    // RECENT ACTIVITIES
+    // =========================================================
+    let recentActivities = [
+      {
+        id: 1,
+        title: "2 Neckless in Transit",
+        subtitle: "from Karnal to Gurgaon",
+        time_ago: "5 minutes ago",
+      },
+    ];
 
     return res.status(200).json({
       success: true,
@@ -1893,13 +1825,14 @@ export const getDistrictDashboard = async (req, res) => {
           gold_price_value: goldPriceValue,
           silver_price_value: silverPriceValue,
 
-          // ✅ LIVE GOLD / SILVER CARD VALUES
+          gold_price: liveRate.gold_price,
+          silver_price: liveRate.silver_price,
+
           gold_rate_24k: liveRate.gold_rate_24k,
           gold_rate_22k: liveRate.gold_rate_22k,
           gold_rate_18k: liveRate.gold_rate_18k,
           silver_rate: liveRate.silver_rate,
 
-          // ✅ LIVE UP / DOWN PERCENT
           gold_change_percent: liveRate.gold_change_percent,
           silver_change_percent: liveRate.silver_change_percent,
 
@@ -1911,28 +1844,26 @@ export const getDistrictDashboard = async (req, res) => {
         },
 
         store_performance: storePerformance,
-
         profit_loss: profitLoss,
 
+        pending_tasks: pendingTasks,
         recent_activities: recentActivities,
 
         extra_summary: {
           district_id: districtId,
           district_code: districtCode,
           district_own_stock: districtOwnStock,
-          total_inventory_value: goldPriceValue + silverPriceValue,
+          total_inventory_value:
+            goldPriceValue + silverPriceValue,
           total_stores: districtStores.length,
-          district_item_count: districtInventoryItems.length,
+          district_item_count:
+            districtInventoryItems.length,
         },
-
-        // district_inventory: {
-        //   item_count: districtInventoryItems.length,
-        //   items: districtInventoryItems,
-        // },
       },
     });
   } catch (error) {
     console.error("getDistrictDashboard error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch district dashboard",

@@ -1385,7 +1385,7 @@ export const getDistrictDashboard = async (req, res) => {
       });
     }
 
-    const districtId = Number(user.organization_id);
+    const districtId = Number(user.organization_id || user.branch_id);
     const districtCode = user.store_code || user.district_code || null;
 
     if (!districtId) {
@@ -1401,110 +1401,105 @@ export const getDistrictDashboard = async (req, res) => {
     // =========================================================
     // LIVE GOLD / SILVER RATE
     // =========================================================
-   let liveRate = {
-  gold_price: 0,
-  silver_price: 0,
+    let liveRate = {
+      gold_price: 0,
+      silver_price: 0,
 
-  gold_rate_24k: 0,
-  gold_rate_22k: 0,
-  gold_rate_18k: 0,
-  silver_rate: 0,
+      gold_rate_24k: 0,
+      gold_rate_22k: 0,
+      gold_rate_18k: 0,
+      silver_rate: 0,
 
-  gold_change_percent: 0,
-  silver_change_percent: 0,
+      gold_change_percent: 0,
+      silver_change_percent: 0,
 
-  gold_trend: "up",
-  silver_trend: "up",
+      gold_trend: "up",
+      silver_trend: "up",
 
-  currency: "INR",
-  updated_at: null,
-};
+      currency: "INR",
+      updated_at: null,
+    };
 
-try {
-  const rateData = await getGoldRate();
+    try {
+      const rateData = await getGoldRate();
 
-  let gold24PerGram = Number(rateData?.price_gram_24k || 0);
-  let gold22PerGram = Number(rateData?.price_gram_22k || 0);
-  let gold18PerGram = Number(rateData?.price_gram_18k || 0);
+      let gold24PerGram = Number(rateData?.price_gram_24k || 0);
+      let gold22PerGram = Number(rateData?.price_gram_22k || 0);
+      let gold18PerGram = Number(rateData?.price_gram_18k || 0);
 
-  let silverPerGram = Number(
-    rateData?.silver_price_gram ||
-      rateData?.silver_high_rate ||
-      rateData?.silver_price ||
-      rateData?.price_gram_silver ||
-      0
-  );
+      let silverPerGram = Number(
+        rateData?.silver_price_gram ||
+          rateData?.silver_high_rate ||
+          rateData?.silver_price ||
+          rateData?.price_gram_silver ||
+          0
+      );
 
-  let goldChange = Number(rateData?.gold_change_percent || 0);
-  let silverChange = Number(rateData?.silver_change_percent || 0);
+      let goldChange = Number(rateData?.gold_change_percent || 0);
+      let silverChange = Number(rateData?.silver_change_percent || 0);
 
-  // ✅ API fail ho to DB MetalRate fallback
-  if (!gold24PerGram && typeof MetalRate !== "undefined") {
-    const dbGoldRate = await MetalRate.findOne({
-      where: {
-        metal_type: {
-          [Op.iLike]: "gold",
-        },
-      },
-      order: [["created_at", "DESC"]],
-      raw: true,
-    });
+      if (!gold24PerGram && typeof MetalRate !== "undefined") {
+        const dbGoldRate = await MetalRate.findOne({
+          where: {
+            metal_type: {
+              [Op.iLike]: "gold",
+            },
+          },
+          order: [["created_at", "DESC"]],
+          raw: true,
+        });
 
-    const dbGold = Number(
-      dbGoldRate?.rate || dbGoldRate?.metal_rate || dbGoldRate?.price || 0
-    );
+        const dbGold = Number(
+          dbGoldRate?.rate || dbGoldRate?.metal_rate || dbGoldRate?.price || 0
+        );
 
-    // DB me agar 10 gram ka rate saved hai
-    if (dbGold > 0) {
-      gold24PerGram = dbGold / 10;
-      gold22PerGram = gold24PerGram * (22 / 24);
-      gold18PerGram = gold24PerGram * (18 / 24);
+        if (dbGold > 0) {
+          gold24PerGram = dbGold / 10;
+          gold22PerGram = gold24PerGram * (22 / 24);
+          gold18PerGram = gold24PerGram * (18 / 24);
+        }
+      }
+
+      if (!silverPerGram && typeof MetalRate !== "undefined") {
+        const dbSilverRate = await MetalRate.findOne({
+          where: {
+            metal_type: {
+              [Op.iLike]: "silver",
+            },
+          },
+          order: [["created_at", "DESC"]],
+          raw: true,
+        });
+
+        silverPerGram = Number(
+          dbSilverRate?.rate ||
+            dbSilverRate?.metal_rate ||
+            dbSilverRate?.price ||
+            0
+        );
+      }
+
+      liveRate = {
+        gold_price: Number((gold24PerGram * 10).toFixed(2)),
+        silver_price: Number(silverPerGram.toFixed(2)),
+
+        gold_rate_24k: Number(gold24PerGram.toFixed(2)),
+        gold_rate_22k: Number(gold22PerGram.toFixed(2)),
+        gold_rate_18k: Number(gold18PerGram.toFixed(2)),
+        silver_rate: Number(silverPerGram.toFixed(2)),
+
+        gold_change_percent: Number(goldChange.toFixed(2)),
+        silver_change_percent: Number(silverChange.toFixed(2)),
+
+        gold_trend: goldChange >= 0 ? "up" : "down",
+        silver_trend: silverChange >= 0 ? "up" : "down",
+
+        currency: rateData?.currency || "INR",
+        updated_at: rateData?.timestamp || new Date().toISOString(),
+      };
+    } catch (err) {
+      console.error("Live rate fetch error:", err.message);
     }
-  }
-
-  if (!silverPerGram && typeof MetalRate !== "undefined") {
-    const dbSilverRate = await MetalRate.findOne({
-      where: {
-        metal_type: {
-          [Op.iLike]: "silver",
-        },
-      },
-      order: [["created_at", "DESC"]],
-      raw: true,
-    });
-
-    silverPerGram = Number(
-      dbSilverRate?.rate ||
-        dbSilverRate?.metal_rate ||
-        dbSilverRate?.price ||
-        0
-    );
-  }
-
-  liveRate = {
-    // ✅ main card: 24K gold 10g
-    gold_price: Number((gold24PerGram * 10).toFixed(2)),
-
-    // ✅ main card: silver high/current rate
-    silver_price: Number(silverPerGram.toFixed(2)),
-
-    gold_rate_24k: Number(gold24PerGram.toFixed(2)),
-    gold_rate_22k: Number(gold22PerGram.toFixed(2)),
-    gold_rate_18k: Number(gold18PerGram.toFixed(2)),
-    silver_rate: Number(silverPerGram.toFixed(2)),
-
-    gold_change_percent: Number(goldChange.toFixed(2)),
-    silver_change_percent: Number(silverChange.toFixed(2)),
-
-    gold_trend: goldChange >= 0 ? "up" : "down",
-    silver_trend: silverChange >= 0 ? "up" : "down",
-
-    currency: rateData?.currency || "INR",
-    updated_at: rateData?.timestamp || new Date().toISOString(),
-  };
-} catch (err) {
-  console.error("Live rate fetch error:", err.message);
-}
 
     // =========================================================
     // STORES
@@ -1531,6 +1526,7 @@ try {
         raw: true,
       });
     } catch (err) {
+      console.error("districtStores error:", err.message);
       districtStores = [];
     }
 
@@ -1544,26 +1540,60 @@ try {
 
     try {
       districtStockRows = await Stock.findAll({
-        where: { organization_id: districtId },
-        include: [{ model: Item, required: false }],
+        where: hasAttr(Stock, "organization_id")
+          ? { organization_id: districtId }
+          : { branch_id: districtId },
+        include: [
+          {
+            model: Item,
+            as: hasAttr(Stock, "item_id") ? "item" : undefined,
+            required: false,
+          },
+        ].filter((x) => x.as !== undefined || x.model),
       });
     } catch (err) {
-      districtStockRows = [];
+      console.error("districtStockRows error:", err.message);
+
+      districtStockRows = await Stock.findAll({
+        where: { branch_id: districtId },
+      });
     }
 
     try {
       if (storeIds.length) {
         storeStockRows = await Stock.findAll({
-          where: {
-            organization_id: {
-              [Op.in]: storeIds,
+          where: hasAttr(Stock, "organization_id")
+            ? {
+                organization_id: {
+                  [Op.in]: storeIds,
+                },
+              }
+            : {
+                branch_id: {
+                  [Op.in]: storeIds,
+                },
+              },
+          include: [
+            {
+              model: Item,
+              as: hasAttr(Stock, "item_id") ? "item" : undefined,
+              required: false,
             },
-          },
-          include: [{ model: Item, required: false }],
+          ].filter((x) => x.as !== undefined || x.model),
         });
       }
     } catch (err) {
-      storeStockRows = [];
+      console.error("storeStockRows error:", err.message);
+
+      if (storeIds.length) {
+        storeStockRows = await Stock.findAll({
+          where: {
+            branch_id: {
+              [Op.in]: storeIds,
+            },
+          },
+        });
+      }
     }
 
     let districtOwnStock = 0;
@@ -1576,90 +1606,114 @@ try {
 
     const districtInventoryItems = [];
 
-    for (const row of districtStockRows) {
-      const availableQty = safeNum(row.available_qty);
+    const getItemObj = (row) => row.item || row.Item || row.dataValues?.item || row.dataValues?.Item || {};
+
+    const getStockQty = (row) => {
+      const availableQty = safeNum(row.available_qty ?? row.quantity);
       const reservedQty = safeNum(row.reserved_qty);
       const transitQty = safeNum(row.transit_qty);
-      const deadQty = safeNum(row.dead_qty);
+      return availableQty + reservedQty + transitQty;
+    };
 
-      const availableWeight = safeNum(row.available_weight);
+    const getStockWeight = (row) => {
+      const availableWeight = safeNum(row.available_weight ?? row.net_weight);
       const reservedWeight = safeNum(row.reserved_weight);
       const transitWeight = safeNum(row.transit_weight);
-      const deadWeight = safeNum(row.dead_weight);
+      return availableWeight + reservedWeight + transitWeight;
+    };
 
-      const totalQty = availableQty + reservedQty + transitQty;
-      const totalWeight = availableWeight + reservedWeight + transitWeight;
+    const addStockValue = (row) => {
+      const item = getItemObj(row);
+
+      const totalQty = getStockQty(row);
+      const totalWeight = getStockWeight(row);
+
+      const rate = safeNum(
+        item?.sale_rate ||
+          item?.purchase_rate ||
+          row.rate ||
+          row.dataValues?.rate
+      );
+
+      const valueBase = totalWeight > 0 ? totalWeight : totalQty;
+      const metalType = String(
+        item?.metal_type || row.metal_type || row.category || ""
+      ).toLowerCase();
+
+      if (metalType.includes("gold")) {
+        goldPriceValue += valueBase * rate;
+      } else if (metalType.includes("silver")) {
+        silverPriceValue += valueBase * rate;
+      } else {
+        goldPriceValue += safeNum(row.value);
+      }
+    };
+
+    for (const row of districtStockRows) {
+      const totalQty = getStockQty(row);
+      const transitQty = safeNum(row.transit_qty);
+      const deadQty = safeNum(row.dead_qty);
+      const deadWeight = safeNum(row.dead_weight);
 
       districtOwnStock += totalQty;
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (deadQty > 0 || deadWeight > 0) deadStockItems += 1;
+      if (deadQty > 0 || deadWeight > 0 || String(row.status).toUpperCase() === "DEAD") {
+        deadStockItems += 1;
+      }
 
-      const rate = safeNum(row.Item?.sale_rate || row.Item?.purchase_rate);
-      const valueBase = totalWeight > 0 ? totalWeight : totalQty;
-      const metalType = String(row.Item?.metal_type || "").toLowerCase();
+      addStockValue(row);
 
-      if (metalType === "gold") goldPriceValue += valueBase * rate;
-      if (metalType === "silver") silverPriceValue += valueBase * rate;
+      const item = getItemObj(row);
 
       districtInventoryItems.push({
         stock_id: row.id,
-        item_id: row.item_id,
-        item_name: row.Item?.item_name || null,
+        item_id: row.item_id || item?.id || null,
+        item_name: item?.item_name || row.item || null,
       });
     }
 
     for (const row of storeStockRows) {
-      const availableQty = safeNum(row.available_qty);
-      const reservedQty = safeNum(row.reserved_qty);
+      const totalQty = getStockQty(row);
       const transitQty = safeNum(row.transit_qty);
       const deadQty = safeNum(row.dead_qty);
-
-      const availableWeight = safeNum(row.available_weight);
-      const reservedWeight = safeNum(row.reserved_weight);
-      const transitWeight = safeNum(row.transit_weight);
-
-      const totalQty = availableQty + reservedQty + transitQty;
-      const totalWeight =
-        availableWeight + reservedWeight + transitWeight;
 
       retailStoresStocks += totalQty;
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (deadQty > 0) deadStockItems += 1;
+      if (deadQty > 0 || String(row.status).toUpperCase() === "DEAD") {
+        deadStockItems += 1;
+      }
 
-      const rate = safeNum(row.Item?.sale_rate || row.Item?.purchase_rate);
-      const valueBase = totalWeight > 0 ? totalWeight : totalQty;
-      const metalType = String(row.Item?.metal_type || "").toLowerCase();
-
-      if (metalType === "gold") goldPriceValue += valueBase * rate;
-      if (metalType === "silver") silverPriceValue += valueBase * rate;
+      addStockValue(row);
     }
 
     // =========================================================
     // STORE PERFORMANCE
     // =========================================================
     const storePerformance = districtStores.map((store, index) => {
-      const rows = storeStockRows.filter(
-        (x) => Number(x.organization_id) === Number(store.id)
-      );
+      const rows = storeStockRows.filter((x) => {
+        const rowOrgId = Number(x.organization_id || x.branch_id);
+        return rowOrgId === Number(store.id);
+      });
 
       let revenue = 0;
 
       for (const row of rows) {
-        const qty =
-          safeNum(row.available_qty) +
-          safeNum(row.reserved_qty) +
-          safeNum(row.transit_qty);
+        const item = getItemObj(row);
 
-        const weight =
-          safeNum(row.available_weight) +
-          safeNum(row.reserved_weight) +
-          safeNum(row.transit_weight);
+        const qty = getStockQty(row);
+        const weight = getStockWeight(row);
 
-        const rate = safeNum(row.Item?.sale_rate || row.Item?.purchase_rate);
+        const rate = safeNum(
+          item?.sale_rate ||
+            item?.purchase_rate ||
+            row.rate ||
+            row.dataValues?.rate
+        );
+
         const base = weight > 0 ? weight : qty;
 
         revenue += base * rate;
@@ -1674,19 +1728,62 @@ try {
     });
 
     // =========================================================
-    // PROFIT LOSS
+    // PROFIT LOSS - REAL DB
     // =========================================================
-    const profitLoss = [
-      { month: "Jan", amount: 520 },
-      { month: "Feb", amount: 550 },
-      { month: "Mar", amount: 580 },
-      { month: "Apr", amount: 560 },
-      { month: "May", amount: 620 },
-      { month: "Jun", amount: 650 },
-    ];
+    let profitLoss = [];
+
+    try {
+      const branchIdsForReport = [districtId, ...storeIds].filter(Boolean);
+
+      profitLoss = await Ledger.findAll({
+        attributes: [
+          [sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"), "month"],
+          [
+            sequelize.fn(
+              "COALESCE",
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`
+                  CASE 
+                    WHEN type = 'SALE' THEN total
+                    WHEN type = 'PURCHASE' THEN -total
+                    ELSE 0
+                  END
+                `)
+              ),
+              0
+            ),
+            "amount",
+          ],
+        ],
+        where: {
+          ...(branchIdsForReport.length
+            ? {
+                branch_id: {
+                  [Op.in]: branchIdsForReport,
+                },
+              }
+            : {}),
+        },
+        group: [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"),
+          sequelize.fn("DATE_PART", "month", sequelize.col("created_at")),
+        ],
+        order: [[sequelize.fn("DATE_PART", "month", sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      });
+
+      profitLoss = profitLoss.map((x) => ({
+        month: x.month,
+        amount: Number(x.amount || 0),
+      }));
+    } catch (err) {
+      console.error("profitLoss error:", err.message);
+      profitLoss = [];
+    }
 
     // =========================================================
-    // PENDING TASKS (SELF UPDATED)
+    // PENDING TASKS
     // =========================================================
     let pendingTasks = [];
 
@@ -1708,8 +1805,109 @@ try {
       const now = new Date();
 
       pendingTasks = pendingTasks.map((task) => {
+        const createdAt = new Date(task.created_at || task.createdAt || new Date());
+
+        const diffMs = now - createdAt;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHrs / 24);
+
+        let timeAgo = "Just now";
+
+        if (diffDays > 0) {
+          timeAgo = `${diffDays} day(s) ago`;
+        } else if (diffHrs > 0) {
+          timeAgo = `${diffHrs} hour(s) ago`;
+        } else if (diffMinutes > 0) {
+          timeAgo = `${diffMinutes} minute(s) ago`;
+        }
+
+        const meta = task.meta && typeof task.meta === "object" ? task.meta : {};
+
+        const rawAmount =
+          task.amount ||
+          task.total_amount ||
+          meta.amount ||
+          meta.total_amount ||
+          null;
+
+        const amountNumber =
+          rawAmount !== null && rawAmount !== undefined && rawAmount !== ""
+            ? Number(rawAmount)
+            : null;
+
+        return {
+          ...task,
+          priority: task.priority || meta.priority || "medium",
+
+          module_name:
+            task.module_name ||
+            task.task_type ||
+            task.type ||
+            meta.module_name ||
+            "Task",
+
+          title: task.title || meta.title || task.name || "Pending Task",
+
+          description:
+            task.description ||
+            meta.description ||
+            task.remark ||
+            "Task requires your attention",
+
+          time_ago: timeAgo,
+          pending_since: timeAgo,
+
+          created_time: createdAt.toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+          }),
+
+          items_pending:
+            task.items_pending || meta.items_pending || meta.pending_items || null,
+
+          customer_name:
+            task.customer_name || meta.customer_name || meta.customer || null,
+
+          amount: amountNumber,
+          amount_text:
+            amountNumber !== null && !Number.isNaN(amountNumber)
+              ? `₹${amountNumber.toLocaleString("en-IN")}`
+              : null,
+        };
+      });
+    } catch (err) {
+      console.error("pendingTasks error:", err.message);
+      pendingTasks = [];
+    }
+
+    // =========================================================
+    // RECENT ACTIVITIES - REAL DB
+    // =========================================================
+    let recentActivities = [];
+
+    try {
+      const activityWhere = {
+        [Op.or]: [
+          ...(districtCode ? [{ district_code: districtCode }] : []),
+          ...(user.store_code ? [{ store_code: user.store_code }] : []),
+          ...(hasAttr(ActivityLog, "organization_id")
+            ? [{ organization_id: districtId }]
+            : []),
+        ],
+      };
+
+      recentActivities = await ActivityLog.findAll({
+        where: activityWhere,
+        order: [["created_at", "DESC"]],
+        limit: 5,
+        raw: true,
+      });
+
+      const now = new Date();
+
+      recentActivities = recentActivities.map((activity) => {
         const createdAt = new Date(
-          task.created_at || task.createdAt || new Date()
+          activity.created_at || activity.createdAt || new Date()
         );
 
         const diffMs = now - createdAt;
@@ -1727,90 +1925,25 @@ try {
           timeAgo = `${diffMinutes} minute(s) ago`;
         }
 
-        const meta =
-          task.meta && typeof task.meta === "object"
-            ? task.meta
-            : {};
-
-        const rawAmount =
-          task.amount ||
-          task.total_amount ||
-          meta.amount ||
-          meta.total_amount ||
-          null;
-
-        const amountNumber =
-          rawAmount !== null &&
-          rawAmount !== undefined &&
-          rawAmount !== ""
-            ? Number(rawAmount)
-            : null;
-
         return {
-          ...task,
-          priority: task.priority || meta.priority || "medium",
-
-          module_name:
-            task.module_name ||
-            task.task_type ||
-            task.type ||
-            meta.module_name ||
-            "Task",
-
+          id: activity.id,
           title:
-            task.title ||
-            meta.title ||
-            task.name ||
-            "Pending Task",
-
-          description:
-            task.description ||
-            meta.description ||
-            task.remark ||
-            "Task requires your attention",
-
+            activity.title ||
+            activity.action ||
+            activity.module_name ||
+            "Recent Activity",
+          subtitle:
+            activity.description ||
+            activity.reference_no ||
+            activity.module_name ||
+            "",
           time_ago: timeAgo,
-          pending_since: timeAgo,
-
-          created_time: createdAt.toLocaleString("en-IN", {
-            timeZone: "Asia/Kolkata",
-          }),
-
-          items_pending:
-            task.items_pending ||
-            meta.items_pending ||
-            meta.pending_items ||
-            null,
-
-          customer_name:
-            task.customer_name ||
-            meta.customer_name ||
-            meta.customer ||
-            null,
-
-          amount: amountNumber,
-          amount_text:
-            amountNumber !== null &&
-            !Number.isNaN(amountNumber)
-              ? `₹${amountNumber.toLocaleString("en-IN")}`
-              : null,
         };
       });
     } catch (err) {
-      pendingTasks = [];
+      console.error("recentActivities error:", err.message);
+      recentActivities = [];
     }
-
-    // =========================================================
-    // RECENT ACTIVITIES
-    // =========================================================
-    let recentActivities = [
-      {
-        id: 1,
-        title: "2 Neckless in Transit",
-        subtitle: "from Karnal to Gurgaon",
-        time_ago: "5 minutes ago",
-      },
-    ];
 
     return res.status(200).json({
       success: true,
@@ -1853,11 +1986,9 @@ try {
           district_id: districtId,
           district_code: districtCode,
           district_own_stock: districtOwnStock,
-          total_inventory_value:
-            goldPriceValue + silverPriceValue,
+          total_inventory_value: goldPriceValue + silverPriceValue,
           total_stores: districtStores.length,
-          district_item_count:
-            districtInventoryItems.length,
+          district_item_count: districtInventoryItems.length,
         },
       },
     });

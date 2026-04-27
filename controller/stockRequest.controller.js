@@ -2025,9 +2025,11 @@ export const getTransferDetails = async (req, res) => {
       });
     }
 
+    const plainTransfer = transfer.get({ plain: true });
+
     if (
-      Number(user.organization_id) !== Number(transfer.from_organization_id) &&
-      Number(user.organization_id) !== Number(transfer.to_organization_id) &&
+      Number(user.organization_id) !== Number(plainTransfer.from_organization_id) &&
+      Number(user.organization_id) !== Number(plainTransfer.to_organization_id) &&
       String(user.role || "").toLowerCase() !== "super_admin"
     ) {
       return res.status(403).json({
@@ -2040,8 +2042,8 @@ export const getTransferDetails = async (req, res) => {
       where: {
         id: {
           [Op.in]: [
-            Number(transfer.from_organization_id),
-            Number(transfer.to_organization_id),
+            Number(plainTransfer.from_organization_id),
+            Number(plainTransfer.to_organization_id),
           ],
         },
       },
@@ -2050,10 +2052,10 @@ export const getTransferDetails = async (req, res) => {
     const storeMap = new Map(stores.map((s) => [Number(s.id), s]));
 
     const userIds = [
-      Number(transfer.created_by || 0),
-      Number(transfer.approved_by || 0),
-      Number(transfer.dispatched_by || 0),
-      Number(transfer.received_by || 0),
+      Number(plainTransfer.created_by || 0),
+      Number(plainTransfer.approved_by || 0),
+      Number(plainTransfer.dispatched_by || 0),
+      Number(plainTransfer.received_by || 0),
     ].filter(Boolean);
 
     const users = userIds.length
@@ -2068,65 +2070,65 @@ export const getTransferDetails = async (req, res) => {
     const userMap = new Map(users.map((u) => [Number(u.id), u]));
 
     const data = {
-      id: transfer.id,
-      transfer_no: transfer.transfer_no,
-      tracking_number: transfer.tracking_number || transfer.transfer_no,
+      id: plainTransfer.id,
+      transfer_no: plainTransfer.transfer_no,
+      tracking_number: plainTransfer.tracking_number || plainTransfer.transfer_no,
 
-      status: transfer.status,
-      remarks: transfer.remarks,
+      status: plainTransfer.status,
+      remarks: plainTransfer.remarks,
 
-      from_organization_id: transfer.from_organization_id,
+      from_organization_id: plainTransfer.from_organization_id,
       from_organization_name: pickStoreName(
-        storeMap.get(Number(transfer.from_organization_id))
+        storeMap.get(Number(plainTransfer.from_organization_id))
       ),
 
-      to_organization_id: transfer.to_organization_id,
+      to_organization_id: plainTransfer.to_organization_id,
       to_organization_name: pickStoreName(
-        storeMap.get(Number(transfer.to_organization_id))
+        storeMap.get(Number(plainTransfer.to_organization_id))
       ),
 
-      transfer_date: transfer.transfer_date,
-      dispatch_date: transfer.dispatch_date,
-      receive_date: transfer.receive_date,
+      transfer_date: plainTransfer.transfer_date,
+      dispatch_date: plainTransfer.dispatch_date,
+      receive_date: plainTransfer.receive_date,
 
-      expected_delivery_date: transfer.expected_delivery_date || null,
-      expected_delivery_time: transfer.expected_delivery_time || null,
+      expected_delivery_date: plainTransfer.expected_delivery_date || null,
+      expected_delivery_time: plainTransfer.expected_delivery_time || null,
 
       driver_details: {
-        driver_name: transfer.driver_name || null,
-        driver_phone: transfer.driver_phone || null,
-        vehicle_number: transfer.vehicle_number || null,
-        tracking_number: transfer.tracking_number || null,
-        driver_photo_url: transfer.driver_photo_url || null,
+        driver_name: plainTransfer.driver_name || null,
+        driver_phone: plainTransfer.driver_phone || null,
+        vehicle_number: plainTransfer.vehicle_number || null,
+        tracking_number: plainTransfer.tracking_number || null,
+        driver_photo_url: plainTransfer.driver_photo_url || null,
       },
 
       media: {
-        dispatch_image_url: transfer.dispatch_image_url || null,
-        dispatch_video_url: transfer.dispatch_video_url || null,
-        receive_image_url: transfer.receive_image_url || null,
+        dispatch_image_url: plainTransfer.dispatch_image_url || null,
+        dispatch_video_url: plainTransfer.dispatch_video_url || null,
+        receive_image_url: plainTransfer.receive_image_url || null,
       },
 
       created_by: {
-        id: transfer.created_by,
-        name: pickUserName(userMap.get(Number(transfer.created_by))),
+        id: plainTransfer.created_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.created_by))),
       },
 
       approved_by: {
-        id: transfer.approved_by,
-        name: pickUserName(userMap.get(Number(transfer.approved_by))),
+        id: plainTransfer.approved_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.approved_by))),
       },
 
       dispatched_by: {
-        id: transfer.dispatched_by,
-        name: pickUserName(userMap.get(Number(transfer.dispatched_by))),
+        id: plainTransfer.dispatched_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.dispatched_by))),
       },
 
       received_by: {
-        id: transfer.received_by,
-        name: pickUserName(userMap.get(Number(transfer.received_by))),
+        id: plainTransfer.received_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.received_by))),
       },
 
-      products: (transfer.transfer_items || []).map((row) => ({
+      products: (plainTransfer.transfer_items || []).map((row) => ({
         id: row.id,
         item_id: row.item_id,
         qty: Number(row.qty || 0),

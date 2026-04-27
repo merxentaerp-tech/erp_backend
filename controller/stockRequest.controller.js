@@ -514,14 +514,20 @@ export const createStockRequest = async (req, res) => {
 // ==========================================
 // STORE -> MY REQUESTS 
 // ==========================================
+// ==========================================
 export const getMyStockRequests = async (req, res) => {
   try {
     const user = req.user;
 
+    const orgLevel = String(user.organization_level || "").toLowerCase();
+
+    const whereCondition =
+      orgLevel === "district"
+        ? { to_organization_id: user.organization_id } // district received
+        : { from_organization_id: user.organization_id }; // retail own
+
     const requests = await StockRequest.findAll({
-      where: {
-        from_organization_id: user.organization_id,
-      },
+      where: whereCondition,
       include: [
         {
           model: StockRequestItem,
@@ -549,6 +555,16 @@ export const getMyStockRequests = async (req, res) => {
         {
           model: StockTransfer,
           as: "transfer",
+          required: false,
+          attributes: [
+            "id",
+            "request_id",
+            "transfer_no",
+            "status",
+            "dispatch_date",
+            "receive_date",
+            "created_at",
+          ],
         },
       ],
       order: [["created_at", "DESC"]],
@@ -565,7 +581,11 @@ export const getMyStockRequests = async (req, res) => {
       const requestStatus = String(reqRow.status || "").toLowerCase();
       const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
 
-      if (["approved", "partially_approved", "completed"].includes(requestStatus)) {
+      if (
+        ["approved", "partially_approved", "completed"].includes(
+          requestStatus
+        )
+      ) {
         approvedRequests += 1;
       }
 
@@ -574,13 +594,13 @@ export const getMyStockRequests = async (req, res) => {
         : [];
 
       for (const itemRow of requestItems) {
-        const qty = Number(
-          itemRow.request_qty || itemRow.qty || itemRow.quantity || 0
-        );
+        const qty = Number(itemRow.request_qty || 0);
 
         if (
           reqRow.transfer &&
-          ["approved", "dispatched", "in_transit"].includes(transferStatus)
+          ["approved", "dispatched", "in_transit"].includes(
+            transferStatus
+          )
         ) {
           transitGoods += qty;
         }
@@ -591,15 +611,6 @@ export const getMyStockRequests = async (req, res) => {
       }
     }
 
-    const lowStockAlert = {
-      show_alert: lowStockItems > 0,
-      message:
-        lowStockItems > 0
-          ? `${lowStockItems} item(s) are running low. Request stock from district manager.`
-          : "No low stock items.",
-      request_button_text: "Request Stock",
-    };
-
     return res.status(200).json({
       success: true,
       summary: {
@@ -608,7 +619,6 @@ export const getMyStockRequests = async (req, res) => {
         low_stock_items: lowStockItems,
         transit_goods: transitGoods,
       },
-      low_stock_alert: lowStockAlert,
       count: requests.length,
       data: requests,
     });
@@ -622,8 +632,6 @@ export const getMyStockRequests = async (req, res) => {
     });
   }
 };
-
-
 // ==========================================
 // DISTRICT / PARENT -> RECEIVED REQUESTS
 // ==========================================
@@ -1037,7 +1045,18 @@ export const approveAndDispatchRequest = async (req, res) => {
         message: "Driver name, driver phone, and vehicle number are required",
       });
     }
+const approvedRows = parsedItems.filter(
+  (row) => Number(row.qty || 0) > 0
+);
 
+if (approvedRows.length === 0) {
+  await transaction.rollback();
+
+  return res.status(400).json({
+    success: false,
+    message: "At least one item must have qty greater than 0 for approval",
+  });
+}
     if (!pickup_address || !delivery_address) {
       await transaction.rollback();
       return res.status(400).json({

@@ -1,7 +1,7 @@
 import Item from "../model/item.js";
 // import Item from "../model/item.js";
 import { Op } from "sequelize";
-//  ADD ITEM (ALL LEVELS)
+// 🔹 ADD ITEM (ALL LEVELS)
 export const addItem = async (req, res) => {
   try {
     const {
@@ -25,7 +25,7 @@ export const addItem = async (req, res) => {
 
     const { role, reference_id } = req.user;
 
-    //  Validation
+    // 🔥 Validation
     if (!article_code || !item_name || !metal_type || !category || !purity || !gross_weight || !making_charge) {
       return res.status(400).json({
         success: false,
@@ -33,7 +33,7 @@ export const addItem = async (req, res) => {
       });
     }
 
-    //  Check duplicate article_code
+    // 🔥 Check duplicate article_code
     const existingItem = await Item.findOne({
       where: { article_code },
     });
@@ -103,7 +103,7 @@ export const getItems = async (req, res) => {
 
     let whereClause = {};
 
-    //  SUPER / CAPITAL LEVEL
+    // 🔥 SUPER / CAPITAL LEVEL
     if (
       role === "super_admin" ||
       role === "capital" ||
@@ -112,7 +112,7 @@ export const getItems = async (req, res) => {
       whereClause = {};
     }
 
-    //  STATE LEVEL
+    // 🔥 STATE LEVEL
     else if (
       role === "state_manager" ||
       organization_level === "state"
@@ -127,7 +127,7 @@ export const getItems = async (req, res) => {
       whereClause = { state_code };
     }
 
-    //  DISTRICT LEVEL
+    // 🔥 DISTRICT LEVEL
     else if (
       role === "district_manager" ||
       organization_level === "district"
@@ -142,7 +142,7 @@ export const getItems = async (req, res) => {
       whereClause = { district_code };
     }
 
-    //  STORE LEVEL
+    // 🔥 STORE LEVEL
     else if (
       role === "manager" ||
       role === "admin" ||
@@ -159,7 +159,7 @@ export const getItems = async (req, res) => {
       whereClause = { store_code };
     }
 
-    //  DEFAULT DENY
+    // 🔥 DEFAULT DENY
     else {
       return res.status(403).json({
         success: false,
@@ -189,10 +189,10 @@ export const getItems = async (req, res) => {
 
 
 
+// 🔹 GET ITEMS BY LEVEL (CAPITAL USE)
 
 
-
-//  GET ITEMS BY LEVEL
+// 🔹 GET ITEMS BY LEVEL
 export const getItemsByLevel = async (req, res) => {
   try {
     const { level } = req.params;

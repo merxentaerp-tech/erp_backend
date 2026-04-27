@@ -816,3 +816,90 @@ export const createBill = async (req, res) => {
     });
   }
 };
+
+export const scanBillItemQR = async (req, res) => {
+  try {
+    const {
+      organization_id,
+      store_code: loginStoreCode,
+    } = resolveUserScope(req.user);
+
+    const { qr_value, qrValue, article_code, sku_code, item_id } = req.body;
+
+    const scanValue = qr_value || qrValue || article_code || sku_code || item_id;
+
+    if (!scanValue) {
+      return res.status(400).json({
+        success: false,
+        message: "QR value is required",
+      });
+    }
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(scanValue);
+    } catch (e) {}
+
+    const where = {};
+
+    if (parsed?.item_id) where.id = parsed.item_id;
+    else if (parsed?.article_code) where.article_code = parsed.article_code;
+    else if (parsed?.sku_code) where.sku_code = parsed.sku_code;
+    else if (item_id) where.id = item_id;
+    else if (article_code) where.article_code = article_code;
+    else if (sku_code) where.sku_code = sku_code;
+    else {
+      where[Op.or] = [
+        { qr_value: scanValue },
+        { article_code: scanValue },
+        { sku_code: scanValue },
+      ];
+    }
+
+    const item = await Item.findOne({ where });
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Item not found",
+      });
+    }
+
+    const stock = await Stock.findOne({
+      where: {
+        item_id: item.id,
+        organization_id,
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        item_id: item.id,
+        product_code:
+          item.product_code || item.article_code || item.sku_code || null,
+        article_code: item.article_code || null,
+        sku_code: item.sku_code || null,
+        description: item.description || item.item_name || null,
+        item_name: item.item_name || null,
+        category: item.category || null,
+        metal_type: item.metal_type || null,
+        purity: item.purity || null,
+        net_weight: item.net_weight || 0,
+        gross_weight: item.gross_weight || 0,
+        rate: item.sale_rate || item.rate || 0,
+        making_charge_percent: item.making_charge_percent || 0,
+        available_qty: stock?.available_qty || 0,
+        available_weight: stock?.available_weight || 0,
+        store_code: loginStoreCode,
+      },
+    });
+  } catch (error) {
+    console.error("scanBillItemQR error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "QR scan failed",
+      error: error.message,
+    });
+  }
+};

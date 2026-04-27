@@ -177,6 +177,8 @@ const createAuditLog = async ({
   meta = null,
   context = {},
 }) => {
+  const user = req?.user || {};
+
   await AuditTrail.create(
     {
       module,
@@ -187,16 +189,35 @@ const createAuditLog = async ({
       action,
       status,
 
-      organization_id: context.organization_id || null,
-      organization_level: context.organization_level || null,
-      parent_organization_id: context.parent_organization_id || null,
-      visible_to_organization_id: context.visible_to_organization_id || null,
-      store_id: context.store_id || null,
-      store_code: context.store_code || null,
-      district_id: context.district_id || null,
-      district_code: context.district_code || null,
+      organization_id:
+        context.organization_id || user.organization_id || null,
 
-      user_id: context.user_id || null,
+      organization_level:
+        context.organization_level || user.organization_level || null,
+
+      parent_organization_id:
+        context.parent_organization_id || user.parent_organization_id || null,
+
+      visible_to_organization_id:
+        context.visible_to_organization_id ||
+        user.visible_to_organization_id ||
+        user.organization_id ||
+        null,
+
+      store_id:
+        context.store_id || user.store_id || user.organization_id || null,
+
+      store_code:
+        context.store_code || user.store_code || null,
+
+      district_id:
+        context.district_id || user.district_id || null,
+
+      district_code:
+        context.district_code || user.district_code || null,
+
+      user_id:
+        context.user_id || user.id || null,
 
       reference_no,
       title,
@@ -219,7 +240,6 @@ const createAuditLog = async ({
     { transaction: t }
   );
 };
-
 /* =========================================================
    1) GET TODAY AUDIT ITEMS
 ========================================================= */
@@ -231,6 +251,23 @@ export const getTodayAuditItems = async (req, res) => {
 
     const scope = await getUserScope(user);
     const finalAuditDate = audit_date || getTodayDate();
+
+    // ✅ 24 HOURS BAAD ITEM AUDIT FALSE
+    await Item.update(
+      {
+        isItemAudit: false,
+        itemAuditAt: null,
+      },
+      {
+        where: {
+          organization_id: scope.organization_id,
+          isItemAudit: true,
+          itemAuditAt: {
+            [Op.lt]: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          },
+        },
+      }
+    );
 
     const itemWhere = {};
     const stockWhere = {};
@@ -265,9 +302,6 @@ export const getTodayAuditItems = async (req, res) => {
       ];
     }
 
-    // =================================================
-    // FETCH INVENTORY ITEMS
-    // =================================================
     const items = await Item.findAll({
       attributes: [
         "id",
@@ -286,6 +320,10 @@ export const getTodayAuditItems = async (req, res) => {
         "unit",
         "current_status",
         "organization_id",
+
+        // ✅ ADD THIS
+        "isItemAudit",
+        "itemAuditAt",
       ],
       where: itemWhere,
       include: [
@@ -313,9 +351,6 @@ export const getTodayAuditItems = async (req, res) => {
       order: [["id", "DESC"]],
     });
 
-    // =================================================
-    // FIND TODAY'S AUDIT
-    // =================================================
     const todayAudit = await InventoryAudit.findOne({
       where: {
         organization_id: scope.organization_id,
@@ -353,9 +388,6 @@ export const getTodayAuditItems = async (req, res) => {
       );
     }
 
-    // =================================================
-    // SPLIT INTO AUDITED + PENDING
-    // =================================================
     const auditedItems = [];
     const pendingItems = [];
 
@@ -388,7 +420,6 @@ export const getTodayAuditItems = async (req, res) => {
         system_weight: safeNum(stock?.available_weight),
         stock_id: stock?.id || null,
 
-        // audit state
         audit_item_id: auditItem ? safeNum(auditItem.id) : null,
         audit_result: auditItem?.audit_result || "pending",
         is_checked: auditItem ? !!auditItem.is_checked : false,
@@ -402,6 +433,10 @@ export const getTodayAuditItems = async (req, res) => {
         missing_reason: auditItem?.missing_reason || "",
         escalation_status: auditItem?.escalation_status || "none",
         is_selected: auditItem ? !!auditItem.is_checked : false,
+
+        // ✅ ADD THIS IN RESPONSE
+        isItemAudit: !!item.isItemAudit,
+        itemAuditAt: item.itemAuditAt || null,
       };
 
       if (auditItem && auditItem.is_checked) {
@@ -440,7 +475,6 @@ export const getTodayAuditItems = async (req, res) => {
     });
   }
 };
-
 /* =========================================================
    2) CREATE DAILY AUDIT
    - selected items => present/missing

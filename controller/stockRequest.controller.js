@@ -523,11 +523,128 @@ export const getMyStockRequests = async (req, res) => {
 
     const whereCondition =
       orgLevel === "district"
-        ? { to_organization_id: user.organization_id } // district received
-        : { from_organization_id: user.organization_id }; // retail own
+        ? { to_organization_id: user.organization_id }
+        : { from_organization_id: user.organization_id };
 
     const requests = await StockRequest.findAll({
       where: whereCondition,
+      include: [
+        {
+          model: StockRequestItem,
+          as: "request_items",
+          include: [
+            {
+              model: Item,
+              as: "item",
+              attributes: [
+                "id",
+                "item_name",
+                "article_code",
+                "sku_code",
+                "category",
+                "metal_type",
+                "purity",
+                "unit",
+                "gross_weight",
+                "net_weight",
+              ],
+              required: false,
+            },
+          ],
+        },
+        {
+          model: StockTransfer,
+          as: "transfer",
+          required: true, // ✅ only dispatched/transfer records
+          where: {
+            status: ["approved", "dispatched", "in_transit", "received"],
+          },
+          attributes: [
+            "id",
+            "request_id",
+            "transfer_no",
+            "status",
+            "dispatch_date",
+            "receive_date",
+            "created_at",
+          ],
+        },
+      ],
+      order: [["created_at", "DESC"]],
+    });
+
+    let totalRequests = requests.length;
+    let approvedRequests = 0;
+    let transitGoods = 0;
+    let lowStockItems = 0;
+
+    const LOW_STOCK_THRESHOLD = 5;
+
+    for (const reqRow of requests) {
+      const requestStatus = String(reqRow.status || "").toLowerCase();
+      const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
+
+      if (
+        ["approved", "partially_approved", "completed"].includes(
+          requestStatus
+        )
+      ) {
+        approvedRequests += 1;
+      }
+
+      const requestItems = Array.isArray(reqRow.request_items)
+        ? reqRow.request_items
+        : [];
+
+      for (const itemRow of requestItems) {
+        const qty = Number(itemRow.request_qty || 0);
+
+        if (
+          ["approved", "dispatched", "in_transit", "received"].includes(
+            transferStatus
+          )
+        ) {
+          transitGoods += qty;
+        }
+
+        if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
+          lowStockItems += 1;
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      summary: {
+        total_requests: totalRequests,
+        approved_requests: approvedRequests,
+        low_stock_items: lowStockItems,
+        transit_goods: transitGoods,
+      },
+      count: requests.length,
+      data: requests,
+    });
+  } catch (error) {
+    console.error("getMyStockRequests error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch my stock requests",
+      error: error.message,
+    });
+  }
+};
+// ==========================================
+// DISTRICT / PARENT -> RECEIVED REQUESTS
+// ==========================================
+export const getReceivedStockRequests = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const requests = await StockRequest.findAll({
+      where: {
+        to_organization_id: user.organization_id,
+      },
       include: [
         {
           model: StockRequestItem,
@@ -570,137 +687,29 @@ export const getMyStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    let totalRequests = requests.length;
+    const finalData = requests.map((row) => {
+      const item = row.toJSON ? row.toJSON() : row;
+
+      return {
+        ...item,
+        request_type: "received",
+      };
+    });
+
+    let totalRequests = finalData.length;
     let approvedRequests = 0;
     let transitGoods = 0;
     let lowStockItems = 0;
 
     const LOW_STOCK_THRESHOLD = 5;
 
-    for (const reqRow of requests) {
+    for (const reqRow of finalData) {
       const requestStatus = String(reqRow.status || "").toLowerCase();
       const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
 
       if (
-        ["approved", "partially_approved", "completed"].includes(
-          requestStatus
-        )
+        ["approved", "partially_approved", "completed"].includes(requestStatus)
       ) {
-        approvedRequests += 1;
-      }
-
-      const requestItems = Array.isArray(reqRow.request_items)
-        ? reqRow.request_items
-        : [];
-
-      for (const itemRow of requestItems) {
-        const qty = Number(itemRow.request_qty || 0);
-
-        if (
-          reqRow.transfer &&
-          ["approved", "dispatched", "in_transit"].includes(
-            transferStatus
-          )
-        ) {
-          transitGoods += qty;
-        }
-
-        if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
-          lowStockItems += 1;
-        }
-      }
-    }
-
-    return res.status(200).json({
-      success: true,
-      summary: {
-        total_requests: totalRequests,
-        approved_requests: approvedRequests,
-        low_stock_items: lowStockItems,
-        transit_goods: transitGoods,
-      },
-      count: requests.length,
-      data: requests,
-    });
-  } catch (error) {
-    console.error("getMyStockRequests error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch my stock requests",
-      error: error.message,
-    });
-  }
-};
-// ==========================================
-// DISTRICT / PARENT -> RECEIVED REQUESTS
-// ==========================================
-export const getReceivedStockRequests = async (req, res) => {
-  try {
-    const user = req.user;
-
-    const userLevel = String(user.organization_level || "").toLowerCase();
-    const userRole = String(user.role || "").toLowerCase();
-
-    // Optional safety check
-    if (
-      !["district", "state", "head"].includes(userLevel) &&
-      !["district_manager", "inventory_manager", "super_admin", "super_inventory_manager"].includes(userRole)
-    ) {
-      return res.status(403).json({
-        success: false,
-        message: "Only district or parent level users can view received requests",
-      });
-    }
-
-    const requests = await StockRequest.findAll({
-      where: {
-        to_organization_id: user.organization_id,
-      },
-      include: [
-        {
-          model: StockRequestItem,
-          as: "request_items",
-          include: [
-            {
-              model: Item,
-              as: "item",
-              attributes: [
-                "id",
-                "item_name",
-                "article_code",
-                "sku_code",
-                "category",
-                "metal_type",
-                "purity",
-                "unit",
-                "gross_weight",
-                "net_weight",
-              ],
-              required: false,
-            },
-          ],
-        },
-        {
-          model: StockTransfer,
-          as: "transfer",
-        },
-      ],
-      order: [["created_at", "DESC"]],
-    });
-
-    let totalRequests = requests.length;
-    let approvedRequests = 0;
-    let transitGoods = 0;
-    let lowStockItems = 0;
-
-    const LOW_STOCK_THRESHOLD = 5;
-
-    for (const reqRow of requests) {
-      const requestStatus = String(reqRow.status || "").toLowerCase();
-      const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
-
-      if (["approved", "partially_approved", "completed"].includes(requestStatus)) {
         approvedRequests += 1;
       }
 
@@ -713,7 +722,6 @@ export const getReceivedStockRequests = async (req, res) => {
           itemRow.request_qty || itemRow.qty || itemRow.quantity || 0
         );
 
-        // transit count only when transfer is really in movement
         if (
           reqRow.transfer &&
           ["approved", "dispatched", "in_transit"].includes(transferStatus)
@@ -721,7 +729,6 @@ export const getReceivedStockRequests = async (req, res) => {
           transitGoods += qty;
         }
 
-        // requested qty low threshold summary
         if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
           lowStockItems += 1;
         }
@@ -746,8 +753,8 @@ export const getReceivedStockRequests = async (req, res) => {
         transit_goods: transitGoods,
       },
       low_stock_alert: lowStockAlert,
-      count: requests.length,
-      data: requests,
+      count: finalData.length,
+      data: finalData,
     });
   } catch (error) {
     console.error("getReceivedStockRequests error:", error);
@@ -759,8 +766,6 @@ export const getReceivedStockRequests = async (req, res) => {
     });
   }
 };
-
-
 // ==========================================
 // GET SINGLE REQUEST
 // ==========================================

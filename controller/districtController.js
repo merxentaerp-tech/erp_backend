@@ -11,7 +11,7 @@ import Invoice from "../model/invoices.js"
 import Transaction from "../model/Transaction.js";
 import InvoiceItem from "../model/InvoiceItem.js";
 
-
+import { getGoldRate } from "../service/goldService.js";
 
 
 
@@ -1398,9 +1398,72 @@ export const getDistrictDashboard = async (req, res) => {
     const storeNameField = getStoreNameField();
     const storeCodeField = getStoreCodeField();
 
-    /* -------------------------------------------------------------------------- */
-    /*                          1) DISTRICT KE STORES                             */
-    /* -------------------------------------------------------------------------- */
+    // ✅ LIVE GOLD / SILVER RATE
+    let liveRate = {
+      gold_rate_24k: 0,
+      gold_rate_22k: 0,
+      gold_rate_18k: 0,
+      silver_rate: 0,
+
+      gold_change_percent: 0,
+      silver_change_percent: 0,
+
+      gold_trend: "up",
+      silver_trend: "up",
+
+      currency: "INR",
+      updated_at: null,
+    };
+
+    try {
+      const rateData = await getGoldRate();
+
+      console.log("LIVE RATE DATA:", rateData);
+
+      const gold24 = Number(rateData?.price_gram_24k || 0);
+      const gold22 = Number(rateData?.price_gram_22k || 0);
+      const gold18 = Number(rateData?.price_gram_18k || 0);
+
+      const silverRate = Number(
+        rateData?.silver_price_gram ||
+          rateData?.silver_price ||
+          rateData?.price_gram_silver ||
+          0
+      );
+
+      const goldChange = Number(
+        rateData?.gold_change_percent ||
+          rateData?.change_percent ||
+          rateData?.chp ||
+          rateData?.change_pct ||
+          0
+      );
+
+      const silverChange = Number(
+        rateData?.silver_change_percent ||
+          rateData?.silver_chp ||
+          rateData?.silver_change_pct ||
+          0
+      );
+
+      liveRate = {
+        gold_rate_24k: gold24,
+        gold_rate_22k: gold22,
+        gold_rate_18k: gold18,
+        silver_rate: silverRate,
+
+        gold_change_percent: Number(goldChange.toFixed(2)),
+        silver_change_percent: Number(silverChange.toFixed(2)),
+
+        gold_trend: goldChange >= 0 ? "up" : "down",
+        silver_trend: silverChange >= 0 ? "up" : "down",
+
+        currency: rateData?.currency || "INR",
+        updated_at: rateData?.timestamp || null,
+      };
+    } catch (err) {
+      console.error("Live rate fetch error:", err.message);
+    }
 
     let districtStores = [];
 
@@ -1426,10 +1489,6 @@ export const getDistrictDashboard = async (req, res) => {
     }
 
     const storeIds = districtStores.map((s) => Number(s.id)).filter(Boolean);
-
-    /* -------------------------------------------------------------------------- */
-    /*                         2) DISTRICT OWN STOCK                              */
-    /* -------------------------------------------------------------------------- */
 
     let districtStockRows = [];
     try {
@@ -1476,10 +1535,6 @@ export const getDistrictDashboard = async (req, res) => {
     } catch (err) {
       districtStockRows = [];
     }
-
-    /* -------------------------------------------------------------------------- */
-    /*                         3) CHILD STORES STOCK                              */
-    /* -------------------------------------------------------------------------- */
 
     let storeStockRows = [];
     try {
@@ -1530,10 +1585,6 @@ export const getDistrictDashboard = async (req, res) => {
     } catch (err) {
       storeStockRows = [];
     }
-
-    /* -------------------------------------------------------------------------- */
-    /*                                4) SUMMARY                                  */
-    /* -------------------------------------------------------------------------- */
 
     let districtOwnStock = 0;
     let retailStoresStocks = 0;
@@ -1627,10 +1678,6 @@ export const getDistrictDashboard = async (req, res) => {
       if (metalType === "silver") silverPriceValue += valueBase * rate;
     }
 
-    /* -------------------------------------------------------------------------- */
-    /*                           5) STORE PERFORMANCE                             */
-    /* -------------------------------------------------------------------------- */
-
     const storePerformance = districtStores.map((store, index) => {
       const rows = storeStockRows.filter(
         (x) => Number(x.organization_id) === Number(store.id)
@@ -1662,10 +1709,6 @@ export const getDistrictDashboard = async (req, res) => {
         revenue: Math.round(revenue),
       };
     });
-
-    /* -------------------------------------------------------------------------- */
-    /*                             6) PROFIT & LOSS                               */
-    /* -------------------------------------------------------------------------- */
 
     const profitLoss = [
       { month: "Jan", amount: 520 },
@@ -1757,10 +1800,6 @@ export const getDistrictDashboard = async (req, res) => {
       // fallback placeholder hi rahega
     }
 
-    /* -------------------------------------------------------------------------- */
-    /*                           7) RECENT ACTIVITIES                             */
-    /* -------------------------------------------------------------------------- */
-
     let recentActivities = [];
 
     try {
@@ -1841,10 +1880,6 @@ export const getDistrictDashboard = async (req, res) => {
       }));
     }
 
-    /* -------------------------------------------------------------------------- */
-    /*                                8) RESPONSE                                 */
-    /* -------------------------------------------------------------------------- */
-
     return res.status(200).json({
       success: true,
       message: "District dashboard fetched successfully",
@@ -1854,8 +1889,25 @@ export const getDistrictDashboard = async (req, res) => {
           retail_stores_stocks: retailStoresStocks,
           dead_stock_items: deadStockItems,
           transit_goods: transitGoods,
+
           gold_price_value: goldPriceValue,
           silver_price_value: silverPriceValue,
+
+          // ✅ LIVE GOLD / SILVER CARD VALUES
+          gold_rate_24k: liveRate.gold_rate_24k,
+          gold_rate_22k: liveRate.gold_rate_22k,
+          gold_rate_18k: liveRate.gold_rate_18k,
+          silver_rate: liveRate.silver_rate,
+
+          // ✅ LIVE UP / DOWN PERCENT
+          gold_change_percent: liveRate.gold_change_percent,
+          silver_change_percent: liveRate.silver_change_percent,
+
+          gold_trend: liveRate.gold_trend,
+          silver_trend: liveRate.silver_trend,
+
+          rate_currency: liveRate.currency,
+          rate_updated_at: liveRate.updated_at,
         },
 
         store_performance: storePerformance,

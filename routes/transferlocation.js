@@ -1,15 +1,16 @@
 import express from "express";
-import {auth} from "../middlewares/authMiddleware.js"
 import {
-  startFakeTracking,
+  startLiveTracking,
+  updateLiveLocation,
   getTransferRoute,
-//   addGpsLocation,
+  stopLiveTracking,
 } from "../controller/transferTracking.controller.js";
 
 const router = express.Router();
 
-router.post("/transfers/:id/start-fake-tracking", auth, startFakeTracking);
-router.get("/transfers/:id/route", auth, getTransferRoute);
-// router.post("/transfers/:id/location", auth, addGpsLocation);
+router.post("/:id/start", startLiveTracking);
+router.patch("/:id/location", updateLiveLocation);
+router.get("/:id/route", getTransferRoute);
+router.post("/:id/stop", stopLiveTracking);
 
 export default router;

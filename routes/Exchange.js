@@ -1,12 +1,49 @@
+// routes/exchangeRoutes.js
+
 import express from "express";
-import { createExchange , getExchangeDashboard,getInvoiceForExchange,} from "../controller/exchangeController.js";
-// import downloadInvoice from "../controllers/invoicePDFController.js";
+import {
+  createExchange,
+  getExchangeDashboard,
+  getInvoiceForExchange,
+} from "../controllers/exchangeController.js";
+
+import downloadInvoice from "../controllers/invoicePDFController.js";
+
+import {
+  authMiddleware,
+  authorizeRoles,
+  restrictToOwnStore,
+} from "../middlewares/authMiddleware.js";
+
 const router = express.Router();
 
-// Create Exchange
-router.get("/invoice/:invoice_number", getInvoiceForExchange);
-router.post("/create", createExchange);
-router.get("/dashboard", getExchangeDashboard);
-router.get("/invoice/download/:invoice_number", downloadInvoice);
+//  PROTECTED ROUTES
+router.get(
+  "/invoice/:invoice_number",
+  authMiddleware,
+  restrictToOwnStore,
+  getInvoiceForExchange
+);
+
+router.post(
+  "/create",
+  authMiddleware,
+  restrictToOwnStore,
+  createExchange
+);
+
+router.get(
+  "/dashboard",
+  authMiddleware,
+  restrictToOwnStore,
+  getExchangeDashboard
+);
+
+router.get(
+  "/invoice/download/:invoice_number",
+  authMiddleware,
+  restrictToOwnStore,
+  downloadInvoice
+);
 
 export default router;

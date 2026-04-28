@@ -5,7 +5,7 @@ import {
   getInvoiceForExchange,
 } from "../controller/exchangeController.js";   // ✅ FIXED
 
-import downloadInvoice from "../controller/invoicePDFController.js"; // ✅ check path
+// import downloadInvoice from "../controller/invoicePDFController.js"; // ✅ check path
 
 import {
   auth,

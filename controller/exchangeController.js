@@ -186,9 +186,17 @@ export const createExchange = async (req, res) => {
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
     const userValue = parseFloat(original_product.value || 0);
-const matchedItem = items.find((item) => {
-  return item.product_code === original_product.product_code;
-});
+
+    const matchedItem = items.find((item) => {
+      const dbValue = parseFloat(item.total_amount || 0);
+
+      return (
+        normalize(item.product_code) === normalize(original_product.product_code) &&
+        normalize(item.description) === normalize(original_product.product_name) &&
+        Math.abs(dbValue - userValue) < 1
+      );
+    });
+
     if (!matchedItem) {
       await t.rollback();
       return res.status(400).json({
@@ -376,55 +384,27 @@ const matchedItem = items.find((item) => {
 
     await t.commit();
 
-   return res.json({
-  success: true,
-  message: "Exchange Done",
-  data: {
-    invoice_number: inv.invoice_number,
+    return res.json({
+      success: true,
+      message: "Exchange Completed Successfully",
+      data: {
+        invoice_number: inv.invoice_number,
+        customer_id: customerData.id,
+        customer_name: customerData.name,
+        phone: customerData.phone,
+        final_amount: finalAmount,
+        difference,
+        making_charges: makingCharges,
+        is_free: isFree
+      }
+    });
 
-    customer: {
-      id: customerData.id,
-      name: customerData.name,
-      phone: customerData.phone
-    },
-
-    old_product: {
-      name: original_product.product_name,
-      condition: oldCondition,
-      value: oldValue
-    },
-
-    new_product: {
-      name: new_product.product_name,
-      condition: newCondition,
-      value: newValue
-    },
-
-    calculation: {
-      making_charges: makingCharges,
-      final_amount: finalAmount,
-      difference: difference
-    },
-
-    original_invoice: {
-      invoice_number: inv.invoice_number,
-      total_amount: oldValue
-    },
-
-    exchange_invoice: {
-      invoice_number: exchangeInvoiceNo,
-      total_amount: Math.abs(difference),
-      download_url: `/api/exchange/invoice/download/${exchangeInvoiceNo}`
-    }
-  }
-});
-  } catch (error) {
+  } catch (err) {
     await t.rollback();
-
     return res.status(500).json({
       success: false,
       message: "Exchange Failed",
-      error: error.message
+      error: err.message
     });
   }
 };

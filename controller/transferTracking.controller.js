@@ -645,3 +645,65 @@ export const stopLiveTracking = async (req, res) => {
     });
   }
 };
+
+export const getTransferLiveLocation = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [transfer] = await sequelize.query(
+      `SELECT * FROM stock_transfers WHERE id = :id LIMIT 1`,
+      {
+        replacements: { id },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: "Transfer not found",
+      });
+    }
+
+    const lat = transfer.last_latitude
+      ? Number(transfer.last_latitude)
+      : null;
+
+    const lng = transfer.last_longitude
+      ? Number(transfer.last_longitude)
+      : null;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        transfer_id: transfer.id,
+        transfer_no: transfer.transfer_no,
+        status: transfer.status,
+        is_tracking_active: transfer.is_tracking_active,
+
+        live_location: {
+          latitude: lat,
+          longitude: lng,
+          updated_at: transfer.last_tracked_at,
+        },
+
+        destination: {
+          address: transfer.delivery_address || null,
+          latitude: transfer.drop_lat
+            ? Number(transfer.drop_lat)
+            : null,
+          longitude: transfer.drop_lng
+            ? Number(transfer.drop_lng)
+            : null,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("getTransferLiveLocation error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch live location",
+      error: error.message,
+    });
+  }
+};

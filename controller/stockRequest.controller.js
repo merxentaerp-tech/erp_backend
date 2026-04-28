@@ -17,7 +17,7 @@ import District from "../model/District.js";
 import cloudinary from "../utils/cloudinary.js";
 import User from "../model/user.js";
 // import Store from "../model/Store.js";
-
+// import { uploadToCloudinary } from "../utils/cloudinaryUpload.js";
 const generateTransferNo = () => {
   return `TRF-${Date.now()}`;
 };
@@ -146,10 +146,22 @@ const safeUnlink = (filePath) => {
   }
 };
 
-const uploadToCloudinary = async (filePath, folder, resourceType = "image") => {
+const uploadToCloudinary = async (
+  filePath,
+  folder,
+  resourceType = "image"
+) => {
   return cloudinary.uploader.upload(filePath, {
     folder,
     resource_type: resourceType,
+
+    // ✅ Important fix
+    type: "upload",
+    access_mode: "public",
+
+    use_filename: true,
+    unique_filename: true,
+    overwrite: false,
   });
 };
 
@@ -515,16 +527,108 @@ export const createStockRequest = async (req, res) => {
 // STORE -> MY REQUESTS 
 // ==========================================
 // ==========================================
+const TRANSFER_ACTIVE_STATUSES = [
+  "approved",
+  "dispatched",
+  "in_transit",
+  "received",
+];
+
+const APPROVED_REQUEST_STATUSES = [
+  "approved",
+  "partially_approved",
+  "completed",
+];
+
+const LOW_STOCK_THRESHOLD = 5;
+
+const calculateStockRequestSummary = (requests = []) => {
+  let totalRequests = requests.length;
+  let approvedRequests = 0;
+  let transitGoods = 0;
+  let lowStockItems = 0;
+
+  for (const reqRow of requests) {
+    const row = reqRow.toJSON ? reqRow.toJSON() : reqRow;
+
+    const requestStatus = String(row.status || "").toLowerCase();
+    const transferStatus = String(row.transfer?.status || "").toLowerCase();
+
+    if (APPROVED_REQUEST_STATUSES.includes(requestStatus)) {
+      approvedRequests += 1;
+    }
+
+    const requestItems = Array.isArray(row.request_items)
+      ? row.request_items
+      : [];
+
+    for (const itemRow of requestItems) {
+      const qty = Number(
+        itemRow.approved_qty ||
+          itemRow.request_qty ||
+          itemRow.qty ||
+          itemRow.quantity ||
+          0
+      );
+
+      if (row.transfer && TRANSFER_ACTIVE_STATUSES.includes(transferStatus)) {
+        transitGoods += qty;
+      }
+
+      if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
+        lowStockItems += 1;
+      }
+    }
+  }
+
+  return {
+    total_requests: totalRequests,
+    approved_requests: approvedRequests,
+    low_stock_items: lowStockItems,
+    transit_goods: transitGoods,
+  };
+};
+
+const addTransferDirection = (rows = [], user) => {
+  return rows.map((row) => {
+    const item = row.toJSON ? row.toJSON() : row;
+
+    const transferStatus = String(item.transfer?.status || "").toLowerCase();
+
+    const isSender =
+      Number(item.from_organization_id) === Number(user.organization_id);
+
+    const isReceiver =
+      Number(item.to_organization_id) === Number(user.organization_id);
+
+    let movement_type = "unknown";
+
+    if (isSender && transferStatus === "in_transit") {
+      movement_type = "in_transit_send";
+    } else if (isReceiver && transferStatus === "in_transit") {
+      movement_type = "in_transit_receive";
+    } else if (isSender) {
+      movement_type = "send";
+    } else if (isReceiver) {
+      movement_type = "receive";
+    }
+
+    return {
+      ...item,
+      movement_type,
+      is_sent: isSender,
+      is_received: isReceiver,
+    };
+  });
+};
+
 export const getMyStockRequests = async (req, res) => {
   try {
     const user = req.user;
 
-    const orgLevel = String(user.organization_level || "").toLowerCase();
-
-    const whereCondition =
-      orgLevel === "district"
-        ? { to_organization_id: user.organization_id }
-        : { from_organization_id: user.organization_id };
+    const whereCondition = {
+      created_by: user.id, // ✅ only logged-in user created requests
+    };
 
     const requests = await StockRequest.findAll({
       where: whereCondition,
@@ -555,10 +659,7 @@ export const getMyStockRequests = async (req, res) => {
         {
           model: StockTransfer,
           as: "transfer",
-          required: true, // ✅ only dispatched/transfer records
-          where: {
-            status: ["approved", "dispatched", "in_transit", "received"],
-          },
+          required: false,
           attributes: [
             "id",
             "request_id",
@@ -573,56 +674,14 @@ export const getMyStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    let totalRequests = requests.length;
-    let approvedRequests = 0;
-    let transitGoods = 0;
-    let lowStockItems = 0;
-
-    const LOW_STOCK_THRESHOLD = 5;
-
-    for (const reqRow of requests) {
-      const requestStatus = String(reqRow.status || "").toLowerCase();
-      const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
-
-      if (
-        ["approved", "partially_approved", "completed"].includes(
-          requestStatus
-        )
-      ) {
-        approvedRequests += 1;
-      }
-
-      const requestItems = Array.isArray(reqRow.request_items)
-        ? reqRow.request_items
-        : [];
-
-      for (const itemRow of requestItems) {
-        const qty = Number(itemRow.request_qty || 0);
-
-        if (
-          ["approved", "dispatched", "in_transit", "received"].includes(
-            transferStatus
-          )
-        ) {
-          transitGoods += qty;
-        }
-
-        if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
-          lowStockItems += 1;
-        }
-      }
-    }
+    const finalData = addTransferDirection(requests, user);
+    const summary = calculateStockRequestSummary(finalData);
 
     return res.status(200).json({
       success: true,
-      summary: {
-        total_requests: totalRequests,
-        approved_requests: approvedRequests,
-        low_stock_items: lowStockItems,
-        transit_goods: transitGoods,
-      },
-      count: requests.length,
-      data: requests,
+      summary,
+      count: finalData.length,
+      data: finalData,
     });
   } catch (error) {
     console.error("getMyStockRequests error:", error);
@@ -634,9 +693,7 @@ export const getMyStockRequests = async (req, res) => {
     });
   }
 };
-// ==========================================
-// DISTRICT / PARENT -> RECEIVED REQUESTS
-// ==========================================
+
 export const getReceivedStockRequests = async (req, res) => {
   try {
     const user = req.user;
@@ -687,71 +744,27 @@ export const getReceivedStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const finalData = requests.map((row) => {
-      const item = row.toJSON ? row.toJSON() : row;
-
+    const finalData = addTransferDirection(requests, user).map((row) => {
       return {
-        ...item,
+        ...row,
         request_type: "received",
       };
     });
 
-    let totalRequests = finalData.length;
-    let approvedRequests = 0;
-    let transitGoods = 0;
-    let lowStockItems = 0;
-
-    const LOW_STOCK_THRESHOLD = 5;
-
-    for (const reqRow of finalData) {
-      const requestStatus = String(reqRow.status || "").toLowerCase();
-      const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
-
-      if (
-        ["approved", "partially_approved", "completed"].includes(requestStatus)
-      ) {
-        approvedRequests += 1;
-      }
-
-      const requestItems = Array.isArray(reqRow.request_items)
-        ? reqRow.request_items
-        : [];
-
-      for (const itemRow of requestItems) {
-        const qty = Number(
-          itemRow.request_qty || itemRow.qty || itemRow.quantity || 0
-        );
-
-        if (
-          reqRow.transfer &&
-          ["approved", "dispatched", "in_transit"].includes(transferStatus)
-        ) {
-          transitGoods += qty;
-        }
-
-        if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
-          lowStockItems += 1;
-        }
-      }
-    }
+    const summary = calculateStockRequestSummary(finalData);
 
     const lowStockAlert = {
-      show_alert: lowStockItems > 0,
+      show_alert: summary.low_stock_items > 0,
       message:
-        lowStockItems > 0
-          ? `${lowStockItems} low-quantity requested item(s) found.`
+        summary.low_stock_items > 0
+          ? `${summary.low_stock_items} low-quantity requested item(s) found.`
           : "No low stock items.",
       request_button_text: "Review Requests",
     };
 
     return res.status(200).json({
       success: true,
-      summary: {
-        total_requests: totalRequests,
-        approved_requests: approvedRequests,
-        low_stock_items: lowStockItems,
-        transit_goods: transitGoods,
-      },
+      summary,
       low_stock_alert: lowStockAlert,
       count: finalData.length,
       data: finalData,
@@ -1916,6 +1929,69 @@ const loadTransferMeta = async (transfers = []) => {
 // ==========================================
 // INCOMING TRANSFERS
 // ==========================================
+const TRANSFER_CARD_STATUSES = [
+  "approved",
+  "dispatched",
+  "in_transit",
+  "received",
+];
+const getOverallTransferWhereCondition = (user) => {
+  return {
+    status: {
+      [Op.in]: TRANSFER_CARD_STATUSES,
+    },
+    [Op.or]: [
+      { from_organization_id: user.organization_id },
+      { to_organization_id: user.organization_id },
+    ],
+  };
+};
+
+// const addTransferDirection = (rows = [], user) => {
+//   return rows.map((row) => {
+//     const item = row.toJSON ? row.toJSON() : row;
+
+//     const isOutgoing =
+//       Number(item.from_organization_id) === Number(user.organization_id);
+
+//     const isIncoming =
+//       Number(item.to_organization_id) === Number(user.organization_id);
+
+//     let transfer_direction = "unknown";
+
+//     if (isOutgoing && isIncoming) {
+//       transfer_direction = "self_transfer";
+//     } else if (isOutgoing) {
+//       transfer_direction = "outgoing";
+//     } else if (isIncoming) {
+//       transfer_direction = "incoming";
+//     }
+
+//     return {
+//       ...item,
+//       transfer_direction,
+//       is_outgoing: isOutgoing,
+//       is_incoming: isIncoming,
+//     };
+//   });
+// };
+// ==========================================
+// INCOMING TRANSFERS
+// ==========================================
+const getIncomingTransferWhereCondition = (user) => ({
+  to_organization_id: user.organization_id,
+  status: {
+    [Op.in]: TRANSFER_CARD_STATUSES,
+  },
+});
+
+const getOutgoingTransferWhereCondition = (user) => ({
+  from_organization_id: user.organization_id,
+  status: {
+    [Op.in]: TRANSFER_CARD_STATUSES,
+  },
+});
+
 export const getIncomingTransfers = async (req, res) => {
   try {
     const user = req.user;
@@ -1927,30 +2003,42 @@ export const getIncomingTransfers = async (req, res) => {
       });
     }
 
-    const transfers = await StockTransfer.findAll({
-      where: {
-        to_organization_id: user.organization_id,
-        status: {
-          [Op.in]: ["approved", "dispatched", "in_transit", "received"],
-        },
-      },
-      include: [
-        {
-          model: StockTransferItem,
-          as: "transfer_items",
-        },
-      ],
-      order: [["created_at", "DESC"]],
-    });
+    const [transfers, overallTransfers] = await Promise.all([
+      StockTransfer.findAll({
+        where: getIncomingTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+
+      StockTransfer.findAll({
+        where: getOverallTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+    ]);
 
     const { storeMap, userMap } = await loadTransferMeta(transfers);
-    const data = buildTransferResponse(transfers, storeMap, userMap);
-    const summary = buildTransferSummary(transfers);
+
+    const responseData = buildTransferResponse(transfers, storeMap, userMap);
+    const data = addTransferDirection(responseData, user);
+
+    // ✅ cards overall data se banenge
+    const summary = buildTransferSummary(overallTransfers);
 
     return res.status(200).json({
       success: true,
       summary,
-      count: data.length,
+      count: overallTransfers.length,
       data,
     });
   } catch (error) {
@@ -1977,27 +2065,42 @@ export const getOutgoingTransfers = async (req, res) => {
       });
     }
 
-    const transfers = await StockTransfer.findAll({
-      where: {
-        from_organization_id: user.organization_id,
-      },
-      include: [
-        {
-          model: StockTransferItem,
-          as: "transfer_items",
-        },
-      ],
-      order: [["created_at", "DESC"]],
-    });
+    const [transfers, overallTransfers] = await Promise.all([
+      StockTransfer.findAll({
+        where: getOutgoingTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+
+      StockTransfer.findAll({
+        where: getOverallTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+    ]);
 
     const { storeMap, userMap } = await loadTransferMeta(transfers);
-    const data = buildTransferResponse(transfers, storeMap, userMap);
-    const summary = buildTransferSummary(transfers);
+
+    const responseData = buildTransferResponse(transfers, storeMap, userMap);
+    const data = addTransferDirection(responseData, user);
+
+    // ✅ cards overall data se banenge
+    const summary = buildTransferSummary(overallTransfers);
 
     return res.status(200).json({
       success: true,
       summary,
-      count: data.length,
+      count: overallTransfers.length,
       data,
     });
   } catch (error) {
@@ -2009,7 +2112,6 @@ export const getOutgoingTransfers = async (req, res) => {
     });
   }
 };
-
 // ==========================================
 // SINGLE TRANSFER DETAILS
 // ==========================================

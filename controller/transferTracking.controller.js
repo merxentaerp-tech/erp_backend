@@ -147,7 +147,7 @@ import axios from "axios";
 import { QueryTypes } from "sequelize";
 import sequelize from "../config/db.js";
 import StockTransfer from "../model/stockTransfer.js";
-import StockRequest from "../model/stockRequest.js";
+import StockRequest from "../model/StockRequest.js";
 import TransferLocation from "../model/TransferLocation.js";
 
 const toNumber = (v) => {

@@ -385,29 +385,46 @@ export const createExchange = async (req, res) => {
     await t.commit();
 
     return res.json({
-      success: true,
-      message: "Exchange Completed Successfully",
-      data: {
-        invoice_number: inv.invoice_number,
-        customer_id: customerData.id,
-        customer_name: customerData.name,
-        phone: customerData.phone,
-        final_amount: finalAmount,
-        difference,
-        making_charges: makingCharges,
-        is_free: isFree
-      }
-    });
+  success: true,
+  message: "Exchange Done",
+  data: {
+    invoice_number: inv.invoice_number,
 
-  } catch (err) {
-    await t.rollback();
-    return res.status(500).json({
-      success: false,
-      message: "Exchange Failed",
-      error: err.message
-    });
+    customer: {
+      id: customerData.id,
+      name: customerData.name,
+      phone: customerData.phone
+    },
+
+    old_product: {
+      name: original_product.product_name,
+      condition: original_product.condition || "OLD",
+      value: oldValue
+    },
+
+    new_product: {
+      name: new_product.product_name,
+      condition: new_product.condition || "NEW",
+      value: newValue
+    },
+
+    calculation: {
+      making_charges: makingCharges,
+      final_amount: finalAmount,
+      difference: difference
+    },
+
+    original_invoice: {
+      invoice_number: inv.invoice_number,
+      total_amount: oldValue
+    },
+
+    exchange_invoice: {
+      invoice_number: `EX-${inv.invoice_number}`,
+      total_amount: Math.abs(difference)
+    }
   }
-};
+});
 
 // ==============================
 //  GET EXCHANGE LIST (DASHBOARD)

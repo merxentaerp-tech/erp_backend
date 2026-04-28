@@ -10,7 +10,6 @@ import User from "../model/user.js"
 import Invoice from "../model/invoices.js"
 import Transaction from "../model/Transaction.js";
 import InvoiceItem from "../model/InvoiceItem.js";
-import Task from "../model/task.js"
 
 import { getGoldRate } from "../service/goldService.js";
 
@@ -986,7 +985,6 @@ export const getDistrictStoreDetail = async (req, res) => {
           ? item.current_status
           : null,
         image_url: hasAttr(Item, "image_url") ? item.image_url : null,
-
         stock: {
           available_qty: num(stock.available_qty),
           available_weight: num(stock.available_weight),
@@ -997,59 +995,14 @@ export const getDistrictStoreDetail = async (req, res) => {
           damaged_qty: num(stock.damaged_qty),
           damaged_weight: num(stock.damaged_weight),
         },
-
         action: "view",
       };
     });
 
-    const categoryMap = {};
-
-    inventory.forEach((row) => {
-      const cat = row.category || "Uncategorized";
-
-      if (!categoryMap[cat]) {
-        categoryMap[cat] = {
-          category: cat,
-          total_items: 0,
-          total_qty: 0,
-          available_qty: 0,
-          available_weight: 0,
-          reserved_qty: 0,
-          reserved_weight: 0,
-          transit_qty: 0,
-          transit_weight: 0,
-          damaged_qty: 0,
-          damaged_weight: 0,
-          total_gross_weight: 0,
-        };
-      }
-
-      categoryMap[cat].total_items += 1;
-      categoryMap[cat].total_qty += row.quantity;
-
-      categoryMap[cat].available_qty += row.stock.available_qty;
-      categoryMap[cat].available_weight += row.stock.available_weight;
-
-      categoryMap[cat].reserved_qty += row.stock.reserved_qty;
-      categoryMap[cat].reserved_weight += row.stock.reserved_weight;
-
-      categoryMap[cat].transit_qty += row.stock.transit_qty;
-      categoryMap[cat].transit_weight += row.stock.transit_weight;
-
-      categoryMap[cat].damaged_qty += row.stock.damaged_qty;
-      categoryMap[cat].damaged_weight += row.stock.damaged_weight;
-
-      categoryMap[cat].total_gross_weight += row.gross_weight;
-    });
-
-    const category_inventory = Object.values(categoryMap).sort(
-      (a, b) => b.total_items - a.total_items
-    );
-
     const categoryOptions = [
       ...new Set(
-        inventory
-          .map((item) => item.category || null)
+        items
+          .map((item) => (hasAttr(Item, "category") ? item.category : null))
           .filter(Boolean)
       ),
     ];
@@ -1066,14 +1019,9 @@ export const getDistrictStoreDetail = async (req, res) => {
           district: hasAttr(Store, "district") ? store.district : null,
           state: hasAttr(Store, "state") ? store.state : null,
           address: hasAttr(Store, "address") ? store.address : null,
-          phone_number: hasAttr(Store, "phone_number")
-            ? store.phone_number
-            : null,
-          is_active: hasAttr(Store, "is_active")
-            ? !!store.is_active
-            : true,
+          phone_number: hasAttr(Store, "phone_number") ? store.phone_number : null,
+          is_active: hasAttr(Store, "is_active") ? !!store.is_active : true,
         },
-
         stock_summary: {
           available_qty: num(stockSummary?.available_qty),
           available_weight: num(stockSummary?.available_weight),
@@ -1084,21 +1032,16 @@ export const getDistrictStoreDetail = async (req, res) => {
           damaged_qty: num(stockSummary?.damaged_qty),
           damaged_weight: num(stockSummary?.damaged_weight),
         },
-
         filters: {
           selected_category: category || "All",
           search: search || "",
           categories: categoryOptions,
         },
-
-        category_inventory,
-
         inventory,
       },
     });
   } catch (error) {
     console.error("getDistrictStoreDetail error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Failed to fetch store detail",
@@ -1421,7 +1364,6 @@ const getTableColumns = async (tableName) => {
 /* -------------------------------------------------------------------------- */
 /*                           DISTRICT DASHBOARD API                           */
 /* -------------------------------------------------------------------------- */
-
 export const getDistrictDashboard = async (req, res) => {
   try {
     const user = req.user;
@@ -1456,17 +1398,24 @@ export const getDistrictDashboard = async (req, res) => {
     const storeNameField = getStoreNameField();
     const storeCodeField = getStoreCodeField();
 
+    // =========================================================
+    // LIVE GOLD / SILVER RATE
+    // =========================================================
     let liveRate = {
       gold_price: 0,
       silver_price: 0,
+
       gold_rate_24k: 0,
       gold_rate_22k: 0,
       gold_rate_18k: 0,
       silver_rate: 0,
+
       gold_change_percent: 0,
       silver_change_percent: 0,
+
       gold_trend: "up",
       silver_trend: "up",
+
       currency: "INR",
       updated_at: null,
     };
@@ -1491,7 +1440,11 @@ export const getDistrictDashboard = async (req, res) => {
 
       if (!gold24PerGram && typeof MetalRate !== "undefined") {
         const dbGoldRate = await MetalRate.findOne({
-          where: { metal_type: { [Op.iLike]: "gold" } },
+          where: {
+            metal_type: {
+              [Op.iLike]: "gold",
+            },
+          },
           order: [["created_at", "DESC"]],
           raw: true,
         });
@@ -1509,7 +1462,11 @@ export const getDistrictDashboard = async (req, res) => {
 
       if (!silverPerGram && typeof MetalRate !== "undefined") {
         const dbSilverRate = await MetalRate.findOne({
-          where: { metal_type: { [Op.iLike]: "silver" } },
+          where: {
+            metal_type: {
+              [Op.iLike]: "silver",
+            },
+          },
           order: [["created_at", "DESC"]],
           raw: true,
         });
@@ -1525,14 +1482,18 @@ export const getDistrictDashboard = async (req, res) => {
       liveRate = {
         gold_price: Number((gold24PerGram * 10).toFixed(2)),
         silver_price: Number(silverPerGram.toFixed(2)),
+
         gold_rate_24k: Number(gold24PerGram.toFixed(2)),
         gold_rate_22k: Number(gold22PerGram.toFixed(2)),
         gold_rate_18k: Number(gold18PerGram.toFixed(2)),
         silver_rate: Number(silverPerGram.toFixed(2)),
+
         gold_change_percent: Number(goldChange.toFixed(2)),
         silver_change_percent: Number(silverChange.toFixed(2)),
+
         gold_trend: goldChange >= 0 ? "up" : "down",
         silver_trend: silverChange >= 0 ? "up" : "down",
+
         currency: rateData?.currency || "INR",
         updated_at: rateData?.timestamp || new Date().toISOString(),
       };
@@ -1540,6 +1501,9 @@ export const getDistrictDashboard = async (req, res) => {
       console.error("Live rate fetch error:", err.message);
     }
 
+    // =========================================================
+    // STORES
+    // =========================================================
     let districtStores = [];
 
     try {
@@ -1568,6 +1532,9 @@ export const getDistrictDashboard = async (req, res) => {
 
     const storeIds = districtStores.map((s) => Number(s.id)).filter(Boolean);
 
+    // =========================================================
+    // STOCK DATA
+    // =========================================================
     let districtStockRows = [];
     let storeStockRows = [];
 
@@ -1586,6 +1553,7 @@ export const getDistrictDashboard = async (req, res) => {
       });
     } catch (err) {
       console.error("districtStockRows error:", err.message);
+
       districtStockRows = await Stock.findAll({
         where: { branch_id: districtId },
       });
@@ -1595,8 +1563,16 @@ export const getDistrictDashboard = async (req, res) => {
       if (storeIds.length) {
         storeStockRows = await Stock.findAll({
           where: hasAttr(Stock, "organization_id")
-            ? { organization_id: { [Op.in]: storeIds } }
-            : { branch_id: { [Op.in]: storeIds } },
+            ? {
+                organization_id: {
+                  [Op.in]: storeIds,
+                },
+              }
+            : {
+                branch_id: {
+                  [Op.in]: storeIds,
+                },
+              },
           include: [
             {
               model: Item,
@@ -1611,7 +1587,11 @@ export const getDistrictDashboard = async (req, res) => {
 
       if (storeIds.length) {
         storeStockRows = await Stock.findAll({
-          where: { branch_id: { [Op.in]: storeIds } },
+          where: {
+            branch_id: {
+              [Op.in]: storeIds,
+            },
+          },
         });
       }
     }
@@ -1626,8 +1606,7 @@ export const getDistrictDashboard = async (req, res) => {
 
     const districtInventoryItems = [];
 
-    const getItemObj = (row) =>
-      row.item || row.Item || row.dataValues?.item || row.dataValues?.Item || {};
+    const getItemObj = (row) => row.item || row.Item || row.dataValues?.item || row.dataValues?.Item || {};
 
     const getStockQty = (row) => {
       const availableQty = safeNum(row.available_qty ?? row.quantity);
@@ -1670,57 +1649,17 @@ export const getDistrictDashboard = async (req, res) => {
       }
     };
 
-    // ✅ DEAD STOCK LOGIC: 60+ days old stock/item + existing dead/damaged checks
-    const DEAD_STOCK_DAYS = 60;
-
-    const getStockAgeDays = (row) => {
-      const rawDate =
-        row.created_at ||
-        row.createdAt ||
-        row.dataValues?.created_at ||
-        row.dataValues?.createdAt ||
-        null;
-
-      if (!rawDate) return 0;
-
-      const createdDate = new Date(rawDate);
-      if (Number.isNaN(createdDate.getTime())) return 0;
-
-      return Math.floor(
-        (Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)
-      );
-    };
-
-    const isDeadStockRow = (row) => {
-      const ageDays = getStockAgeDays(row);
-
-      const deadQty = safeNum(row.dead_qty);
-      const deadWeight = safeNum(row.dead_weight);
-      const damagedQty = safeNum(row.damaged_qty);
-      const damagedWeight = safeNum(row.damaged_weight);
-
-      const status = String(row.status || "").toUpperCase();
-
-      return (
-        ageDays > DEAD_STOCK_DAYS ||
-        deadQty > 0 ||
-        deadWeight > 0 ||
-        damagedQty > 0 ||
-        damagedWeight > 0 ||
-        status === "DEAD" ||
-        status === "DAMAGED"
-      );
-    };
-
     for (const row of districtStockRows) {
       const totalQty = getStockQty(row);
       const transitQty = safeNum(row.transit_qty);
+      const deadQty = safeNum(row.dead_qty);
+      const deadWeight = safeNum(row.dead_weight);
 
       districtOwnStock += totalQty;
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (isDeadStockRow(row)) {
+      if (deadQty > 0 || deadWeight > 0 || String(row.status).toUpperCase() === "DEAD") {
         deadStockItems += 1;
       }
 
@@ -1738,18 +1677,22 @@ export const getDistrictDashboard = async (req, res) => {
     for (const row of storeStockRows) {
       const totalQty = getStockQty(row);
       const transitQty = safeNum(row.transit_qty);
+      const deadQty = safeNum(row.dead_qty);
 
       retailStoresStocks += totalQty;
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (isDeadStockRow(row)) {
+      if (deadQty > 0 || String(row.status).toUpperCase() === "DEAD") {
         deadStockItems += 1;
       }
 
       addStockValue(row);
     }
 
+    // =========================================================
+    // STORE PERFORMANCE
+    // =========================================================
     const storePerformance = districtStores.map((store, index) => {
       const rows = storeStockRows.filter((x) => {
         const rowOrgId = Number(x.organization_id || x.branch_id);
@@ -1760,6 +1703,7 @@ export const getDistrictDashboard = async (req, res) => {
 
       for (const row of rows) {
         const item = getItemObj(row);
+
         const qty = getStockQty(row);
         const weight = getStockWeight(row);
 
@@ -1771,6 +1715,7 @@ export const getDistrictDashboard = async (req, res) => {
         );
 
         const base = weight > 0 ? weight : qty;
+
         revenue += base * rate;
       }
 
@@ -1782,254 +1727,85 @@ export const getDistrictDashboard = async (req, res) => {
       };
     });
 
+    // =========================================================
+    // PROFIT LOSS - REAL DB
+    // =========================================================
     let profitLoss = [];
-    let salesCount = 0;
 
     try {
       const branchIdsForReport = [districtId, ...storeIds].filter(Boolean);
 
-      console.log("📊 REPORT IDS:", branchIdsForReport);
+      profitLoss = await Ledger.findAll({
+        attributes: [
+          [sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"), "month"],
+          [
+            sequelize.fn(
+              "COALESCE",
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`
+                  CASE 
+                    WHEN type = 'SALE' THEN total
+                    WHEN type = 'PURCHASE' THEN -total
+                    ELSE 0
+                  END
+                `)
+              ),
+              0
+            ),
+            "amount",
+          ],
+        ],
+        where: {
+          ...(branchIdsForReport.length
+            ? {
+                branch_id: {
+                  [Op.in]: branchIdsForReport,
+                },
+              }
+            : {}),
+        },
+        group: [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"),
+          sequelize.fn("DATE_PART", "month", sequelize.col("created_at")),
+        ],
+        order: [[sequelize.fn("DATE_PART", "month", sequelize.col("created_at")), "ASC"]],
+        raw: true,
+      });
 
-      const smColumns = await sequelize.query(
-        `
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-        AND table_name = 'stock_movements'
-        `,
-        { type: QueryTypes.SELECT }
-      );
-
-      const smColumnSet = new Set(smColumns.map((c) => c.column_name));
-      const smHas = (name) => smColumnSet.has(name);
-      const q = (name) => `"${name}"`;
-
-      const smOrgCol = smHas("organization_id")
-        ? "organization_id"
-        : smHas("branch_id")
-        ? "branch_id"
-        : null;
-
-      const smTypeCol = smHas("movement_type")
-        ? "movement_type"
-        : smHas("type")
-        ? "type"
-        : null;
-
-      const smDateCol = smHas("created_at")
-        ? "created_at"
-        : smHas("createdAt")
-        ? "createdAt"
-        : null;
-
-      const smQtyCol = smHas("quantity")
-        ? "quantity"
-        : smHas("qty")
-        ? "qty"
-        : smHas("out_qty")
-        ? "out_qty"
-        : smHas("sold_qty")
-        ? "sold_qty"
-        : null;
-
-      const smAmountCol = smHas("profit_amount")
-        ? "profit_amount"
-        : smHas("profit")
-        ? "profit"
-        : smHas("profit_loss")
-        ? "profit_loss"
-        : null;
-
-      const smSaleAmountCol = smHas("total_amount")
-        ? "total_amount"
-        : smHas("sale_amount")
-        ? "sale_amount"
-        : smHas("amount")
-        ? "amount"
-        : smHas("total")
-        ? "total"
-        : null;
-
-      const smHasStockId = smHas("stock_id");
-      const smHasItemId = smHas("item_id");
-
-      let movementProfitRows = [];
-
-      if (smOrgCol && smTypeCol && smDateCol) {
-        const smDateExpr = `sm.${q(smDateCol)}`;
-        const smOrgExpr = `sm.${q(smOrgCol)}`;
-        const smTypeExpr = `sm.${q(smTypeCol)}`;
-        const smQtyExpr = smQtyCol ? `COALESCE(sm.${q(smQtyCol)}, 0)` : `0`;
-        const smSaleAmountExpr = smSaleAmountCol
-          ? `COALESCE(sm.${q(smSaleAmountCol)}, 0)`
-          : `0`;
-
-        const stockJoin = smHasStockId
-          ? `LEFT JOIN stocks s ON s.id = sm.${q("stock_id")}`
-          : `LEFT JOIN stocks s ON 1 = 0`;
-
-        const itemJoin = smHasItemId
-          ? `LEFT JOIN items i ON i.id = sm.${q("item_id")}`
-          : smHasStockId
-          ? `LEFT JOIN items i ON i.id = s.item_id`
-          : `LEFT JOIN items i ON 1 = 0`;
-
-        const amountExpr = smAmountCol
-          ? `COALESCE(sm.${q(smAmountCol)}, 0)`
-          : `${smSaleAmountExpr} - (${smQtyExpr} * COALESCE(i.purchase_rate, s.rate, 0))`;
-
-        movementProfitRows = await sequelize.query(
-          `
-          SELECT
-            TO_CHAR(${smDateExpr}, 'Mon') AS month,
-            DATE_PART('month', ${smDateExpr}) AS month_no,
-
-            COUNT(*) FILTER (
-              WHERE LOWER(${smTypeExpr}::text) IN ('sale', 'sales')
-            ) AS sales_count,
-
-            COALESCE(SUM(
-              CASE
-                WHEN LOWER(${smTypeExpr}::text) IN ('sale', 'sales')
-                THEN ${amountExpr}
-                ELSE 0
-              END
-            ), 0) AS amount
-
-          FROM stock_movements sm
-          ${stockJoin}
-          ${itemJoin}
-
-          WHERE ${smOrgExpr} IN (:branchIds)
-
-          GROUP BY month, month_no
-          ORDER BY month_no ASC
-          `,
-          {
-            replacements: { branchIds: branchIdsForReport },
-            type: QueryTypes.SELECT,
-          }
-        );
-      } else {
-        console.log("⚠️ STOCK_MOVEMENTS REQUIRED COLUMNS MISSING:", {
-          smOrgCol,
-          smTypeCol,
-          smDateCol,
-        });
-      }
-
-      const movementHasData =
-        movementProfitRows.length > 0 &&
-        movementProfitRows.some(
-          (x) =>
-            Number(x.sales_count || 0) > 0 || Number(x.amount || 0) !== 0
-        );
-
-      if (movementHasData) {
-        console.log("✅ SALES / PROFIT LOSS SOURCE: STOCK_MOVEMENTS");
-        console.log("📊 STOCK_MOVEMENTS ROWS:", movementProfitRows);
-
-        salesCount = movementProfitRows.reduce(
-          (sum, x) => sum + Number(x.sales_count || 0),
-          0
-        );
-
-        profitLoss = movementProfitRows.map((x) => ({
-          month: x.month,
-          amount: Number(x.amount || 0),
-        }));
-      } else {
-        console.log("⚠️ STOCK_MOVEMENTS PROFIT DATA NOT FOUND");
-        console.log("➡️ FALLBACK SALES / PROFIT LOSS SOURCE: LEDGER");
-
-        const ledgerProfitRows = await sequelize.query(
-          `
-          SELECT
-            TO_CHAR(l.created_at, 'Mon') AS month,
-            DATE_PART('month', l.created_at) AS month_no,
-
-            COUNT(*) FILTER (
-              WHERE l.type::text = 'SALE'
-            ) AS sales_count,
-
-            COALESCE(SUM(
-              CASE
-                WHEN l.type::text = 'SALE'
-                THEN l.total - (l.quantity * COALESCE(i.purchase_rate, s.rate, l.rate, 0))
-                ELSE 0
-              END
-            ), 0) AS amount
-
-          FROM ledger_entries l
-          LEFT JOIN stocks s ON s.id = l.stock_id
-          LEFT JOIN items i ON i.id = s.item_id
-
-          WHERE l.branch_id IN (:branchIds)
-          AND l.type::text = 'SALE'
-
-          GROUP BY month, month_no
-          ORDER BY month_no ASC
-          `,
-          {
-            replacements: { branchIds: branchIdsForReport },
-            type: QueryTypes.SELECT,
-          }
-        );
-
-        console.log("✅ SALES / PROFIT LOSS SOURCE: LEDGER");
-        console.log("📊 LEDGER ROWS:", ledgerProfitRows);
-
-        salesCount = ledgerProfitRows.reduce(
-          (sum, x) => sum + Number(x.sales_count || 0),
-          0
-        );
-
-        profitLoss = ledgerProfitRows.map((x) => ({
-          month: x.month,
-          amount: Number(x.amount || 0),
-        }));
-      }
-
-      console.log("🧾 FINAL SALES COUNT:", salesCount);
-      console.log("📈 FINAL PROFIT LOSS:", profitLoss);
+      profitLoss = profitLoss.map((x) => ({
+        month: x.month,
+        amount: Number(x.amount || 0),
+      }));
     } catch (err) {
       console.error("profitLoss error:", err.message);
       profitLoss = [];
-      salesCount = 0;
     }
 
+    // =========================================================
+    // PENDING TASKS
+    // =========================================================
     let pendingTasks = [];
 
     try {
-      if (typeof Task !== "undefined") {
-        pendingTasks = await Task.findAll({
-          where: {
-            status: "pending",
-            [Op.or]: [
-              { assigned_to: user.id },
-              ...(districtCode && hasAttr(Task, "district_code")
-                ? [{ district_code: districtCode }]
-                : []),
-              ...(user.store_code && hasAttr(Task, "store_code")
-                ? [{ store_code: user.store_code }]
-                : []),
-            ],
-          },
-          order: [["created_at", "DESC"]],
-          limit: 5,
-          raw: true,
-        });
-      } else {
-        console.log("⚠️ Task model not defined, pendingTasks skipped");
-        pendingTasks = [];
-      }
+      pendingTasks = await Task.findAll({
+        where: {
+          status: "pending",
+          [Op.or]: [
+            { assigned_to: user.id },
+            ...(districtCode ? [{ district_code: districtCode }] : []),
+            ...(user.store_code ? [{ store_code: user.store_code }] : []),
+          ],
+        },
+        order: [["created_at", "DESC"]],
+        limit: 5,
+        raw: true,
+      });
 
       const now = new Date();
 
       pendingTasks = pendingTasks.map((task) => {
-        const createdAt = new Date(
-          task.created_at || task.createdAt || new Date()
-        );
+        const createdAt = new Date(task.created_at || task.createdAt || new Date());
 
         const diffMs = now - createdAt;
         const diffMinutes = Math.floor(diffMs / (1000 * 60));
@@ -2038,9 +1814,13 @@ export const getDistrictDashboard = async (req, res) => {
 
         let timeAgo = "Just now";
 
-        if (diffDays > 0) timeAgo = `${diffDays} day(s) ago`;
-        else if (diffHrs > 0) timeAgo = `${diffHrs} hour(s) ago`;
-        else if (diffMinutes > 0) timeAgo = `${diffMinutes} minute(s) ago`;
+        if (diffDays > 0) {
+          timeAgo = `${diffDays} day(s) ago`;
+        } else if (diffHrs > 0) {
+          timeAgo = `${diffHrs} hour(s) ago`;
+        } else if (diffMinutes > 0) {
+          timeAgo = `${diffMinutes} minute(s) ago`;
+        }
 
         const meta = task.meta && typeof task.meta === "object" ? task.meta : {};
 
@@ -2059,27 +1839,35 @@ export const getDistrictDashboard = async (req, res) => {
         return {
           ...task,
           priority: task.priority || meta.priority || "medium",
+
           module_name:
             task.module_name ||
             task.task_type ||
             task.type ||
             meta.module_name ||
             "Task",
+
           title: task.title || meta.title || task.name || "Pending Task",
+
           description:
             task.description ||
             meta.description ||
             task.remark ||
             "Task requires your attention",
+
           time_ago: timeAgo,
           pending_since: timeAgo,
+
           created_time: createdAt.toLocaleString("en-IN", {
             timeZone: "Asia/Kolkata",
           }),
+
           items_pending:
             task.items_pending || meta.items_pending || meta.pending_items || null,
+
           customer_name:
             task.customer_name || meta.customer_name || meta.customer || null,
+
           amount: amountNumber,
           amount_text:
             amountNumber !== null && !Number.isNaN(amountNumber)
@@ -2092,24 +1880,21 @@ export const getDistrictDashboard = async (req, res) => {
       pendingTasks = [];
     }
 
+    // =========================================================
+    // RECENT ACTIVITIES - REAL DB
+    // =========================================================
     let recentActivities = [];
 
     try {
-      const activityOr = [];
-
-      if (districtCode && hasAttr(ActivityLog, "district_code")) {
-        activityOr.push({ district_code: districtCode });
-      }
-
-      if (user.store_code && hasAttr(ActivityLog, "store_code")) {
-        activityOr.push({ store_code: user.store_code });
-      }
-
-      if (hasAttr(ActivityLog, "organization_id")) {
-        activityOr.push({ organization_id: districtId });
-      }
-
-      const activityWhere = activityOr.length ? { [Op.or]: activityOr } : {};
+      const activityWhere = {
+        [Op.or]: [
+          ...(districtCode ? [{ district_code: districtCode }] : []),
+          ...(user.store_code ? [{ store_code: user.store_code }] : []),
+          ...(hasAttr(ActivityLog, "organization_id")
+            ? [{ organization_id: districtId }]
+            : []),
+        ],
+      };
 
       recentActivities = await ActivityLog.findAll({
         where: activityWhere,
@@ -2132,9 +1917,13 @@ export const getDistrictDashboard = async (req, res) => {
 
         let timeAgo = "Just now";
 
-        if (diffDays > 0) timeAgo = `${diffDays} day(s) ago`;
-        else if (diffHrs > 0) timeAgo = `${diffHrs} hour(s) ago`;
-        else if (diffMinutes > 0) timeAgo = `${diffMinutes} minute(s) ago`;
+        if (diffDays > 0) {
+          timeAgo = `${diffDays} day(s) ago`;
+        } else if (diffHrs > 0) {
+          timeAgo = `${diffHrs} hour(s) ago`;
+        } else if (diffMinutes > 0) {
+          timeAgo = `${diffMinutes} minute(s) ago`;
+        }
 
         return {
           id: activity.id,
@@ -2165,25 +1954,31 @@ export const getDistrictDashboard = async (req, res) => {
           retail_stores_stocks: retailStoresStocks,
           dead_stock_items: deadStockItems,
           transit_goods: transitGoods,
-          sales_count: salesCount,
+
           gold_price_value: goldPriceValue,
           silver_price_value: silverPriceValue,
+
           gold_price: liveRate.gold_price,
           silver_price: liveRate.silver_price,
+
           gold_rate_24k: liveRate.gold_rate_24k,
           gold_rate_22k: liveRate.gold_rate_22k,
           gold_rate_18k: liveRate.gold_rate_18k,
           silver_rate: liveRate.silver_rate,
+
           gold_change_percent: liveRate.gold_change_percent,
           silver_change_percent: liveRate.silver_change_percent,
+
           gold_trend: liveRate.gold_trend,
           silver_trend: liveRate.silver_trend,
+
           rate_currency: liveRate.currency,
           rate_updated_at: liveRate.updated_at,
         },
 
         store_performance: storePerformance,
         profit_loss: profitLoss,
+
         pending_tasks: pendingTasks,
         recent_activities: recentActivities,
 
@@ -2248,7 +2043,7 @@ export const getDistrictReportsAnalytics = async (req, res) => {
       raw: true,
     });
 
-    const storeIds = districtStores.map((s) => Number(s.id)).filter(Boolean);
+    const storeIds = districtStores.map((s) => s.id).filter(Boolean);
 
     if (!storeIds.length) {
       return res.status(200).json({
@@ -2272,269 +2067,38 @@ export const getDistrictReportsAnalytics = async (req, res) => {
       });
     }
 
-    const chartBuckets = buildBuckets(filter, start);
+    const invoiceDateField = hasAttr(Invoice, "created_at")
+      ? "created_at"
+      : hasAttr(Invoice, "createdAt")
+      ? "createdAt"
+      : "createdAt";
 
-    let totalSales = 0;
-    let totalCashReceived = 0;
-    let totalAccountTransfer = 0;
+    const invoiceStoreField = hasAttr(Invoice, "organization_id")
+      ? "organization_id"
+      : hasAttr(Invoice, "branch_id")
+      ? "branch_id"
+      : hasAttr(Invoice, "store_id")
+      ? "store_id"
+      : null;
 
-    let categoryWiseSales = [];
-    let metalTypeDistribution = [];
-    let topPerformingProducts = [];
+    const invoiceTotalField = hasAttr(Invoice, "total_amount")
+      ? "total_amount"
+      : hasAttr(Invoice, "grand_total")
+      ? "grand_total"
+      : hasAttr(Invoice, "net_amount")
+      ? "net_amount"
+      : null;
 
-    let salesSource = "NONE";
+    const invoiceStatusField = hasAttr(Invoice, "status") ? "status" : null;
 
-    // =========================================================
-    // PRIMARY SOURCE: STOCK_MOVEMENTS
-    // =========================================================
-    try {
-      const smColumns = await getTableColumns("stock_movements");
-      const itemColumns = await getTableColumns("items");
-
-      const smHas = (name) => smColumns.includes(name);
-      const itemHas = (name) => itemColumns.includes(name);
-      const q = (name) => `"${name}"`;
-
-      const smOrgCol = smHas("organization_id")
-        ? "organization_id"
-        : smHas("branch_id")
-        ? "branch_id"
-        : smHas("store_id")
-        ? "store_id"
-        : null;
-
-      const smTypeCol = smHas("movement_type")
-        ? "movement_type"
-        : smHas("type")
-        ? "type"
-        : null;
-
-      const smDateCol = smHas("created_at")
-        ? "created_at"
-        : smHas("createdAt")
-        ? "createdAt"
-        : null;
-
-      const smAmountCol = smHas("total_amount")
-        ? "total_amount"
-        : smHas("sale_amount")
-        ? "sale_amount"
-        : smHas("amount")
-        ? "amount"
-        : smHas("total")
-        ? "total"
-        : null;
-
-      const smQtyCol = smHas("qty")
-        ? "qty"
-        : smHas("quantity")
-        ? "quantity"
-        : smHas("out_qty")
-        ? "out_qty"
-        : smHas("sold_qty")
-        ? "sold_qty"
-        : null;
-
-      const smHasItemId = smHas("item_id");
-      const smHasStockId = smHas("stock_id");
-
-      if (smOrgCol && smTypeCol && smDateCol && smAmountCol) {
-        const smOrgExpr = `sm.${q(smOrgCol)}`;
-        const smTypeExpr = `sm.${q(smTypeCol)}`;
-        const smDateExpr = `sm.${q(smDateCol)}`;
-        const smAmountExpr = `COALESCE(sm.${q(smAmountCol)}, 0)`;
-        const smQtyExpr = smQtyCol ? `COALESCE(sm.${q(smQtyCol)}, 0)` : `1`;
-
-        const saleWhere = `
-          ${smOrgExpr} IN (:storeIds)
-          AND (
-            LOWER(${smTypeExpr}::text) IN ('sale', 'sales', 'stock_sale', 'invoice_sale')
-            OR LOWER(${smTypeExpr}::text) LIKE '%sale%'
-          )
-          AND LOWER(${smTypeExpr}::text) NOT LIKE '%return%'
-          AND (
-            (:filter = 'daily' AND DATE(${smDateExpr}) = CURRENT_DATE)
-            OR (:filter <> 'daily' AND ${smDateExpr} BETWEEN :start AND :end)
-          )
-        `;
-
-        const stockJoin = smHasStockId
-          ? `LEFT JOIN stocks s ON s.id = sm.${q("stock_id")}`
-          : `LEFT JOIN stocks s ON 1 = 0`;
-
-        const itemJoin = smHasItemId
-          ? `LEFT JOIN items i ON i.id = sm.${q("item_id")}`
-          : smHasStockId
-          ? `LEFT JOIN items i ON i.id = s.item_id`
-          : `LEFT JOIN items i ON 1 = 0`;
-
-        const itemCategoryExpr = itemHas("category")
-          ? `COALESCE(i.category, 'Others')`
-          : `'Others'`;
-
-        const itemMetalText = itemHas("metal_type")
-          ? `COALESCE(i.metal_type::text, '')`
-          : `''`;
-
-        const itemPurityText = itemHas("purity")
-          ? `COALESCE(i.purity::text, '')`
-          : `''`;
-
-        const metalExpr =
-          itemHas("metal_type") && itemHas("purity")
-            ? `
-              CASE
-                WHEN ${itemMetalText} <> '' AND ${itemPurityText} <> ''
-                  THEN ${itemMetalText} || ' ' || ${itemPurityText}
-                WHEN ${itemMetalText} <> ''
-                  THEN ${itemMetalText}
-                ELSE 'Unknown'
-              END
-            `
-            : itemHas("metal_type")
-            ? `
-              CASE
-                WHEN ${itemMetalText} <> ''
-                  THEN ${itemMetalText}
-                ELSE 'Unknown'
-              END
-            `
-            : `'Unknown'`;
-
-        const productExpr = itemHas("item_name")
-          ? `COALESCE(i.item_name, 'Item')`
-          : `'Item'`;
-
-        const smSalesRows = await sequelize.query(
-          `
-          SELECT
-            ${smDateExpr} AS sale_date,
-            ${smAmountExpr} AS total_amount
-          FROM stock_movements sm
-          ${stockJoin}
-          ${itemJoin}
-          WHERE ${saleWhere}
-          `,
-          {
-            replacements: { storeIds, start, end, filter },
-            type: QueryTypes.SELECT,
-          }
-        );
-
-        totalSales = smSalesRows.reduce(
-          (sum, row) => sum + safeNum(row.total_amount),
-          0
-        );
-
-        for (const row of smSalesRows) {
-          fillChartBucket(
-            chartBuckets,
-            row.sale_date,
-            filter,
-            "total_sales",
-            row.total_amount
-          );
-        }
-
-        categoryWiseSales = await sequelize.query(
-          `
-          SELECT
-            ${itemCategoryExpr} AS category,
-            COALESCE(SUM(${smAmountExpr}), 0) AS revenue,
-            COALESCE(SUM(${smQtyExpr}), 0) AS units_sold
-          FROM stock_movements sm
-          ${stockJoin}
-          ${itemJoin}
-          WHERE ${saleWhere}
-          GROUP BY ${itemCategoryExpr}
-          ORDER BY revenue DESC
-          `,
-          {
-            replacements: { storeIds, start, end, filter },
-            type: QueryTypes.SELECT,
-          }
-        );
-
-        metalTypeDistribution = await sequelize.query(
-          `
-          SELECT
-            ${metalExpr} AS metal_label,
-            COALESCE(SUM(${smAmountExpr}), 0) AS revenue,
-            COALESCE(SUM(${smQtyExpr}), 0) AS units_sold
-          FROM stock_movements sm
-          ${stockJoin}
-          ${itemJoin}
-          WHERE ${saleWhere}
-          GROUP BY ${metalExpr}
-          ORDER BY revenue DESC
-          `,
-          {
-            replacements: { storeIds, start, end, filter },
-            type: QueryTypes.SELECT,
-          }
-        );
-
-        topPerformingProducts = await sequelize.query(
-          `
-          SELECT
-            ${productExpr} AS product_name,
-            ${itemCategoryExpr} AS category,
-            COALESCE(SUM(${smQtyExpr}), 0) AS units_sold,
-            COALESCE(SUM(${smAmountExpr}), 0) AS total_revenue
-          FROM stock_movements sm
-          ${stockJoin}
-          ${itemJoin}
-          WHERE ${saleWhere}
-          GROUP BY ${productExpr}, ${itemCategoryExpr}
-          ORDER BY total_revenue DESC
-          LIMIT 5
-          `,
-          {
-            replacements: { storeIds, start, end, filter },
-            type: QueryTypes.SELECT,
-          }
-        );
-
-        const maxRevenue = topPerformingProducts.length
-          ? Math.max(
-              ...topPerformingProducts.map((p) => safeNum(p.total_revenue))
-            )
-          : 0;
-
-        topPerformingProducts = topPerformingProducts.map((p, index) => ({
-          rank: index + 1,
-          product_name: p.product_name || "Item",
-          category: p.category || "Others",
-          units_sold: safeNum(p.units_sold),
-          total_revenue: safeNum(p.total_revenue),
-          performance:
-            maxRevenue > 0
-              ? Math.round((safeNum(p.total_revenue) / maxRevenue) * 100)
-              : 0,
-        }));
-
-        if (totalSales > 0) {
-          salesSource = "STOCK_MOVEMENTS";
-        }
-
-        console.log("✅ Reports sales source:", salesSource);
-        console.log("✅ Stock movement sales rows:", smSalesRows.length);
-        console.log("✅ Stock movement totalSales:", totalSales);
-      } else {
-        console.log("⚠️ stock_movements skipped:", {
-          smOrgCol,
-          smTypeCol,
-          smDateCol,
-          smAmountCol,
-        });
-      }
-    } catch (smErr) {
-      console.error("stock_movements reports error:", smErr.message);
+    if (!invoiceStoreField || !invoiceTotalField) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Invoice model me organization/store field ya total amount field nahi mila",
+      });
     }
 
-    // =========================================================
-    // TRANSACTIONS: CASH / ACCOUNT
-    // =========================================================
     const transactionDateField = hasAttr(Transaction, "created_at")
       ? "created_at"
       : hasAttr(Transaction, "createdAt")
@@ -2561,8 +2125,39 @@ export const getDistrictReportsAnalytics = async (req, res) => {
       ? "mode"
       : null;
 
-    let transactions = [];
+    const invoiceWhere = {
+      [invoiceStoreField]: { [Op.in]: storeIds },
+      [invoiceDateField]: { [Op.between]: [start, end] },
+    };
 
+    if (invoiceStatusField) {
+      const statusEnumValues = Invoice.rawAttributes?.[invoiceStatusField]?.values || [];
+      const excludedStatuses = statusEnumValues.filter((status) =>
+        ["CANCELLED", "cancelled", "draft", "DRAFT"].includes(status)
+      );
+
+      if (excludedStatuses.length > 0) {
+        invoiceWhere[invoiceStatusField] = {
+          [Op.notIn]: excludedStatuses,
+        };
+      }
+    }
+
+    const invoices = await Invoice.findAll({
+      where: invoiceWhere,
+      attributes: [
+        "id",
+        [col(invoiceDateField), "invoice_date"],
+        [col(invoiceStoreField), "store_id"],
+        [col(invoiceTotalField), "total_amount"],
+        ...(invoiceStatusField ? [[col(invoiceStatusField), "status"]] : []),
+      ],
+      raw: true,
+    });
+
+    const invoiceIds = invoices.map((inv) => inv.id).filter(Boolean);
+
+    let transactions = [];
     if (transactionStoreField && transactionAmountField && paymentMethodField) {
       transactions = await Transaction.findAll({
         where: {
@@ -2580,306 +2175,225 @@ export const getDistrictReportsAnalytics = async (req, res) => {
       });
     }
 
+    let totalSales = 0;
+    for (const inv of invoices) {
+      totalSales += safeNum(inv.total_amount);
+    }
+
+    let totalCashReceived = 0;
+    let totalAccountTransfer = 0;
+
     for (const tx of transactions) {
       const mode = String(tx.payment_method || "").toLowerCase();
       const amt = safeNum(tx.amount);
 
       if (["cash"].includes(mode)) {
         totalCashReceived += amt;
-        fillChartBucket(
-          chartBuckets,
-          tx.transaction_date,
-          filter,
-          "cash_received",
-          amt
-        );
       } else if (
-        ["bank", "account", "account_transfer", "upi", "online", "card"].includes(
-          mode
-        )
+        ["bank", "account", "account_transfer", "upi", "online", "card"].includes(mode)
       ) {
         totalAccountTransfer += amt;
+      }
+    }
+
+    const chartBuckets = buildBuckets(filter, start);
+
+    for (const inv of invoices) {
+      fillChartBucket(chartBuckets, inv.invoice_date, filter, "total_sales", inv.total_amount);
+    }
+
+    for (const tx of transactions) {
+      const mode = String(tx.payment_method || "").toLowerCase();
+
+      if (["cash"].includes(mode)) {
+        fillChartBucket(chartBuckets, tx.transaction_date, filter, "cash_received", tx.amount);
+      } else if (
+        ["bank", "account", "account_transfer", "upi", "online", "card"].includes(mode)
+      ) {
         fillChartBucket(
           chartBuckets,
           tx.transaction_date,
           filter,
           "account_transfer",
-          amt
+          tx.amount
         );
       }
     }
 
-    // =========================================================
-    // FALLBACK SOURCE: INVOICES
-    // Sirf jab stock_movements me sale data na mile
-    // =========================================================
-    if (salesSource !== "STOCK_MOVEMENTS") {
-      const invoiceDateField = hasAttr(Invoice, "created_at")
-        ? "created_at"
-        : hasAttr(Invoice, "createdAt")
-        ? "createdAt"
-        : "createdAt";
+    let categoryWiseSales = [];
+    let metalTypeDistribution = [];
+    let topPerformingProducts = [];
 
-      const invoiceStoreField = hasAttr(Invoice, "organization_id")
-        ? "organization_id"
-        : hasAttr(Invoice, "branch_id")
-        ? "branch_id"
-        : hasAttr(Invoice, "store_id")
-        ? "store_id"
-        : null;
+    if (invoiceIds.length > 0) {
+      const invoiceItemColumns = await getTableColumns("invoice_items");
+      const itemColumns = await getTableColumns("items");
 
-      const invoiceTotalField = hasAttr(Invoice, "total_amount")
-        ? "total_amount"
-        : hasAttr(Invoice, "grand_total")
-        ? "grand_total"
-        : hasAttr(Invoice, "net_amount")
-        ? "net_amount"
-        : null;
+      const hasItemId = invoiceItemColumns.includes("item_id");
+      const hasCategoryInInvoiceItems = invoiceItemColumns.includes("category");
+      const hasMetalTypeInInvoiceItems = invoiceItemColumns.includes("metal_type");
+      const hasPurityInInvoiceItems = invoiceItemColumns.includes("purity");
+      const hasProductNameInInvoiceItems = invoiceItemColumns.includes("product_name");
+      const hasDescriptionInInvoiceItems = invoiceItemColumns.includes("description");
+      const hasProductCodeInInvoiceItems = invoiceItemColumns.includes("product_code");
 
-      const invoiceStatusField = hasAttr(Invoice, "status") ? "status" : null;
+      const hasItemCategory = itemColumns.includes("category");
+      const hasItemMetalType = itemColumns.includes("metal_type");
+      const hasItemPurity = itemColumns.includes("purity");
+      const hasItemName = itemColumns.includes("item_name");
 
-      if (!invoiceStoreField || !invoiceTotalField) {
-        console.log("⚠️ Invoice fallback skipped: store/total field missing");
-      } else {
-        const invoiceWhere = {
-          [invoiceStoreField]: { [Op.in]: storeIds },
-          [invoiceDateField]: { [Op.between]: [start, end] },
-        };
+      const joinItems = hasItemId ? `LEFT JOIN items i ON i.id = ii.item_id` : ``;
 
-        if (invoiceStatusField) {
-          const statusEnumValues =
-            Invoice.rawAttributes?.[invoiceStatusField]?.values || [];
+      const categoryExpr =
+        hasItemId && hasItemCategory
+          ? `COALESCE(i.category, 'Others')`
+          : hasCategoryInInvoiceItems
+          ? `COALESCE(ii.category, 'Others')`
+          : `'Others'`;
 
-          const excludedStatuses = statusEnumValues.filter((status) =>
-            ["CANCELLED", "cancelled", "draft", "DRAFT"].includes(status)
-          );
+      // ENUM SAFE EXPRESSIONS
+      const itemMetalText = hasItemMetalType ? `COALESCE(i.metal_type::text, '')` : `''`;
+      const itemPurityText = hasItemPurity ? `COALESCE(i.purity::text, '')` : `''`;
+      const iiMetalText = hasMetalTypeInInvoiceItems ? `COALESCE(ii.metal_type::text, '')` : `''`;
+      const iiPurityText = hasPurityInInvoiceItems ? `COALESCE(ii.purity::text, '')` : `''`;
 
-          if (excludedStatuses.length > 0) {
-            invoiceWhere[invoiceStatusField] = {
-              [Op.notIn]: excludedStatuses,
-            };
-          }
+      const metalExpr =
+        hasItemId && hasItemMetalType && hasItemPurity
+          ? `
+            CASE
+              WHEN ${itemMetalText} <> '' AND ${itemPurityText} <> ''
+                THEN ${itemMetalText} || ' ' || ${itemPurityText}
+              WHEN ${itemMetalText} <> ''
+                THEN ${itemMetalText}
+              ELSE 'Unknown'
+            END
+          `
+          : hasItemId && hasItemMetalType
+          ? `
+            CASE
+              WHEN ${itemMetalText} <> ''
+                THEN ${itemMetalText}
+              ELSE 'Unknown'
+            END
+          `
+          : hasMetalTypeInInvoiceItems && hasPurityInInvoiceItems
+          ? `
+            CASE
+              WHEN ${iiMetalText} <> '' AND ${iiPurityText} <> ''
+                THEN ${iiMetalText} || ' ' || ${iiPurityText}
+              WHEN ${iiMetalText} <> ''
+                THEN ${iiMetalText}
+              ELSE 'Unknown'
+            END
+          `
+          : hasMetalTypeInInvoiceItems
+          ? `
+            CASE
+              WHEN ${iiMetalText} <> ''
+                THEN ${iiMetalText}
+              ELSE 'Unknown'
+            END
+          `
+          : hasPurityInInvoiceItems
+          ? `
+            CASE
+              WHEN ${iiPurityText} <> ''
+                THEN ${iiPurityText}
+              ELSE 'Unknown'
+            END
+          `
+          : `'Unknown'`;
+
+      const productExpr =
+        hasItemId && hasItemName
+          ? `
+            COALESCE(
+              i.item_name,
+              ${hasProductNameInInvoiceItems ? "ii.product_name," : ""}
+              ${hasDescriptionInInvoiceItems ? "ii.description," : ""}
+              ${hasProductCodeInInvoiceItems ? "ii.product_code," : ""}
+              'Item'
+            )
+          `
+          : `
+            COALESCE(
+              ${hasProductNameInInvoiceItems ? "ii.product_name," : ""}
+              ${hasDescriptionInInvoiceItems ? "ii.description," : ""}
+              ${hasProductCodeInInvoiceItems ? "ii.product_code," : ""}
+              'Item'
+            )
+          `;
+
+      categoryWiseSales = await sequelize.query(
+        `
+        SELECT
+          ${categoryExpr} AS category,
+          COALESCE(SUM(ii.total_amount), 0) AS revenue,
+          COUNT(*) AS units_sold
+        FROM invoice_items ii
+        ${joinItems}
+        WHERE ii.invoice_id IN (:invoiceIds)
+        GROUP BY ${categoryExpr}
+        ORDER BY revenue DESC
+        `,
+        {
+          replacements: { invoiceIds },
+          type: QueryTypes.SELECT,
         }
+      );
 
-        const invoices = await Invoice.findAll({
-          where: invoiceWhere,
-          attributes: [
-            "id",
-            [col(invoiceDateField), "invoice_date"],
-            [col(invoiceStoreField), "store_id"],
-            [col(invoiceTotalField), "total_amount"],
-            ...(invoiceStatusField ? [[col(invoiceStatusField), "status"]] : []),
-          ],
-          raw: true,
-        });
-
-        const invoiceIds = invoices.map((inv) => inv.id).filter(Boolean);
-
-        let invoiceTotalSales = 0;
-
-        for (const inv of invoices) {
-          invoiceTotalSales += safeNum(inv.total_amount);
-          fillChartBucket(
-            chartBuckets,
-            inv.invoice_date,
-            filter,
-            "total_sales",
-            inv.total_amount
-          );
+      metalTypeDistribution = await sequelize.query(
+        `
+        SELECT
+          ${metalExpr} AS metal_label,
+          COALESCE(SUM(ii.total_amount), 0) AS revenue,
+          COUNT(*) AS units_sold
+        FROM invoice_items ii
+        ${joinItems}
+        WHERE ii.invoice_id IN (:invoiceIds)
+        GROUP BY ${metalExpr}
+        ORDER BY revenue DESC
+        `,
+        {
+          replacements: { invoiceIds },
+          type: QueryTypes.SELECT,
         }
+      );
 
-        if (invoiceIds.length > 0 && invoiceTotalSales > 0) {
-          totalSales = invoiceTotalSales;
-          salesSource = "INVOICES";
-
-          const invoiceItemColumns = await getTableColumns("invoice_items");
-          const itemColumns = await getTableColumns("items");
-
-          const hasItemId = invoiceItemColumns.includes("item_id");
-          const hasCategoryInInvoiceItems = invoiceItemColumns.includes("category");
-          const hasMetalTypeInInvoiceItems =
-            invoiceItemColumns.includes("metal_type");
-          const hasPurityInInvoiceItems = invoiceItemColumns.includes("purity");
-          const hasProductNameInInvoiceItems =
-            invoiceItemColumns.includes("product_name");
-          const hasDescriptionInInvoiceItems =
-            invoiceItemColumns.includes("description");
-          const hasProductCodeInInvoiceItems =
-            invoiceItemColumns.includes("product_code");
-
-          const hasItemCategory = itemColumns.includes("category");
-          const hasItemMetalType = itemColumns.includes("metal_type");
-          const hasItemPurity = itemColumns.includes("purity");
-          const hasItemName = itemColumns.includes("item_name");
-
-          const joinItems = hasItemId
-            ? `LEFT JOIN items i ON i.id = ii.item_id`
-            : ``;
-
-          const categoryExpr =
-            hasItemId && hasItemCategory
-              ? `COALESCE(i.category, 'Others')`
-              : hasCategoryInInvoiceItems
-              ? `COALESCE(ii.category, 'Others')`
-              : `'Others'`;
-
-          const itemMetalText = hasItemMetalType
-            ? `COALESCE(i.metal_type::text, '')`
-            : `''`;
-          const itemPurityText = hasItemPurity
-            ? `COALESCE(i.purity::text, '')`
-            : `''`;
-          const iiMetalText = hasMetalTypeInInvoiceItems
-            ? `COALESCE(ii.metal_type::text, '')`
-            : `''`;
-          const iiPurityText = hasPurityInInvoiceItems
-            ? `COALESCE(ii.purity::text, '')`
-            : `''`;
-
-          const metalExpr =
-            hasItemId && hasItemMetalType && hasItemPurity
-              ? `
-                CASE
-                  WHEN ${itemMetalText} <> '' AND ${itemPurityText} <> ''
-                    THEN ${itemMetalText} || ' ' || ${itemPurityText}
-                  WHEN ${itemMetalText} <> ''
-                    THEN ${itemMetalText}
-                  ELSE 'Unknown'
-                END
-              `
-              : hasItemId && hasItemMetalType
-              ? `
-                CASE
-                  WHEN ${itemMetalText} <> ''
-                    THEN ${itemMetalText}
-                  ELSE 'Unknown'
-                END
-              `
-              : hasMetalTypeInInvoiceItems && hasPurityInInvoiceItems
-              ? `
-                CASE
-                  WHEN ${iiMetalText} <> '' AND ${iiPurityText} <> ''
-                    THEN ${iiMetalText} || ' ' || ${iiPurityText}
-                  WHEN ${iiMetalText} <> ''
-                    THEN ${iiMetalText}
-                  ELSE 'Unknown'
-                END
-              `
-              : hasMetalTypeInInvoiceItems
-              ? `
-                CASE
-                  WHEN ${iiMetalText} <> ''
-                    THEN ${iiMetalText}
-                  ELSE 'Unknown'
-                END
-              `
-              : hasPurityInInvoiceItems
-              ? `
-                CASE
-                  WHEN ${iiPurityText} <> ''
-                    THEN ${iiPurityText}
-                  ELSE 'Unknown'
-                END
-              `
-              : `'Unknown'`;
-
-          const productExpr =
-            hasItemId && hasItemName
-              ? `
-                COALESCE(
-                  i.item_name,
-                  ${hasProductNameInInvoiceItems ? "ii.product_name," : ""}
-                  ${hasDescriptionInInvoiceItems ? "ii.description," : ""}
-                  ${hasProductCodeInInvoiceItems ? "ii.product_code," : ""}
-                  'Item'
-                )
-              `
-              : `
-                COALESCE(
-                  ${hasProductNameInInvoiceItems ? "ii.product_name," : ""}
-                  ${hasDescriptionInInvoiceItems ? "ii.description," : ""}
-                  ${hasProductCodeInInvoiceItems ? "ii.product_code," : ""}
-                  'Item'
-                )
-              `;
-
-          categoryWiseSales = await sequelize.query(
-            `
-            SELECT
-              ${categoryExpr} AS category,
-              COALESCE(SUM(ii.total_amount), 0) AS revenue,
-              COUNT(*) AS units_sold
-            FROM invoice_items ii
-            ${joinItems}
-            WHERE ii.invoice_id IN (:invoiceIds)
-            GROUP BY ${categoryExpr}
-            ORDER BY revenue DESC
-            `,
-            {
-              replacements: { invoiceIds },
-              type: QueryTypes.SELECT,
-            }
-          );
-
-          metalTypeDistribution = await sequelize.query(
-            `
-            SELECT
-              ${metalExpr} AS metal_label,
-              COALESCE(SUM(ii.total_amount), 0) AS revenue,
-              COUNT(*) AS units_sold
-            FROM invoice_items ii
-            ${joinItems}
-            WHERE ii.invoice_id IN (:invoiceIds)
-            GROUP BY ${metalExpr}
-            ORDER BY revenue DESC
-            `,
-            {
-              replacements: { invoiceIds },
-              type: QueryTypes.SELECT,
-            }
-          );
-
-          topPerformingProducts = await sequelize.query(
-            `
-            SELECT
-              ${productExpr} AS product_name,
-              ${categoryExpr} AS category,
-              COUNT(*) AS units_sold,
-              COALESCE(SUM(ii.total_amount), 0) AS total_revenue
-            FROM invoice_items ii
-            ${joinItems}
-            WHERE ii.invoice_id IN (:invoiceIds)
-            GROUP BY ${productExpr}, ${categoryExpr}
-            ORDER BY total_revenue DESC
-            LIMIT 5
-            `,
-            {
-              replacements: { invoiceIds },
-              type: QueryTypes.SELECT,
-            }
-          );
-
-          const maxRevenue = topPerformingProducts.length
-            ? Math.max(
-                ...topPerformingProducts.map((p) => safeNum(p.total_revenue))
-              )
-            : 0;
-
-          topPerformingProducts = topPerformingProducts.map((p, index) => ({
-            rank: index + 1,
-            product_name: p.product_name || "Item",
-            category: p.category || "Others",
-            units_sold: safeNum(p.units_sold),
-            total_revenue: safeNum(p.total_revenue),
-            performance:
-              maxRevenue > 0
-                ? Math.round((safeNum(p.total_revenue) / maxRevenue) * 100)
-                : 0,
-          }));
-
-          console.log("✅ Reports sales source: INVOICES");
+      topPerformingProducts = await sequelize.query(
+        `
+        SELECT
+          ${productExpr} AS product_name,
+          ${categoryExpr} AS category,
+          COUNT(*) AS units_sold,
+          COALESCE(SUM(ii.total_amount), 0) AS total_revenue
+        FROM invoice_items ii
+        ${joinItems}
+        WHERE ii.invoice_id IN (:invoiceIds)
+        GROUP BY ${productExpr}, ${categoryExpr}
+        ORDER BY total_revenue DESC
+        LIMIT 5
+        `,
+        {
+          replacements: { invoiceIds },
+          type: QueryTypes.SELECT,
         }
-      }
+      );
+
+      const maxRevenue = topPerformingProducts.length
+        ? Math.max(...topPerformingProducts.map((p) => safeNum(p.total_revenue)))
+        : 0;
+
+      topPerformingProducts = topPerformingProducts.map((p, index) => ({
+        rank: index + 1,
+        product_name: p.product_name || "Item",
+        category: p.category || "Others",
+        units_sold: safeNum(p.units_sold),
+        total_revenue: safeNum(p.total_revenue),
+        performance:
+          maxRevenue > 0
+            ? Math.round((safeNum(p.total_revenue) / maxRevenue) * 100)
+            : 0,
+      }));
     }
 
     return res.status(200).json({
@@ -2893,7 +2407,7 @@ export const getDistrictReportsAnalytics = async (req, res) => {
         summary: {
           total_cash_received: totalCashReceived,
           account_transfer: totalAccountTransfer,
-          total_sales: Number(Number(totalSales || 0).toFixed(2)),
+          total_sales: totalSales,
         },
         cash_vs_account_reconciliation: chartBuckets.map((bucket) => ({
           label: bucket.label,
@@ -2919,377 +2433,6 @@ export const getDistrictReportsAnalytics = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch district reports analytics",
-      error: error.message,
-    });
-  }
-};
-
-
-
-
-
-
-const getColumns = async (tableName) => {
-  const rows = await sequelize.query(
-    `
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = :tableName
-    `,
-    {
-      replacements: { tableName },
-      type: QueryTypes.SELECT,
-    }
-  );
-
-  return rows.map((r) => r.column_name);
-};
-
-const pickCol = (columns, names) => {
-  return names.find((name) => columns.includes(name));
-};
-export const getDistrictLedgerAccounts = async (req, res) => {
-  try {
-    const user = req.user;
-
-    const orgLevel = String(user.organization_level || "").toLowerCase();
-
-    if (orgLevel !== "district") {
-      return res.status(403).json({
-        success: false,
-        message: "Only district user can access district ledger",
-      });
-    }
-
-    const search = String(req.query.search || "").trim();
-
-    // ✅ Login token district id
-    const districtId = Number(user.organization_id);
-
-    if (!districtId) {
-      return res.status(400).json({
-        success: false,
-        message: "District id missing in token",
-      });
-    }
-
-    // =================================================
-    // MAIN FIX:
-    // user.organization_id = districts.id
-    // stores.id alag hota hai
-    // sirf is district ke stores lo
-    // =================================================
-    const stores = await sequelize.query(
-      `
-      SELECT id, store_name, store_code
-      FROM stores
-      WHERE district_id = :districtId
-      ORDER BY id ASC
-      `,
-      {
-        replacements: { districtId },
-        type: QueryTypes.SELECT,
-      }
-    );
-
-    const storeIds = stores.map((s) => Number(s.id)).filter(Boolean);
-
-    if (!storeIds.length) {
-      return res.status(200).json({
-        success: true,
-        message: "District ledger fetched successfully",
-        data: {
-          district_id: districtId,
-          stores_count: 0,
-          cards: {
-            total_sales: 0,
-            loss: 0,
-            goods_receipt: 0,
-          },
-          ledger: [],
-        },
-      });
-    }
-
-    // =================================================
-    // Cards (direct trusted source = invoices)
-    // =================================================
-    const cardsRows = await sequelize.query(
-      `
-      SELECT
-        COALESCE(SUM(i.total_amount),0) AS total_sales,
-        COALESCE(SUM(i.pending_amount),0) AS loss,
-        COUNT(i.id) AS goods_receipt
-      FROM invoices i
-      WHERE i.organization_id IN (:storeIds)
-      `,
-      {
-        replacements: { storeIds },
-        type: QueryTypes.SELECT,
-      }
-    );
-
-    // =================================================
-    // Ledger Customer Wise
-    // Only customers from this district stores
-    // =================================================
-    const ledger = await sequelize.query(
-      `
-      SELECT
-        c.id AS customer_id,
-        c.name AS customer_name,
-        COALESCE(c.phone,'') AS phone,
-        COALESCE(c.address,'') AS address,
-        '' AS email,
-
-        COUNT(i.id) AS total_deals,
-        COALESCE(SUM(i.total_amount),0) AS total_amount,
-        COALESCE(SUM(i.received_amount),0) AS received_amount,
-        COALESCE(SUM(i.pending_amount),0) AS pending_amount
-
-      FROM customers c
-      LEFT JOIN invoices i
-        ON i.customer_id = c.id
-       AND i.organization_id IN (:storeIds)
-
-      WHERE c.organization_id IN (:storeIds)
-
-      AND (
-        :search = ''
-        OR LOWER(COALESCE(c.name,'')) LIKE LOWER(:searchLike)
-        OR LOWER(COALESCE(c.phone,'')) LIKE LOWER(:searchLike)
-        OR LOWER(COALESCE(c.address,'')) LIKE LOWER(:searchLike)
-      )
-
-      GROUP BY c.id, c.name, c.phone, c.address
-      ORDER BY total_amount DESC, c.id DESC
-      `,
-      {
-        replacements: {
-          storeIds,
-          search,
-          searchLike: `%${search}%`,
-        },
-        type: QueryTypes.SELECT,
-      }
-    );
-
-    const cards = cardsRows[0] || {};
-
-    return res.status(200).json({
-      success: true,
-      message: "District ledger fetched successfully",
-      data: {
-        district_id: districtId,
-        stores_count: storeIds.length,
-
-        cards: {
-          total_sales: Number(cards.total_sales || 0),
-          loss: Number(cards.loss || 0),
-          goods_receipt: Number(cards.goods_receipt || 0),
-        },
-
-        ledger: ledger.map((row) => ({
-          customer_id: Number(row.customer_id || 0),
-          customer_name: row.customer_name,
-          phone: row.phone,
-          address: row.address,
-          email: row.email,
-          total_deals: Number(row.total_deals || 0),
-          total_amount: Number(row.total_amount || 0),
-          received_amount: Number(row.received_amount || 0),
-          pending_amount: Number(row.pending_amount || 0),
-        })),
-      },
-    });
-  } catch (error) {
-    console.error("getDistrictLedgerAccounts error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Error fetching district ledger",
-      error: error.message,
-    });
-  }
-};
-export const getDistrictCustomerLedgerDetails = async (req, res) => {
-  try {
-    const user = req.user;
-    const { customer_id } = req.params;
-
-    // ==================================================
-    // Access Check
-    // ==================================================
-    const orgLevel = String(user?.organization_level || "").toLowerCase();
-
-    if (orgLevel !== "district") {
-      return res.status(403).json({
-        success: false,
-        message: "Only district user can access customer ledger details",
-      });
-    }
-
-    if (!customer_id) {
-      return res.status(400).json({
-        success: false,
-        message: "customer_id is required",
-      });
-    }
-
-    // ==================================================
-    // Dynamic District Id from token (NO hardcode)
-    // ==================================================
-    const districtId = Number(
-      user?.district_id ||
-      user?.organization_id ||
-      user?.branch_id ||
-      0
-    );
-
-    if (!districtId) {
-      return res.status(400).json({
-        success: false,
-        message: "District scope missing in token",
-      });
-    }
-
-    // ==================================================
-    // Dynamic district stores
-    // user.organization_id = districts.id
-    // stores.id = actual offices/retails
-    // ==================================================
-    const stores = await sequelize.query(
-      `
-      SELECT
-        id,
-        store_name,
-        store_code
-      FROM stores
-      WHERE district_id = :districtId
-      ORDER BY id ASC
-      `,
-      {
-        replacements: { districtId },
-        type: QueryTypes.SELECT,
-      }
-    );
-
-    const storeIds = stores
-      .map((row) => Number(row.id))
-      .filter(Boolean);
-
-    // No stores found
-    if (!storeIds.length) {
-      return res.status(200).json({
-        success: true,
-        message: "Customer ledger details fetched successfully",
-        data: {
-          customer: null,
-          invoices: [],
-        },
-      });
-    }
-
-    // ==================================================
-    // Customer fetch (only inside district scope)
-    // ==================================================
-    const customerRows = await sequelize.query(
-      `
-      SELECT
-        c.id,
-        c.name,
-        COALESCE(c.phone, '')   AS phone,
-        COALESCE(c.address, '') AS address,
-        c.organization_id,
-        c.store_code
-      FROM customers c
-      WHERE c.id = :customerId
-        AND c.organization_id IN (:storeIds)
-      LIMIT 1
-      `,
-      {
-        replacements: {
-          customerId: Number(customer_id),
-          storeIds,
-        },
-        type: QueryTypes.SELECT,
-      }
-    );
-
-    const customer = customerRows[0];
-
-    if (!customer) {
-      return res.status(200).json({
-        success: true,
-        message: "Customer ledger details fetched successfully",
-        data: {
-          customer: null,
-          invoices: [],
-        },
-      });
-    }
-
-    // ==================================================
-    // Invoices (only district scope)
-    // ==================================================
-    const invoices = await sequelize.query(
-      `
-      SELECT
-        i.id AS invoice_id,
-        i.invoice_number,
-        i.invoice_date,
-        COALESCE(i.total_amount, 0)    AS total_amount,
-        COALESCE(i.received_amount, 0) AS received_amount,
-        COALESCE(i.pending_amount, 0)  AS pending_amount,
-        i.status
-      FROM invoices i
-      WHERE i.customer_id = :customerId
-        AND i.organization_id IN (:storeIds)
-      ORDER BY i.invoice_date DESC, i.id DESC
-      `,
-      {
-        replacements: {
-          customerId: Number(customer_id),
-          storeIds,
-        },
-        type: QueryTypes.SELECT,
-      }
-    );
-
-    // ==================================================
-    // Response
-    // ==================================================
-    return res.status(200).json({
-      success: true,
-      message: "Customer ledger details fetched successfully",
-      data: {
-        customer: {
-          id: Number(customer.id),
-          name: customer.name,
-          phone: customer.phone,
-          address: customer.address,
-          organization_id: Number(customer.organization_id),
-          store_code: customer.store_code,
-        },
-
-        invoices: invoices.map((row) => ({
-          invoice_id: Number(row.invoice_id),
-          invoice_number: row.invoice_number,
-          date: row.invoice_date,
-          total_amount: Number(row.total_amount || 0),
-          received_amount: Number(row.received_amount || 0),
-          pending_amount: Number(row.pending_amount || 0),
-          status: row.status,
-        })),
-      },
-    });
-  } catch (error) {
-    console.error("getDistrictCustomerLedgerDetails error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Error fetching customer ledger details",
       error: error.message,
     });
   }

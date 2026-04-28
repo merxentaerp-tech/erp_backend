@@ -249,61 +249,27 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
 
     const { districtOrgId, districtCode } = getDistrictScope(req);
 
-    const districtStoreRows = await getDistrictSelfStoreRows(
-      districtOrgId,
-      districtCode
-    );
+    // IMPORTANT: yahan Store me organization_id bilkul use nahi ho raha
+    const districtStoreRows = await getDistrictSelfStoreRows(districtOrgId, districtCode);
     const storeMap = buildStoreMap(districtStoreRows);
-
-    // ✅ Updated Time Ago Function
-    const getTimeAgo = (date) => {
-      if (!date) return "";
-
-      const past = new Date(date);
-      if (isNaN(past.getTime())) return "";
-
-      const now = new Date();
-      const diffMs = now - past;
-
-      const seconds = Math.floor(diffMs / 1000);
-      const minutes = Math.floor(diffMs / (1000 * 60));
-      const hours = Math.floor(diffMs / (1000 * 60 * 60));
-      const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      const weeks = Math.floor(days / 7);
-      const months = Math.floor(days / 30);
-      const years = Math.floor(days / 365);
-
-      if (seconds < 60) return `${seconds} sec ago`;
-      if (minutes < 60) return `${minutes} min ago`;
-      if (hours < 24) return `${hours} hr ago`;
-      if (days < 7) return `${days} day ago`;
-      if (weeks < 5) return `${weeks} week ago`;
-      if (months < 12) return `${months} month ago`;
-
-      return `${years} year ago`;
-    };
 
     const activityLogWhere = {
       [Op.or]: [
         { organization_id: districtOrgId },
-
         Sequelize.where(
           Sequelize.cast(Sequelize.json("meta.organization_id"), "TEXT"),
           String(districtOrgId)
         ),
-
         Sequelize.where(
           Sequelize.cast(Sequelize.json("meta.district_id"), "TEXT"),
           String(districtOrgId)
         ),
-
         ...(districtCode
           ? [
               Sequelize.where(
                 Sequelize.cast(Sequelize.json("meta.district_code"), "TEXT"),
                 districtCode
               ),
-
               Sequelize.where(
                 Sequelize.cast(Sequelize.json("meta.store_code"), "TEXT"),
                 districtCode
@@ -315,10 +281,7 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
 
     const systemActivityWhere = districtCode
       ? {
-          [Op.or]: [
-            { district_code: districtCode },
-            { store_code: districtCode },
-          ],
+          [Op.or]: [{ district_code: districtCode }, { store_code: districtCode }],
         }
       : undefined;
 
@@ -329,7 +292,6 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
         limit: parsedLimit * 3,
         raw: true,
       }),
-
       SystemActivity.findAll({
         ...(systemActivityWhere ? { where: systemActivityWhere } : {}),
         order: [["created_at", "DESC"]],
@@ -344,37 +306,10 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
     ]);
 
     const merged = [
-      ...activityLogs.map((row) => {
-        const formatted = formatActivityLogRow(
-          row,
-          handledByMap,
-          storeMap
-        );
-
-        return {
-          ...formatted,
-          created_at: row.created_at || row.createdAt,
-          time_ago: getTimeAgo(row.created_at || row.createdAt),
-        };
-      }),
-
-      ...systemActivities.map((row) => {
-        const formatted = formatSystemActivityRow(
-          row,
-          handledByMap
-        );
-
-        return {
-          ...formatted,
-          created_at: row.created_at || row.createdAt,
-          time_ago: getTimeAgo(row.created_at || row.createdAt),
-        };
-      }),
+      ...activityLogs.map((row) => formatActivityLogRow(row, handledByMap, storeMap)),
+      ...systemActivities.map((row) => formatSystemActivityRow(row, handledByMap)),
     ]
-      .sort(
-        (a, b) =>
-          new Date(b.created_at || 0) - new Date(a.created_at || 0)
-      )
+      .sort((a, b) => new Date(b.activity_at) - new Date(a.activity_at))
       .slice(0, parsedLimit);
 
     return res.status(200).json({
@@ -385,7 +320,6 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
     });
   } catch (error) {
     console.error("getDistrictOwnRecentActivities error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Failed to fetch district own recent activities",
@@ -393,6 +327,7 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
     });
   }
 };
+
 /* =========================================================
    DISTRICT RETAIL STORES RECENT ACTIVITIES
 ========================================================= */

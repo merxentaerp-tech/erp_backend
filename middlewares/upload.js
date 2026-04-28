@@ -12,20 +12,32 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
   },
+
   filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/\s+/g, "-");
-    cb(null, `${Date.now()}-${safeName}`);
+    const ext = path.extname(file.originalname);
+    const base = path
+      .basename(file.originalname, ext)
+      .replace(/\s+/g, "-")
+      .replace(/[^a-zA-Z0-9-_]/g, "");
+
+    cb(null, `${Date.now()}-${base}${ext}`);
   },
 });
 
 const fileFilter = (req, file, cb) => {
-  const isImage = file.mimetype.startsWith("image/");
-  const isVideo = file.mimetype.startsWith("video/");
+  const mime = String(file.mimetype || "").toLowerCase();
 
-  if (isImage || isVideo) {
+  const isImage = mime.startsWith("image/");
+  const isVideo = mime.startsWith("video/");
+  const isPdf = mime === "application/pdf";
+
+  if (isImage || isVideo || isPdf) {
     cb(null, true);
   } else {
-    cb(new Error("Only image and video files are allowed"), false);
+    cb(
+      new Error("Only image, video and PDF files are allowed"),
+      false
+    );
   }
 };
 

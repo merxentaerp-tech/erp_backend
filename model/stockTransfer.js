@@ -109,7 +109,10 @@ const StockTransfer = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
-
+e_way_bill_url: {
+  type: DataTypes.TEXT,
+  allowNull: true,
+},
     pickup_address: {
       type: DataTypes.TEXT,
       allowNull: true,

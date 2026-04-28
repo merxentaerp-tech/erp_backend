@@ -117,6 +117,46 @@ const getSafeWhere = (model, user, extra = {}) => {
   const scoped = buildScopedWhere(model, user, extra);
   return scoped === null ? null : scoped;
 };
+const num = (v) => Number(v || 0);
+
+const getUserScopeSql = (user, alias = "") => {
+  const p = alias ? `${alias}.` : "";
+  const role = String(user?.role || "").toLowerCase();
+
+  if (role.startsWith("super_") || role === "super_admin") {
+    return { sql: "", replacements: {} };
+  }
+
+  if (user?.organization_id && user?.store_code) {
+    return {
+      sql: ` AND ${p}organization_id = :organization_id AND ${p}store_code = :store_code`,
+      replacements: {
+        organization_id: user.organization_id,
+        store_code: user.store_code,
+      },
+    };
+  }
+
+  if (user?.organization_id) {
+    return {
+      sql: ` AND ${p}organization_id = :organization_id`,
+      replacements: {
+        organization_id: user.organization_id,
+      },
+    };
+  }
+
+  if (user?.store_code) {
+    return {
+      sql: ` AND ${p}store_code = :store_code`,
+      replacements: {
+        store_code: user.store_code,
+      },
+    };
+  }
+
+  return { sql: " AND 1=0", replacements: {} };
+};
 
 // INDIA LOCAL DATE LABELS (IMPORTANT FIX)
 const getLast7DaysLabelsIndia = () => {
@@ -147,6 +187,12 @@ const getLast7DaysLabelsIndia = () => {
   return labels;
 };
 
+
+
+
+
+
+
 export const getDashboardSummary = async (req, res) => {
   try {
     if (!req.user) {
@@ -156,152 +202,121 @@ export const getDashboardSummary = async (req, res) => {
       });
     }
 
-    const taskCreatedKey = getCreatedKey(Task);
-    const activityCreatedKey = getCreatedKey(SystemActivity);
-    const metalCreatedKey = getCreatedKey(MetalRate);
+    const role = String(req.user?.role || "").toLowerCase();
+    const isSuper = role === "super_admin" || role.startsWith("super_");
 
-    const metalTypeKey =
-      pickAttr(MetalRate, ["metal_type", "metalType"]) || "metal_type";
-    const metalRateKey =
-      pickAttr(MetalRate, ["rate", "metal_rate", "price"]) || "rate";
+    const organizationId = req.user?.organization_id;
+    const storeCode = req.user?.store_code;
 
-    const stockScope = getSafeWhere(Stock, req.user);
-    const movementScope = getSafeWhere(StockMovement, req.user);
-    const taskScope = getSafeWhere(Task, req.user);
-    const activityScope = getSafeWhere(SystemActivity, req.user);
-
-    if (
-      stockScope === null &&
-      movementScope === null &&
-      taskScope === null &&
-      activityScope === null
-    ) {
+    if (!isSuper && !storeCode) {
       return res.status(403).json({
         success: false,
-        message: "Not authorized to view dashboard",
+        message: "Store code missing in token",
       });
     }
 
-    // =========================================================
-    // 1) TOP CARDS
-    // =========================================================
-    const stockSummary = await Stock.findOne({
-      attributes: [
-        [fn("COALESCE", fn("SUM", col("available_qty")), 0), "total_available_qty"],
-        [fn("COALESCE", fn("SUM", col("dead_qty")), 0), "total_dead_qty"],
-        [fn("COALESCE", fn("SUM", col("transit_qty")), 0), "total_transit_qty"],
-      ],
-      where: stockScope || {},
-      raw: true,
-    });
+    const replacements = {
+      organization_id: organizationId,
+      store_code: storeCode,
+    };
 
-    const totalStock = Number(stockSummary?.total_available_qty || 0);
+    const stockItemWhere = isSuper
+      ? ""
+      : ` AND i."storeCode" = :store_code`;
 
-    const deadStockItems = await Stock.count({
-      where: {
-        ...(stockScope || {}),
-        dead_qty: { [Op.gt]: 0 },
-      },
-    });
+    const movementWhere = isSuper
+      ? ""
+      : ` AND sm.organization_id = :organization_id`;
 
-    const transitGoods = await Stock.count({
-      where: {
-        ...(stockScope || {}),
-        transit_qty: { [Op.gt]: 0 },
-      },
-    });
+    const taskWhere = isSuper
+      ? ""
+      : ` AND t.store_code = :store_code`;
 
-    // =========================================================
-    // 2) GOLD / SILVER PRICE
-    // =========================================================
-    const goldRate = await MetalRate.findOne({
-      where: {
-        [metalTypeKey]: { [Op.iLike]: "gold" },
-      },
-      order: [[metalCreatedKey, "DESC"]],
-      raw: true,
-    });
+    const activityWhere = isSuper
+      ? ""
+      : ` AND sa.store_code = :store_code`;
 
-    const silverRate = await MetalRate.findOne({
-      where: {
-        [metalTypeKey]: { [Op.iLike]: "silver" },
-      },
-      order: [[metalCreatedKey, "DESC"]],
-      raw: true,
-    });
+    // =====================================================
+    // STOCK CARDS - RETAIL STORE DATA ONLY
+    // =====================================================
+    const stockSummary = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(s.available_qty), 0) AS total_available_qty,
+        COALESCE(SUM(s.dead_qty), 0) AS total_dead_qty,
+        COALESCE(SUM(s.transit_qty), 0) AS total_transit_qty,
+        COUNT(CASE WHEN COALESCE(s.dead_qty,0) > 0 THEN 1 END)::int AS dead_stock_items,
+        COUNT(CASE WHEN COALESCE(s.transit_qty,0) > 0 THEN 1 END)::int AS transit_goods
+      FROM stocks s
+      INNER JOIN items i ON i.id = s.item_id
+      WHERE 1=1
+      ${stockItemWhere}
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-    // =========================================================
-    // 3) SALES TREND + CATEGORY
-    // =========================================================
+    const stock = stockSummary[0] || {};
+
+    // =====================================================
+    // METAL RATES
+    // =====================================================
+    const goldRate = await sequelize.query(
+      `
+      SELECT rate
+      FROM metal_rates
+      WHERE metal_type ILIKE 'gold'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      { type: QueryTypes.SELECT }
+    );
+
+    const silverRate = await sequelize.query(
+      `
+      SELECT rate
+      FROM metal_rates
+      WHERE metal_type ILIKE 'silver'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      { type: QueryTypes.SELECT }
+    );
+
+    // =====================================================
+    // SALES TREND - STOCK_MOVEMENTS
+    // =====================================================
     const labels = getLast7DaysLabelsIndia();
     const startDate = labels[0].fullDate;
     const endDate = labels[labels.length - 1].fullDate;
 
-    let salesTrendRaw = [];
-    let salesByCategory = [];
-
-    try {
-      const salesTrendQuery = `
-        SELECT 
-          DATE(created_at AT TIME ZONE 'Asia/Kolkata') AS date,
-          COUNT(id)::int AS count
-        FROM stock_movements
-        WHERE movement_type IN ('sale', 'sold', 'sales')
-          ${movementScope?.organization_id ? `AND organization_id = :organization_id` : ""}
-          AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') BETWEEN :startDate AND :endDate
-        GROUP BY DATE(created_at AT TIME ZONE 'Asia/Kolkata')
-        ORDER BY DATE(created_at AT TIME ZONE 'Asia/Kolkata') ASC
-      `;
-
-      salesTrendRaw = await sequelize.query(salesTrendQuery, {
+    const salesTrendRaw = await sequelize.query(
+      `
+      SELECT
+        DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata') AS date,
+        COUNT(sm.id)::int AS count
+      FROM stock_movements sm
+      WHERE sm.movement_type = 'sale'
+      ${movementWhere}
+      AND DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata')
+        BETWEEN :startDate AND :endDate
+      GROUP BY DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata')
+      ORDER BY DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata') ASC
+      `,
+      {
         replacements: {
+          ...replacements,
           startDate,
           endDate,
-          organization_id: movementScope?.organization_id || null,
         },
         type: QueryTypes.SELECT,
-      });
-
-      const salesByCategoryQuery = `
-        SELECT 
-          COALESCE(i.category, 'Other') AS category,
-          COUNT(sm.id)::int AS count
-        FROM stock_movements sm
-        LEFT JOIN items i ON i.id = sm.item_id
-        WHERE sm.movement_type IN ('sale', 'sold', 'sales')
-          ${movementScope?.organization_id ? `AND sm.organization_id = :organization_id` : ""}
-        GROUP BY i.category
-        ORDER BY count DESC
-      `;
-
-      const salesByCategoryRaw = await sequelize.query(salesByCategoryQuery, {
-        replacements: {
-          organization_id: movementScope?.organization_id || null,
-        },
-        type: QueryTypes.SELECT,
-      });
-
-      const totalCategoryCount = salesByCategoryRaw.reduce(
-        (sum, row) => sum + Number(row.count || 0),
-        0
-      );
-
-      salesByCategory = salesByCategoryRaw.map((row) => ({
-        category: row.category || "Other",
-        count: Number(row.count || 0),
-        percentage:
-          totalCategoryCount > 0
-            ? Number(((Number(row.count || 0) / totalCategoryCount) * 100).toFixed(2))
-            : 0,
-      }));
-    } catch (err) {
-      console.warn("⚠️ Sales chart query skipped:", err.message);
-      salesTrendRaw = [];
-      salesByCategory = [];
-    }
+      }
+    );
 
     const salesMap = new Map(
-      salesTrendRaw.map((row) => [String(row.date), Number(row.count || 0)])
+      salesTrendRaw.map((row) => [String(row.date), num(row.count)])
     );
 
     const salesTrends = labels.map((d) => ({
@@ -310,209 +325,86 @@ export const getDashboardSummary = async (req, res) => {
       sales_count: salesMap.get(d.fullDate) || 0,
     }));
 
-    // =========================================================
-    // 4) PENDING TASKS WITH CARD DETAILS
-    // =========================================================
-    let pendingTasks = [];
+    // =====================================================
+    // SALES BY CATEGORY - STOCK_MOVEMENTS + ITEMS
+    // =====================================================
+    const salesByCategoryRaw = await sequelize.query(
+      `
+      SELECT
+        COALESCE(i.category::text, 'Other') AS category,
+        COUNT(sm.id)::int AS count
+      FROM stock_movements sm
+      INNER JOIN items i ON i.id = sm.item_id
+      WHERE sm.movement_type = 'sale'
+      ${movementWhere}
+      GROUP BY i.category
+      ORDER BY count DESC
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-    try {
-      pendingTasks = await Task.findAll({
-        where: {
-          ...(taskScope || {}),
-          status: "pending",
-        },
-        order: [[taskCreatedKey, "DESC"]],
-        limit: 5,
-        raw: true,
-      });
+    const totalCategoryCount = salesByCategoryRaw.reduce(
+      (sum, row) => sum + num(row.count),
+      0
+    );
 
-      const now = new Date();
+    const salesByCategory = salesByCategoryRaw.map((row) => ({
+      category: row.category || "Other",
+      count: num(row.count),
+      percentage: totalCategoryCount
+        ? Number(((num(row.count) / totalCategoryCount) * 100).toFixed(2))
+        : 0,
+    }));
 
-      pendingTasks = pendingTasks.map((task) => {
-        const createdRaw =
-          task[taskCreatedKey] ||
-          task.created_at ||
-          task.createdAt ||
-          new Date();
+    // =====================================================
+    // PENDING TASKS - STRICT CURRENT STORE
+    // =====================================================
+    const pendingTasks = await sequelize.query(
+      `
+      SELECT t.*
+      FROM tasks t
+      WHERE LOWER(t.status::text) = 'pending'
+      ${taskWhere}
+      ORDER BY t.created_at DESC
+      LIMIT 5
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-        const createdAt = new Date(createdRaw);
-
-        const diffMs = now - createdAt;
-        const diffMinutes = Math.floor(diffMs / (1000 * 60));
-        const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHrs / 24);
-
-        let timeAgo = "Just now";
-
-        if (diffDays > 0) {
-          timeAgo = `${diffDays} day(s) ago`;
-        } else if (diffHrs > 0) {
-          timeAgo = `${diffHrs} hour(s) ago`;
-        } else if (diffMinutes > 0) {
-          timeAgo = `${diffMinutes} minute(s) ago`;
-        }
-
-        const meta =
-          task.meta && typeof task.meta === "object"
-            ? task.meta
-            : {};
-
-        const priority =
-          task.priority ||
-          meta.priority ||
-          "medium";
-
-        const moduleName =
-          task.module_name ||
-          task.task_type ||
-          task.type ||
-          meta.module_name ||
-          meta.task_type ||
-          meta.type ||
-          "Task";
-
-        const title =
-          task.title ||
-          meta.title ||
-          task.name ||
-          "Pending Task";
-
-        const description =
-          task.description ||
-          meta.description ||
-          task.remark ||
-          "Task requires your attention";
-
-        const itemsPending =
-          task.items_pending ||
-          meta.items_pending ||
-          meta.pending_items ||
-          meta.item_count ||
-          null;
-
-        const customerName =
-          task.customer_name ||
-          meta.customer_name ||
-          meta.customer ||
-          meta.client_name ||
-          null;
-
-        const rawAmount =
-          task.amount ||
-          task.total_amount ||
-          meta.amount ||
-          meta.total_amount ||
-          null;
-
-        const amountNumber =
-          rawAmount !== null && rawAmount !== undefined && rawAmount !== ""
-            ? Number(rawAmount)
-            : null;
-
-        const dueRaw =
-          task.due_date ||
-          task.dueDate ||
-          task.deadline ||
-          task.end_date ||
-          meta.due_date ||
-          meta.deadline ||
-          null;
-
-        let progressPercent = 0;
-        let remainingTime = null;
-
-        if (dueRaw) {
-          const dueDate = new Date(dueRaw);
-          const totalMs = dueDate - createdAt;
-          const usedMs = now - createdAt;
-
-          if (totalMs > 0) {
-            progressPercent = Math.min(
-              100,
-              Math.max(0, Math.round((usedMs / totalMs) * 100))
-            );
-          }
-
-          const remainMs = dueDate - now;
-
-          if (remainMs > 0) {
-            const remainMinutes = Math.floor(remainMs / (1000 * 60));
-            const remainHrs = Math.floor(remainMs / (1000 * 60 * 60));
-            const remainDays = Math.floor(remainHrs / 24);
-
-            if (remainDays > 0) {
-              remainingTime = `${remainDays} day(s) left`;
-            } else if (remainHrs > 0) {
-              remainingTime = `${remainHrs} hour(s) left`;
-            } else {
-              remainingTime = `${remainMinutes} minute(s) left`;
-            }
-          } else {
-            remainingTime = "Overdue";
-            progressPercent = 100;
-          }
-        }
-
-        return {
-          ...task,
-
-          // extra frontend fields only
-          priority,
-          module_name: moduleName,
-          title,
-          description,
-
-          time_ago: timeAgo,
-          pending_since: timeAgo,
-          created_time: createdAt.toLocaleString("en-IN", {
-            timeZone: "Asia/Kolkata",
-          }),
-
-          progress_percent: progressPercent,
-          remaining_time: remainingTime,
-
-          items_pending: itemsPending,
-          customer_name: customerName,
-
-          amount: amountNumber,
-          amount_text:
-            amountNumber !== null && !Number.isNaN(amountNumber)
-              ? `₹${amountNumber.toLocaleString("en-IN")}`
-              : null,
-        };
-      });
-    } catch (err) {
-      console.warn("⚠️ Pending task query skipped:", err.message);
-      pendingTasks = [];
-    }
-
-    // =========================================================
-    // 5) RECENT ACTIVITIES
-    // =========================================================
-    let recentActivities = [];
-
-    try {
-      recentActivities = await SystemActivity.findAll({
-        where: activityScope || {},
-        order: [[activityCreatedKey, "DESC"]],
-        limit: 5,
-        raw: true,
-      });
-    } catch (err) {
-      console.warn("⚠️ Recent activities query skipped:", err.message);
-      recentActivities = [];
-    }
+    // =====================================================
+    // RECENT ACTIVITIES - STRICT CURRENT STORE
+    // =====================================================
+    const recentActivities = await sequelize.query(
+      `
+      SELECT sa.*
+      FROM system_activities sa
+      WHERE 1=1
+      ${activityWhere}
+      ORDER BY sa.created_at DESC
+      LIMIT 5
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
     return res.status(200).json({
       success: true,
       message: "Dashboard fetched successfully",
       data: {
         cards: {
-          total_stock: Number(totalStock || 0),
-          dead_stock_items: Number(deadStockItems || 0),
-          transit_goods: Number(transitGoods || 0),
-          gold_price: goldRate ? Number(goldRate[metalRateKey] || 0) : 0,
-          silver_price: silverRate ? Number(silverRate[metalRateKey] || 0) : 0,
+          total_stock: num(stock.total_available_qty),
+          dead_stock_items: num(stock.dead_stock_items),
+          transit_goods: num(stock.transit_goods),
+          gold_price: goldRate[0] ? num(goldRate[0].rate) : 0,
+          silver_price: silverRate[0] ? num(silverRate[0].rate) : 0,
         },
         charts: {
           sales_trends: salesTrends,
@@ -533,65 +425,194 @@ export const getDashboardSummary = async (req, res) => {
 };
 export const getAllReports = async (req, res) => {
   try {
-    const totalCustomers = await Customer.count();
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
 
-    const dashboardSummary = {
-      totalCustomers: Number(totalCustomers || 0),
-      totalRevenue: 0,
-      totalSales: 0,
-      totalCashReceived: 0,
-      accountTransfer: 0,
+    const role = String(req.user?.role || "").toLowerCase();
+    const isSuper = role === "super_admin" || role.startsWith("super_");
+
+    const organizationId = req.user?.organization_id; // retail store id
+    const storeCode = req.user?.store_code;
+
+    if (!isSuper && !organizationId) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to view reports",
+      });
+    }
+
+    const salesWhere = isSuper
+      ? ""
+      : ` AND sm.organization_id = :organization_id`;
+
+    const invoiceWhere = isSuper
+      ? ""
+      : ` AND inv.store_code = :store_code`;
+
+    const itemWhere = isSuper
+      ? ""
+      : ` AND i."storeCode" = :store_code`;
+
+    const replacements = {
+      organization_id: organizationId,
+      store_code: storeCode,
     };
 
+    // =====================================================
+    // CUSTOMER COUNT
+    // =====================================================
+    const customerWhere = {};
+    if (!isSuper && storeCode) {
+      customerWhere.store_code = storeCode;
+    }
+
+    const totalCustomers = await Customer.count({
+      where: customerWhere,
+    });
+
+    // =====================================================
+    // SALES FROM STOCK_MOVEMENTS
+    // =====================================================
+    const salesSummary = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(sm.total_amount),0) AS total_revenue,
+        COUNT(sm.id)::int AS total_sales
+      FROM stock_movements sm
+      WHERE sm.movement_type = 'sale'
+      ${salesWhere}
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    // =====================================================
+    // CASH / PENDING FROM INVOICES
+    // =====================================================
+    const paymentSummary = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(inv.received_amount),0) AS total_cash_received,
+        COALESCE(SUM(inv.pending_amount),0) AS account_transfer
+      FROM invoices inv
+      WHERE 1=1
+      ${invoiceWhere}
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const s = salesSummary[0] || {};
+    const p = paymentSummary[0] || {};
+
+    const dashboardSummary = {
+      totalCustomers: num(totalCustomers),
+      totalRevenue: num(s.total_revenue),
+      totalSales: num(s.total_sales),
+      totalCashReceived: num(p.total_cash_received),
+      accountTransfer: num(p.account_transfer),
+    };
+
+    // =====================================================
+    // LAST 7 DAYS CASH FLOW
+    // =====================================================
     const labels = getLast7DaysLabelsIndia();
+    const startDate = labels[0].fullDate;
+    const endDate = labels[labels.length - 1].fullDate;
+// replace only cashRaw + cashVsAccount block
 
-    const cashVsAccount = labels.map((d) => ({
-      date: d.fullDate,
-      day: d.label,
-      cash: 0,
-      online: 0,
-      total: 0,
-    }));
+const cashRaw = await sequelize.query(
+  `
+  SELECT
+    DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata') AS date,
+    COALESCE(SUM(inv.received_amount),0) AS cash,
+    COALESCE(SUM(inv.pending_amount),0) AS pending,
+    COALESCE(SUM(inv.total_amount),0) AS total
+  FROM invoices inv
+  WHERE DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
+    BETWEEN :startDate AND :endDate
+  ${invoiceWhere}
+  GROUP BY DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
+  ORDER BY DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
+  `,
+  {
+    replacements: {
+      ...replacements,
+      startDate,
+      endDate,
+    },
+    type: QueryTypes.SELECT,
+  }
+);
 
+const cashMap = new Map(cashRaw.map((r) => [String(r.date), r]));
+
+const cashVsAccount = labels.map((d) => {
+  const row = cashMap.get(d.fullDate) || {};
+
+  return {
+    date: d.fullDate,
+    day: d.label,
+    cash: num(row.cash),
+    pending: num(row.pending),
+    total: num(row.total),
+  };
+});
+    // =====================================================
+    // CATEGORY SALES FROM STOCK_MOVEMENTS
+    // =====================================================
     const categoryRaw = await sequelize.query(
       `
       SELECT
-        COALESCE(category::text, 'Others') AS category,
-        COUNT(*)::int AS total_items
-      FROM items
-      GROUP BY category
+        COALESCE(i.category::text, 'Others') AS category,
+        COUNT(sm.id)::int AS total_items
+      FROM stock_movements sm
+      LEFT JOIN items i ON i.id = sm.item_id
+      WHERE sm.movement_type = 'sale'
+      ${salesWhere}
+      GROUP BY i.category
       ORDER BY total_items DESC
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
     );
 
     const totalCategoryItems = categoryRaw.reduce(
-      (sum, item) => sum + Number(item.total_items || 0),
+      (sum, item) => sum + num(item.total_items),
       0
     );
 
     const categorySales = categoryRaw.map((item) => ({
       category: item.category,
-      revenue: Number(item.total_items || 0),
+      revenue: num(item.total_items),
       percentage: totalCategoryItems
-        ? Number(
-            (
-              (Number(item.total_items || 0) / totalCategoryItems) *
-              100
-            ).toFixed(0)
-          )
+        ? Number(((num(item.total_items) / totalCategoryItems) * 100).toFixed(0))
         : 0,
     }));
 
+    // =====================================================
+    // TYPE DISTRIBUTION FROM ITEMS
+    // =====================================================
     const typeDistributionRaw = await sequelize.query(
       `
       SELECT
         CASE
           WHEN TRIM(
             CONCAT(
-              COALESCE(metal_type::text, ''),
+              COALESCE(i.metal_type::text, ''),
               CASE
-                WHEN purity IS NOT NULL AND purity::text <> '' THEN ' ' || purity::text
+                WHEN i.purity IS NOT NULL AND i.purity::text <> ''
+                THEN ' ' || i.purity::text
                 ELSE ''
               END
             )
@@ -599,64 +620,69 @@ export const getAllReports = async (req, res) => {
           THEN 'Unknown'
           ELSE TRIM(
             CONCAT(
-              COALESCE(metal_type::text, ''),
+              COALESCE(i.metal_type::text, ''),
               CASE
-                WHEN purity IS NOT NULL AND purity::text <> '' THEN ' ' || purity::text
+                WHEN i.purity IS NOT NULL AND i.purity::text <> ''
+                THEN ' ' || i.purity::text
                 ELSE ''
               END
             )
           )
         END AS label,
-        COUNT(*)::int AS value
-      FROM items
-      GROUP BY metal_type, purity
+        COUNT(i.id)::int AS value
+      FROM items i
+      WHERE 1=1
+      ${itemWhere}
+      GROUP BY i.metal_type, i.purity
       ORDER BY value DESC
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
     );
 
     const typeDistribution = typeDistributionRaw.map((item) => ({
       label: item.label || "Unknown",
-      value: Number(item.value || 0),
+      value: num(item.value),
     }));
 
-    // ✅ actual stock table name from model
-    const stockTableNameRaw = Stock.getTableName();
-    const stockTableName =
-      typeof stockTableNameRaw === "string"
-        ? stockTableNameRaw
-        : stockTableNameRaw.tableName;
-
+    // =====================================================
+    // TOP PRODUCTS FROM STOCK_MOVEMENTS
+    // =====================================================
     const topProductsRaw = await sequelize.query(
       `
       SELECT
         i.id,
         i.item_name,
         COALESCE(i.category::text, 'Others') AS category,
-        COALESCE(SUM(s.available_qty), 0) AS units_sold,
-        COALESCE(SUM(s.available_weight), 0) AS total_revenue
-      FROM items i
-      LEFT JOIN "${stockTableName}" s ON s.item_id = i.id
+        COALESCE(SUM(sm.qty),0) AS units_sold,
+        COALESCE(SUM(sm.total_amount),0) AS total_revenue
+      FROM stock_movements sm
+      LEFT JOIN items i ON i.id = sm.item_id
+      WHERE sm.movement_type = 'sale'
+      ${salesWhere}
       GROUP BY i.id, i.item_name, i.category
       ORDER BY total_revenue DESC, units_sold DESC
       LIMIT 5
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
     );
 
     const maxRevenue =
-      topProductsRaw.length > 0
-        ? Number(topProductsRaw[0].total_revenue || 0)
-        : 0;
+      topProductsRaw.length > 0 ? num(topProductsRaw[0].total_revenue) : 0;
 
     const topProducts = topProductsRaw.map((item, index) => ({
       rank: index + 1,
       product_name: item.item_name,
       category: item.category,
-      units_sold: Number(item.units_sold || 0),
-      total_revenue: Number(item.total_revenue || 0),
+      units_sold: num(item.units_sold),
+      total_revenue: num(item.total_revenue),
       performance: maxRevenue
-        ? Math.round((Number(item.total_revenue || 0) / maxRevenue) * 100)
+        ? Math.round((num(item.total_revenue) / maxRevenue) * 100)
         : 0,
     }));
 
@@ -678,5 +704,155 @@ export const getAllReports = async (req, res) => {
       message: "Failed to fetch reports",
       error: error.message,
     });
+  }
+};
+
+
+
+
+
+export const getStoreReports = async (req, res) => {
+  try {
+    const storeCode = req.headers.store_code;
+
+    if (!storeCode) {
+      return res.status(400).json({
+        success: false,
+        message: "store_code is required",
+      });
+    }
+
+    // ================= DASHBOARD =================
+    const totalCustomers = await sequelize.query(`
+      SELECT COUNT(*) as count 
+      FROM customers 
+      WHERE store_code = '${storeCode}'
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    const totalRevenue = await sequelize.query(`
+      SELECT COALESCE(SUM(total_amount),0) as total
+      FROM invoices
+      WHERE store_code = '${storeCode}'
+      AND status IN ('PAID','PARTIAL')
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    const totalSales = await sequelize.query(`
+      SELECT COUNT(*) as count
+      FROM invoices
+      WHERE store_code = '${storeCode}'
+      AND status IN ('PAID','PARTIAL')
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    const dashboardSummary = {
+      totalCustomers: Number(totalCustomers[0].count),
+      totalRevenue: Number(totalRevenue[0].total),
+      totalSales: Number(totalSales[0].count),
+    };
+
+    // ================= CASH VS ACCOUNT =================
+    const cashVsAccount = await sequelize.query(`
+      SELECT 
+        DATE(p.payment_date) as date,
+        TO_CHAR(p.payment_date, 'Dy') as day,
+
+        SUM(CASE WHEN p.payment_method = 'CASH' THEN p.amount ELSE 0 END) as cash,
+        SUM(CASE WHEN p.payment_method != 'CASH' THEN p.amount ELSE 0 END) as online,
+        SUM(p.amount) as total
+
+      FROM payments p
+      JOIN invoices inv ON p.invoice_id = inv.id
+      WHERE inv.store_code = '${storeCode}'
+      AND inv.status IN ('PAID','PARTIAL')
+
+      GROUP BY DATE(p.payment_date), TO_CHAR(p.payment_date, 'Dy')
+      ORDER BY DATE(p.payment_date)
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    // ================= CATEGORY SALES =================
+    const categoryRaw = await sequelize.query(`
+      SELECT 
+        i.category,
+        SUM(ii.total_amount) as total_revenue
+      FROM invoice_items ii
+      JOIN items i ON i.id = ii.item_id
+      JOIN invoices inv ON ii.invoice_id = inv.id
+      WHERE inv.store_code = '${storeCode}'
+      AND inv.status IN ('PAID','PARTIAL')
+      GROUP BY i.category
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    const totalCategoryRevenue = categoryRaw.reduce(
+      (sum, item) => sum + Number(item.total_revenue),
+      0
+    );
+
+    const categorySales = categoryRaw.map(item => ({
+      category: item.category,
+      percentage: totalCategoryRevenue
+        ? Math.round((item.total_revenue / totalCategoryRevenue) * 100)
+        : 0,
+    }));
+
+    // ================= TYPE DISTRIBUTION =================
+    const typeDistribution = await sequelize.query(`
+      SELECT 
+        CONCAT(i.metal_type, ' ', i.purity) as label,
+        SUM(ii.total_amount) as value
+      FROM invoice_items ii
+      JOIN items i ON i.id = ii.item_id
+      JOIN invoices inv ON ii.invoice_id = inv.id
+      WHERE inv.store_code = '${storeCode}'
+      AND inv.status IN ('PAID','PARTIAL')
+      GROUP BY i.metal_type, i.purity
+      ORDER BY value DESC
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    // ================= TOP PRODUCTS =================
+    const topProductsRaw = await sequelize.query(`
+      SELECT 
+        i.item_name,
+        i.category,
+        COUNT(ii.id) as units_sold,
+        COALESCE(SUM(ii.total_amount), 0) as total_revenue
+      FROM invoice_items ii
+      JOIN items i ON i.id = ii.item_id
+      JOIN invoices inv ON ii.invoice_id = inv.id
+      WHERE inv.store_code = '${storeCode}'
+      AND inv.status IN ('PAID','PARTIAL')
+      GROUP BY i.id, i.item_name, i.category
+      ORDER BY total_revenue DESC
+      LIMIT 5
+    `, { type: sequelize.QueryTypes.SELECT });
+
+    const maxRevenue = topProductsRaw.length
+      ? Number(topProductsRaw[0].total_revenue)
+      : 0;
+
+    const topProducts = topProductsRaw.map((item, index) => ({
+      rank: index + 1,
+      product_name: item.item_name,
+      category: item.category,
+      units_sold: Number(item.units_sold),
+      total_revenue: Number(item.total_revenue),
+      performance: maxRevenue
+        ? Math.round((item.total_revenue / maxRevenue) * 100)
+        : 0,
+    }));
+
+    // ================= FINAL RESPONSE =================
+    res.json({
+      success: true,
+      store_code: storeCode,
+      data: {
+        dashboardSummary,
+        cashVsAccount,
+        categorySales,
+        typeDistribution,
+        topProducts,
+      },
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 };

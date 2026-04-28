@@ -12,7 +12,7 @@ import {
   receiveTransfer,
   getIncomingTransfers,
   getOutgoingTransfers,
-  getAvailableStockForRequest,getTransferDetails
+  getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId
 } from "../controller/stockRequest.controller.js";
 
 const router = express.Router();
@@ -33,6 +33,7 @@ router.put(
     { name: "driver_photo", maxCount: 1 },
     { name: "dispatch_images", maxCount: 3 },
     { name: "dispatch_video", maxCount: 1 },
+    { name: "e_way_bill", maxCount: 1}
   ]),
   approveAndDispatchRequest
 );
@@ -42,5 +43,9 @@ router.get("/transfers/outgoing", auth, getOutgoingTransfers);
 router.put("/transfers/:transferId/receive", auth, receiveTransfer);
 router.get("/transfers/:id/details",auth,getTransferDetails
 );
-
+router.get(
+  "/transfers/:id/e-way-bill",
+  auth,
+  getEWayBillByTransferId
+);
 export default router;

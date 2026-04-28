@@ -2,7 +2,7 @@ import express from "express";
 import {
   getDistrictRetailStores,
   getDistrictStoreDetail,
-  getDistrictStoreCategoryItems,getDistrictReportsAnalytics,getDistrictLedgerAccounts,getDistrictCustomerLedgerDetails
+  getDistrictStoreCategoryItems,getDistrictReportsAnalytics
 } from "../controller/districtController.js";
 
 import { auth } from "../middlewares/authMiddleware.js";
@@ -40,15 +40,4 @@ router.get(
 );
 router.get('/report-analysis',auth,getDistrictReportsAnalytics)
 
-router.get(
-  "/district/ledger-accounts",
-  auth,
-  getDistrictLedgerAccounts
-);
-
-router.get(
-  "/district/ledger-accounts/customer/:customer_id",
-  auth,
-  getDistrictCustomerLedgerDetails
-);
 export default router;

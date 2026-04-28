@@ -1032,6 +1032,7 @@ export const approveAndDispatchRequest = async (req, res) => {
       driver_photo: req.files?.driver_photo?.length || 0,
       dispatch_images: req.files?.dispatch_images?.length || 0,
       dispatch_video: req.files?.dispatch_video?.length || 0,
+      e_way_bill: req.files?.e_way_bill?.length || 0,
     });
 
     if (!Array.isArray(parsedItems) || parsedItems.length === 0) {
@@ -1050,18 +1051,17 @@ export const approveAndDispatchRequest = async (req, res) => {
         message: "Driver name, driver phone, and vehicle number are required",
       });
     }
-const approvedRows = parsedItems.filter(
-  (row) => Number(row.qty || 0) > 0
-);
 
-if (approvedRows.length === 0) {
-  await transaction.rollback();
+    const approvedRows = parsedItems.filter((row) => Number(row.qty || 0) > 0);
 
-  return res.status(400).json({
-    success: false,
-    message: "At least one item must have qty greater than 0 for approval",
-  });
-}
+    if (approvedRows.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "At least one item must have qty greater than 0 for approval",
+      });
+    }
+
     if (!pickup_address || !delivery_address) {
       await transaction.rollback();
       return res.status(400).json({
@@ -1081,6 +1081,7 @@ if (approvedRows.length === 0) {
     const driverPhotoFile = req.files?.driver_photo?.[0] || null;
     const dispatchImageFiles = req.files?.dispatch_images || [];
     const dispatchVideoFile = req.files?.dispatch_video?.[0] || null;
+    const eWayBillFile = req.files?.e_way_bill?.[0] || null;
 
     if (dispatchImageFiles.length > 3) {
       await transaction.rollback();
@@ -1091,10 +1092,13 @@ if (approvedRows.length === 0) {
     }
 
     if (driverPhotoFile?.path) uploadedLocalPaths.push(driverPhotoFile.path);
+
     for (const file of dispatchImageFiles) {
       if (file?.path) uploadedLocalPaths.push(file.path);
     }
+
     if (dispatchVideoFile?.path) uploadedLocalPaths.push(dispatchVideoFile.path);
+    if (eWayBillFile?.path) uploadedLocalPaths.push(eWayBillFile.path);
 
     const request = await StockRequest.findByPk(requestId, {
       transaction,
@@ -1185,6 +1189,7 @@ if (approvedRows.length === 0) {
     let driver_photo_url = null;
     let dispatch_image_urls = [];
     let dispatch_video_url = null;
+    let e_way_bill_url = null;
 
     if (driverPhotoFile?.path) {
       const uploadedDriverPhoto = await uploadToCloudinary(
@@ -1215,6 +1220,20 @@ if (approvedRows.length === 0) {
       dispatch_video_url = uploadedVideo.secure_url;
     }
 
+    if (eWayBillFile?.path) {
+      const isPdf =
+        eWayBillFile.mimetype === "application/pdf" ||
+        eWayBillFile.originalname?.toLowerCase().endsWith(".pdf");
+
+      const uploadedEWayBill = await uploadToCloudinary(
+        eWayBillFile.path,
+        "stock-transfer/e-way-bills",
+        isPdf ? "raw" : "image"
+      );
+
+      e_way_bill_url = uploadedEWayBill.secure_url;
+    }
+
     const transfer = await StockTransfer.create(
       {
         transfer_no: generateTransferNo(),
@@ -1238,6 +1257,7 @@ if (approvedRows.length === 0) {
             ? JSON.stringify(dispatch_image_urls)
             : null,
         dispatch_video_url: dispatch_video_url || null,
+        e_way_bill_url: e_way_bill_url || null,
         pickup_address: pickup_address || null,
         delivery_address: delivery_address || null,
         expected_delivery_date: expected_delivery_date || null,
@@ -1383,6 +1403,7 @@ if (approvedRows.length === 0) {
     }
 
     let finalStatus = "approved";
+
     if (approvedItemsCount === 0) {
       finalStatus = "rejected";
     } else if (totalApproved < totalRequested) {
@@ -1456,6 +1477,7 @@ if (approvedRows.length === 0) {
         driver_photo_url,
         dispatch_image_urls,
         dispatch_video_url,
+        e_way_bill_url,
       },
       transaction,
     });
@@ -1476,11 +1498,13 @@ if (approvedRows.length === 0) {
         transfer: {
           ...transfer.toJSON(),
           dispatch_image_url: dispatch_image_urls,
+          e_way_bill_url,
         },
         uploaded_files: {
           driver_photo_url,
           dispatch_image_urls,
           dispatch_video_url,
+          e_way_bill_url,
         },
         summary: {
           request_id: request.id,
@@ -2094,6 +2118,9 @@ export const getTransferDetails = async (req, res) => {
       expected_delivery_date: plainTransfer.expected_delivery_date || null,
       expected_delivery_time: plainTransfer.expected_delivery_time || null,
 
+      // ✅ easy direct access for frontend
+      e_way_bill_url: plainTransfer.e_way_bill_url || null,
+
       driver_details: {
         driver_name: plainTransfer.driver_name || null,
         driver_phone: plainTransfer.driver_phone || null,
@@ -2106,6 +2133,9 @@ export const getTransferDetails = async (req, res) => {
         dispatch_image_url: plainTransfer.dispatch_image_url || null,
         dispatch_video_url: plainTransfer.dispatch_video_url || null,
         receive_image_url: plainTransfer.receive_image_url || null,
+
+        // ✅ added e-way bill in media
+        e_way_bill_url: plainTransfer.e_way_bill_url || null,
       },
 
       created_by: {
@@ -2154,6 +2184,69 @@ export const getTransferDetails = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch transfer details",
+      error: error.message,
+    });
+  }
+};
+
+
+export const getEWayBillByTransferId = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || isNaN(Number(id))) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid transfer id is required",
+      });
+    }
+
+    const user = req.user;
+
+    const transfer = await StockTransfer.findOne({
+      where: { id: Number(id) },
+    });
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: `Transfer not found for id ${id}`,
+      });
+    }
+
+    if (
+      Number(user.organization_id) !== Number(transfer.from_organization_id) &&
+      Number(user.organization_id) !== Number(transfer.to_organization_id) &&
+      String(user.role || "").toLowerCase() !== "super_admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view this e-way bill",
+      });
+    }
+
+    if (!transfer.e_way_bill_url) {
+      return res.status(404).json({
+        success: false,
+        message: "E-way bill not uploaded",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "E-way bill fetched successfully",
+      data: {
+        transfer_id: transfer.id,
+        transfer_no: transfer.transfer_no,
+        e_way_bill_url: transfer.e_way_bill_url,
+      },
+    });
+  } catch (error) {
+    console.error("getEWayBillByTransferId error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch e-way bill",
       error: error.message,
     });
   }

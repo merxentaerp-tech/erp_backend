@@ -199,7 +199,7 @@ export const login = async (req, res) => {
         organization_id: user.organization_id,
         // userCode: user.userCode,
         organization_level:user.organization_level,
-          store_code: user.store_code,
+          store_code: user.storeCode,
       },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }

@@ -177,11 +177,12 @@ export const createExchange = async (req, res) => {
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
-    
+    const userValue = parseFloat(original_product.value || 0);
 
     const matchedItem = items.find((item) => {
       const dbValue = parseFloat(item.total_amount || 0);
-
+      const userValue = parseFloat(original_product.value || 0);
+     
       return (
         normalize(item.product_code) === normalize(original_product.product_code)
       );

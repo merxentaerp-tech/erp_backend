@@ -39,11 +39,11 @@ router.get(
 );
 
 // DOWNLOAD
-router.get(
-  "/invoice/download/:invoice_number",
-  auth,
+// router.get(
+//   "/invoice/download/:invoice_number",
+//   auth,
  
-  downloadInvoice
-);
+//   downloadInvoice
+// );
 
 export default router;

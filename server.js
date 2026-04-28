@@ -16,7 +16,7 @@ import District from "./routes/districtRoute.js";
 import ladger from "./routes/ledgerRoutes.js";
 import Bill from "./routes/billRoute.js";
 import Activity from "./routes/activityRoutes.js";
-import exchange from "./routes/Exchange.js";
+// import exchange from "./routes/Exchange.js";
 import tracklocation from "./routes/transferlocation.js";
 import { getGoldRate } from "./service/goldService.js";
 // import { getGoldRate } from "./Services/goldService.js";
@@ -67,7 +67,7 @@ app.use("/District", District);
 app.use("/ladger", ladger);
 app.use("/bill", Bill);
 app.use("/Activity", Activity);
-app.use("/exchange", exchange);
+// app.use("/exchange", exchange);
 app.use("/track", tracklocation);
 
 app.get("/", (req, res) => {

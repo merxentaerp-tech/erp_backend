@@ -1,47 +1,48 @@
-// routes/exchangeRoutes.js
-
 import express from "express";
 import {
   createExchange,
   getExchangeDashboard,
   getInvoiceForExchange,
-} from "../controllers/exchangeController.js";
+} from "../controller/exchangeController.js";   // ✅ FIXED
 
-import downloadInvoice from "../controllers/invoicePDFController.js";
+import downloadInvoice from "../controller/invoicePDFController.js"; // ✅ check path
 
 import {
-  authMiddleware,
+  auth,
   authorizeRoles,
   restrictToOwnStore,
 } from "../middlewares/authMiddleware.js";
 
 const router = express.Router();
 
-//  PROTECTED ROUTES
+// GET INVOICE
 router.get(
   "/invoice/:invoice_number",
-  authMiddleware,
+  auth,
   restrictToOwnStore,
   getInvoiceForExchange
 );
 
+// CREATE EXCHANGE
 router.post(
   "/create",
-  authMiddleware,
+  auth,
   restrictToOwnStore,
   createExchange
 );
 
+// DASHBOARD
 router.get(
   "/dashboard",
-  authMiddleware,
+  auth,
   restrictToOwnStore,
   getExchangeDashboard
 );
 
+// DOWNLOAD
 router.get(
   "/invoice/download/:invoice_number",
-  authMiddleware,
+  auth,
   restrictToOwnStore,
   downloadInvoice
 );

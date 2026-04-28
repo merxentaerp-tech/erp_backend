@@ -8,9 +8,8 @@ import {
 // import downloadInvoice from "../controller/invoicePDFController.js"; // ✅ check path
 
 import {
-  auth,
-  authorizeRoles,
-  restrictToOwnStore,
+  auth
+
 } from "../middlewares/authMiddleware.js";
 
 const router = express.Router();
@@ -19,7 +18,7 @@ const router = express.Router();
 router.get(
   "/invoice/:invoice_number",
   auth,
-  restrictToOwnStore,
+
   getInvoiceForExchange
 );
 
@@ -27,7 +26,7 @@ router.get(
 router.post(
   "/create",
   auth,
-  restrictToOwnStore,
+
   createExchange
 );
 
@@ -35,7 +34,7 @@ router.post(
 router.get(
   "/dashboard",
   auth,
-  restrictToOwnStore,
+
   getExchangeDashboard
 );
 
@@ -43,7 +42,7 @@ router.get(
 router.get(
   "/invoice/download/:invoice_number",
   auth,
-  restrictToOwnStore,
+ 
   downloadInvoice
 );
 

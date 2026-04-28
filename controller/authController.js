@@ -218,6 +218,7 @@ export const login = async (req, res) => {
         store_code: user.store_code,
         // userCode: user.userCode,
         organization_level:user.organization_level,
+        store_code: user.storeCode,
       },
     });
 

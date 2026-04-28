@@ -357,7 +357,7 @@ export const createExchange = async (req, res) => {
     exchange_invoice: {
       invoice_number: exchangeInvoiceNo,
       total_amount: Math.abs(difference),
-      download_url: `/api/exchange/invoice/download/${exchangeInvoiceNo}`
+      // download_url: `/api/exchange/invoice/download/${exchangeInvoiceNo}`
     }
   }
 });

@@ -1,8 +1,10 @@
-
 import sequelize from "../config/db.js";
 import { QueryTypes } from "sequelize";
 
 
+// ==============================
+//  GET INVOICE FOR EXCHANGE
+// ==============================
 export const getInvoiceForExchange = async (req, res) => {
   try {
     const { invoice_number } = req.params;
@@ -15,7 +17,6 @@ export const getInvoiceForExchange = async (req, res) => {
         c.name,
         c.phone,
 
-        -- OLD FROM LOG
         e.old_product_code,
         e.old_product_name,
         e.old_purity,
@@ -24,7 +25,6 @@ export const getInvoiceForExchange = async (req, res) => {
         e.old_stone_weight,
         e.old_value,
 
-        -- FALLBACK FROM INVOICE ITEM
         ii.product_code,
         ii.description,
         ii.purity,
@@ -111,9 +111,7 @@ export const createExchange = async (req, res) => {
       stone_amount = 0
     } = req.body;
 
-    // ======================
-    // 1. LOCK INVOICE
-    // ======================
+    // LOCK INVOICE
     const invoice = await sequelize.query(
       `
       SELECT *
@@ -138,9 +136,7 @@ export const createExchange = async (req, res) => {
 
     const inv = invoice[0];
 
-    // ======================
-    // 2. CUSTOMER
-    // ======================
+    // CUSTOMER
     const customer = await sequelize.query(
       `
       SELECT id, name, phone
@@ -155,9 +151,7 @@ export const createExchange = async (req, res) => {
 
     const customerData = customer[0] || {};
 
-    // ======================
-    // 3. FETCH ITEMS
-    // ======================
+    // ITEMS
     const items = await sequelize.query(
       `
       SELECT id, product_code, description, total_amount
@@ -179,9 +173,7 @@ export const createExchange = async (req, res) => {
       });
     }
 
-    // ======================
-    // 4. VALIDATION
-    // ======================
+    // VALIDATION
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
@@ -205,9 +197,7 @@ export const createExchange = async (req, res) => {
       });
     }
 
-    // ======================
-    // 5. CALCULATIONS
-    // ======================
+    // CALCULATIONS
     const diffDays = Math.floor(
       (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
     );
@@ -222,9 +212,7 @@ export const createExchange = async (req, res) => {
     const finalAmount = newValue + makingCharges;
     const difference = finalAmount - oldValue;
 
-    // ======================
-    // 6. UPDATE INVOICE (ENUM FIX)
-    // ======================
+    // UPDATE INVOICE
     await sequelize.query(
       `
       UPDATE invoices
@@ -249,9 +237,7 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    // ======================
-    // 7. DELETE OLD ITEM
-    // ======================
+    // DELETE OLD ITEM
     await sequelize.query(
       `DELETE FROM invoice_items WHERE id = :item_id`,
       {
@@ -260,9 +246,7 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    // ======================
-    // 8. INSERT NEW ITEM
-    // ======================
+    // INSERT NEW ITEM
     await sequelize.query(
       `
       INSERT INTO invoice_items (
@@ -310,9 +294,20 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    // ======================
-    // 9. SAVE LOG
-    // ======================
+    // EXCHANGE NUMBER LOGIC
+    const countData = await sequelize.query(
+      `SELECT COUNT(*) as count FROM exchange_logs WHERE invoice_id = :invoice_id`,
+      {
+        replacements: { invoice_id: inv.id },
+        type: QueryTypes.SELECT,
+        transaction: t
+      }
+    );
+
+    const exchangeNumber = String(parseInt(countData[0].count) + 1).padStart(2, "0");
+    const exchangeInvoiceNumber = `EX-${inv.invoice_number.replace("BILL-", "")}-${exchangeNumber}`;
+
+    // SAVE LOG
     await sequelize.query(
       `
       INSERT INTO exchange_logs (
@@ -385,57 +380,61 @@ export const createExchange = async (req, res) => {
     await t.commit();
 
     return res.json({
-  success: true,
-  message: "Exchange Done",
-  data: {
-    invoice_number: inv.invoice_number,
+      success: true,
+      message: "Exchange Done",
+      data: {
+        invoice_number: inv.invoice_number,
 
-    customer: {
-      id: customerData.id,
-      name: customerData.name,
-      phone: customerData.phone
-    },
+        customer: {
+          id: customerData.id,
+          name: customerData.name,
+          phone: customerData.phone
+        },
 
-    old_product: {
-      name: original_product.product_name,
-      condition: original_product.condition || "OLD",
-      value: oldValue
-    },
+        old_product: {
+          name: original_product.product_name,
+          condition: original_product.condition || "OLD",
+          value: oldValue
+        },
 
-    new_product: {
-      name: new_product.product_name,
-      condition: new_product.condition || "NEW",
-      value: newValue
-    },
+        new_product: {
+          name: new_product.product_name,
+          condition: new_product.condition || "NEW",
+          value: newValue
+        },
 
-    calculation: {
-      making_charges: makingCharges,
-      final_amount: finalAmount,
-      difference: difference
-    },
+        calculation: {
+          making_charges: makingCharges,
+          final_amount: finalAmount,
+          difference: difference
+        },
 
-    original_invoice: {
-      invoice_number: inv.invoice_number,
-      total_amount: oldValue
-    },
+        original_invoice: {
+          invoice_number: inv.invoice_number,
+          total_amount: oldValue
+        },
 
-    exchange_invoice: {
-      invoice_number: `EX-${inv.invoice_number}`,
-      total_amount: Math.abs(difference)
-    }
+        exchange_invoice: {
+          invoice_number: exchangeInvoiceNumber,
+          total_amount: Math.abs(difference)
+        }
+      }
+    });
+
+  } catch (err) {
+    await t.rollback();
+    return res.status(500).json({ error: err.message });
   }
-});
-
-// ==============================
-//  GET EXCHANGE LIST (DASHBOARD)
-// ==============================
+};
 export const getExchangeDashboard = async (req, res) => {
   try {
     const { filter = "all" } = req.query;
 
+    //  NEW
+    const storeCode = req.storeCode;
+
     let dateFilter = "";
 
-    //  FILTER LOGIC
     if (filter === "day") {
       dateFilter = `AND DATE(e.createdat) = CURRENT_DATE`;
     } else if (filter === "week") {
@@ -444,9 +443,6 @@ export const getExchangeDashboard = async (req, res) => {
       dateFilter = `AND DATE_TRUNC('month', e.createdat) = DATE_TRUNC('month', CURRENT_DATE)`;
     }
 
-    // ============================
-    // LIST DATA
-    // ============================
     const list = await sequelize.query(
       `
       SELECT 
@@ -455,11 +451,9 @@ export const getExchangeDashboard = async (req, res) => {
         c.name,
         c.phone,
         i.invoice_date,
-
         e.createdat AS exchange_date,
         FLOOR(DATE_PART('day', NOW() - i.invoice_date)) AS days_since_purchase,
 
-        -- OLD
         e.old_product_code,
         e.old_product_name,
         e.old_purity,
@@ -468,7 +462,6 @@ export const getExchangeDashboard = async (req, res) => {
         e.old_stone_weight,
         e.old_value,
 
-        -- NEW
         e.new_product_code,
         e.new_product_name,
         e.new_purity,
@@ -485,16 +478,17 @@ export const getExchangeDashboard = async (req, res) => {
       LEFT JOIN customers c ON i.customer_id = c.id
 
       WHERE 1=1
+      AND i.store_code = :store_code   
       ${dateFilter}
 
       ORDER BY e.createdat DESC
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements: { store_code: storeCode },
+        type: QueryTypes.SELECT
+      }
     );
 
-    // ============================
-    //  STATS DATA
-    // ============================
     const stats = await sequelize.query(
       `
       SELECT 
@@ -520,22 +514,23 @@ export const getExchangeDashboard = async (req, res) => {
       JOIN invoices i ON e.invoice_id = i.id
 
       WHERE 1=1
+      AND i.store_code = :store_code   
       ${dateFilter}
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements: { store_code: storeCode },
+        type: QueryTypes.SELECT
+      }
     );
 
     return res.json({
       success: true,
-
-      //  SAME STRUCTURE + MERGED
       stats: {
         total_exchanges: parseInt(stats[0].total_exchanges),
         within_7_days: parseInt(stats[0].within_7_days),
         after_7_days: parseInt(stats[0].after_7_days),
         making_charges: parseFloat(stats[0].making_charges)
       },
-
       count: list.length,
       data: list
     });

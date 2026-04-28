@@ -45,7 +45,7 @@ export const getInvoiceForExchange = async (req, res) => {
       LEFT JOIN invoice_items ii ON ii.invoice_id = i.id
 
       WHERE i.invoice_number = :invoice_number
-      LIMIT 1
+     
       `,
       {
         replacements: { invoice_number },

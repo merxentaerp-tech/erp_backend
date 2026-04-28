@@ -429,8 +429,8 @@ export const getExchangeDashboard = async (req, res) => {
   try {
     const { filter = "all" } = req.query;
 
-    //  NEW
-    const storeCode = req.storeCode;
+    // ✅ FIXED LINE
+    const storeCode = req.user?.store_code;
 
     let dateFilter = "";
 

@@ -1,6 +1,6 @@
 import express from "express";
-import { createExchange , getExchangeDashboard,getInvoiceForExchange,} from "../controllers/exchangeController.js";
-import downloadInvoice from "../controllers/invoicePDFController.js";
+import { createExchange , getExchangeDashboard,getInvoiceForExchange,} from "../controller/exchangeController.js";
+// import downloadInvoice from "../controllers/invoicePDFController.js";
 const router = express.Router();
 
 // Create Exchange

@@ -8,8 +8,7 @@ export const getInvoiceForExchange = async (req, res) => {
   try {
     const { invoice_number } = req.params;
 
-    
-    const storeCode = req.storeCode;
+    const storeCode = req.user.store_code; // ✅ FIX
 
     const data = await sequelize.query(
       `
@@ -114,11 +113,8 @@ export const createExchange = async (req, res) => {
       stone_amount = 0
     } = req.body;
 
-    const storeCode = req.storeCode;
+    const storeCode = req.user.store_code; // ✅ FIX
 
-    // ======================
-    // 1. LOCK INVOICE
-    // ======================
     const invoice = await sequelize.query(
       `
       SELECT *
@@ -147,16 +143,10 @@ export const createExchange = async (req, res) => {
 
     const inv = invoice[0];
 
-    // ======================
-    // VALIDATION
-    // ======================
     if (!original_product?.item_id || !new_product?.item_id) {
       throw new Error("Item ID missing");
     }
 
-    // ======================
-    // CUSTOMER
-    // ======================
     const customer = await sequelize.query(
       `SELECT id, name, phone FROM customers WHERE id = :id`,
       {
@@ -167,9 +157,6 @@ export const createExchange = async (req, res) => {
 
     const customerData = customer[0] || {};
 
-    // ======================
-    // DAYS
-    // ======================
     const daysResult = await sequelize.query(
       `SELECT DATE_PART('day', NOW() - invoice_date) AS days FROM invoices WHERE id = :id`,
       {
@@ -181,9 +168,6 @@ export const createExchange = async (req, res) => {
 
     const days = parseInt(daysResult[0].days);
 
-    // ======================
-    // VALUES
-    // ======================
     const oldValue = parseFloat(original_product.value || 0);
     const newValue = parseFloat(new_product.value || 0);
 
@@ -191,21 +175,14 @@ export const createExchange = async (req, res) => {
       throw new Error("Invalid values");
     }
 
-   
     const oldCondition = original_product.condition || "UNKNOWN";
     const newCondition = new_product.condition || "NEW";
 
-    // ======================
-    // MAKING CHARGES
-    // ======================
     let makingCharges = days <= 7 ? 0 : making_charge + stone_amount;
 
     const finalAmount = newValue + makingCharges;
     const difference = finalAmount - oldValue;
 
-    // ======================
-    // EXCHANGE NUMBER
-    // ======================
     const countResult = await sequelize.query(
       `SELECT COUNT(*) as count FROM exchange_logs WHERE invoice_id = :id`,
       {
@@ -220,9 +197,6 @@ export const createExchange = async (req, res) => {
 
     const exchangeInvoiceNo = `EX-${inv.store_code}-${suffix}-${String(count).padStart(2, "0")}`;
 
-    // ======================
-    // CREATE EXCHANGE INVOICE
-    // ======================
     const exchangeInvoiceResult = await sequelize.query(
       `
       INSERT INTO invoices (
@@ -276,9 +250,6 @@ export const createExchange = async (req, res) => {
 
     const exchangeInvoice = exchangeInvoiceResult[0][0];
 
-    // ======================
-    // EXCHANGE LOG 
-    // ======================
     await sequelize.query(
       `
       INSERT INTO exchange_logs (
@@ -316,51 +287,42 @@ export const createExchange = async (req, res) => {
 
     await t.commit();
 
-    // ======================
-    // FINAL RESPONSE 
-    // ======================
-   return res.json({
-  success: true,
-  message: "Exchange Done",
-  data: {
-    invoice_number: inv.invoice_number,
+    return res.json({
+      success: true,
+      message: "Exchange Done",
+      data: {
+        invoice_number: inv.invoice_number,
+        customer: {
+          id: customerData.id,
+          name: customerData.name,
+          phone: customerData.phone
+        },
+        old_product: {
+          name: original_product.product_name,
+          condition: oldCondition,
+          value: oldValue
+        },
+        new_product: {
+          name: new_product.product_name,
+          condition: newCondition,
+          value: newValue
+        },
+        calculation: {
+          making_charges: makingCharges,
+          final_amount: finalAmount,
+          difference: difference
+        },
+        original_invoice: {
+          invoice_number: inv.invoice_number,
+          total_amount: oldValue
+        },
+        exchange_invoice: {
+          invoice_number: exchangeInvoiceNo,
+          total_amount: Math.abs(difference),
+        }
+      }
+    });
 
-    customer: {
-      id: customerData.id,
-      name: customerData.name,
-      phone: customerData.phone
-    },
-
-    old_product: {
-      name: original_product.product_name,
-      condition: oldCondition,
-      value: oldValue
-    },
-
-    new_product: {
-      name: new_product.product_name,
-      condition: newCondition,
-      value: newValue
-    },
-
-    calculation: {
-      making_charges: makingCharges,
-      final_amount: finalAmount,
-      difference: difference
-    },
-
-    original_invoice: {
-      invoice_number: inv.invoice_number,
-      total_amount: oldValue
-    },
-
-    exchange_invoice: {
-      invoice_number: exchangeInvoiceNo,
-      total_amount: Math.abs(difference),
-      // download_url: `/api/exchange/invoice/download/${exchangeInvoiceNo}`
-    }
-  }
-});
   } catch (error) {
     await t.rollback();
 
@@ -379,8 +341,7 @@ export const getExchangeDashboard = async (req, res) => {
   try {
     const { filter = "all" } = req.query;
 
-    // 🔥 NEW
-    const storeCode = req.storeCode;
+    const storeCode = req.user.store_code; // ✅ FIX
 
     let dateFilter = "";
 
@@ -427,7 +388,7 @@ export const getExchangeDashboard = async (req, res) => {
       LEFT JOIN customers c ON i.customer_id = c.id
 
       WHERE 1=1
-      AND i.store_code = :store_code   -- 🔥 ADDED
+      AND i.store_code = :store_code
       ${dateFilter}
 
       ORDER BY e.createdat DESC
@@ -442,28 +403,15 @@ export const getExchangeDashboard = async (req, res) => {
       `
       SELECT 
         COUNT(*) AS total_exchanges,
-
-        COUNT(
-          CASE 
-            WHEN DATE_PART('day', NOW() - i.invoice_date) <= 7 
-            THEN 1 
-          END
-        ) AS within_7_days,
-
-        COUNT(
-          CASE 
-            WHEN DATE_PART('day', NOW() - i.invoice_date) > 7 
-            THEN 1 
-          END
-        ) AS after_7_days,
-
+        COUNT(CASE WHEN DATE_PART('day', NOW() - i.invoice_date) <= 7 THEN 1 END) AS within_7_days,
+        COUNT(CASE WHEN DATE_PART('day', NOW() - i.invoice_date) > 7 THEN 1 END) AS after_7_days,
         COALESCE(SUM(e.making_charges), 0) AS making_charges
 
       FROM exchange_logs e
       JOIN invoices i ON e.invoice_id = i.id
 
       WHERE 1=1
-      AND i.store_code = :store_code   -- 🔥 ADDED
+      AND i.store_code = :store_code
       ${dateFilter}
       `,
       {

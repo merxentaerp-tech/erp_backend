@@ -542,9 +542,17 @@ export const getExchangeDashboard = async (req, res) => {
   try {
     const { filter = "all" } = req.query;
 
-    // ✅ FIXED LINE
-    const storeCode = req.user?.store_code;
+    const storeCode =
+  req.user?.store_code ||
+  req.user?.storeCode ||
+  req.headers.store_code;
 
+if (!storeCode) {
+  return res.status(400).json({
+    success: false,
+    message: "Store code missing (token ya header me bhejo)"
+  });
+}
     let dateFilter = "";
 
     if (filter === "day") {

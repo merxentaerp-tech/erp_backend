@@ -7,7 +7,7 @@ import {
   getInvoiceForExchange,
 } from "../controllers/exchangeController.js";
 
-import downloadInvoice from "../controllers/invoicePDFController.js";
+import downloadInvoice from "../controller/invoicePDFController.js";
 
 import {
   authMiddleware,

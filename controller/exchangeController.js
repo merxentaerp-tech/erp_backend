@@ -183,9 +183,7 @@ export const createExchange = async (req, res) => {
       const dbValue = parseFloat(item.total_amount || 0);
 
       return (
-        normalize(item.product_code) === normalize(original_product.product_code) &&
-        normalize(item.description) === normalize(original_product.product_name) &&
-        Math.abs(dbValue - userValue) < 1
+        normalize(item.product_code) === normalize(original_product.product_code)
       );
     });
 

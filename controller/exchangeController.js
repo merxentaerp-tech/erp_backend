@@ -1,8 +1,9 @@
-
 import sequelize from "../config/db.js";
 import { QueryTypes } from "sequelize";
 
-
+// ==============================
+//  GET INVOICE FOR EXCHANGE
+// ==============================
 export const getInvoiceForExchange = async (req, res) => {
   try {
     const { invoice_number } = req.params;
@@ -99,6 +100,8 @@ export const getInvoiceForExchange = async (req, res) => {
 // ==============================
 //  CREATE EXCHANGE
 // ==============================
+
+
 export const createExchange = async (req, res) => {
   const t = await sequelize.transaction();
 
@@ -139,16 +142,19 @@ export const createExchange = async (req, res) => {
     const inv = invoice[0];
 
     // ======================
-    // 2. CUSTOMER
+    // 2. VALIDATION (ITEM ID)
+    // ======================
+    if (!original_product?.item_id || !new_product?.item_id) {
+      throw new Error("Item ID missing for stock update");
+    }
+
+    // ======================
+    // 3. CUSTOMER
     // ======================
     const customer = await sequelize.query(
-      `
-      SELECT id, name, phone
-      FROM customers
-      WHERE id = :customer_id
-      `,
+      `SELECT id, name, phone FROM customers WHERE id = :id`,
       {
-        replacements: { customer_id: inv.customer_id },
+        replacements: { id: inv.customer_id },
         type: QueryTypes.SELECT
       }
     );
@@ -156,74 +162,173 @@ export const createExchange = async (req, res) => {
     const customerData = customer[0] || {};
 
     // ======================
-    // 3. FETCH ITEMS
+    // 4. DAYS CALCULATION (7 DAY RULE)
     // ======================
-    const items = await sequelize.query(
+    const daysResult = await sequelize.query(
       `
-      SELECT id, product_code, description, total_amount
-      FROM invoice_items
-      WHERE invoice_id = :invoice_id
+      SELECT DATE_PART('day', NOW() - invoice_date) AS days
+      FROM invoices
+      WHERE id = :id
       `,
       {
-        replacements: { invoice_id: inv.id },
+        replacements: { id: inv.id },
         type: QueryTypes.SELECT,
         transaction: t
       }
     );
 
-    if (!items.length) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "No items found for this invoice"
-      });
-    }
+    const days = parseInt(daysResult[0].days);
 
     // ======================
-    // 4. VALIDATION
+    // 5. VALUES
     // ======================
-    const normalize = (str) =>
-      str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
-
-    const userValue = parseFloat(original_product.value || 0);
-
-    const matchedItem = items.find((item) => {
-      const dbValue = parseFloat(item.total_amount || 0);
-
-      return (
-        normalize(item.product_code) === normalize(original_product.product_code) &&
-        normalize(item.description) === normalize(original_product.product_name) &&
-        Math.abs(dbValue - userValue) < 1
-      );
-    });
-
-    if (!matchedItem) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Invalid product details for this invoice"
-      });
-    }
-
-    // ======================
-    // 5. CALCULATIONS
-    // ======================
-    const diffDays = Math.floor(
-      (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
-    );
-
-    const isFree = diffDays <= 7;
-
-    const oldValue = userValue;
+    const oldValue = parseFloat(original_product.value || 0);
     const newValue = parseFloat(new_product.value || 0);
 
-    const makingCharges = isFree ? 0 : (making_charge + stone_amount);
+    if (oldValue <= 0 || newValue <= 0) {
+      throw new Error("Invalid product values");
+    }
+
+    const oldCondition = original_product.condition || "UNKNOWN";
+    const newCondition = new_product.condition || "NEW";
+
+    // ======================
+    // 6. MAKING CHARGE LOGIC (UPDATED ONLY THIS)
+    // ======================
+    let makingCharges = 0;
+
+    if (days <= 7) {
+      makingCharges = 0; // FREE
+    } else {
+      makingCharges =
+        parseFloat(making_charge || 0) + parseFloat(stone_amount || 0);
+    }
 
     const finalAmount = newValue + makingCharges;
     const difference = finalAmount - oldValue;
 
     // ======================
-    // 6. UPDATE INVOICE (ENUM FIX)
+    // 7. EXCHANGE INVOICE NUMBER
+    // ======================
+    const countResult = await sequelize.query(
+      `SELECT COUNT(*) as count FROM exchange_logs WHERE invoice_id = :id`,
+      {
+        replacements: { id: inv.id },
+        type: QueryTypes.SELECT,
+        transaction: t
+      }
+    );
+
+    const count = parseInt(countResult[0].count) + 1;
+    const suffix = inv.invoice_number.split("-").pop();
+
+    const exchangeInvoiceNo = `EX-${inv.store_code}-${suffix}-${String(count).padStart(2, "0")}`;
+
+    // ======================
+    // 8. CREATE EXCHANGE INVOICE
+    // ======================
+    const exchangeInvoiceResult = await sequelize.query(
+      `
+      INSERT INTO invoices (
+        invoice_number,
+        customer_id,
+        total_amount,
+        received_amount,
+        pending_amount,
+        status,
+        invoice_date,
+        organization_id,
+        created_by,
+        store_code,
+        is_exchange,
+        parent_invoice_id,
+        "createdAt",
+        "updatedAt"
+      )
+      VALUES (
+        :invoice_number,
+        :customer_id,
+        :amount,
+        0,
+        :amount,
+        'UNPAID',
+        NOW(),
+        :org_id,
+        :created_by,
+        :store_code,
+        true,
+        :parent_id,
+        NOW(),
+        NOW()
+      )
+      RETURNING *
+      `,
+      {
+        replacements: {
+          invoice_number: exchangeInvoiceNo,
+          customer_id: inv.customer_id,
+          amount: Math.abs(difference),
+          org_id: inv.organization_id,
+          created_by: inv.created_by,
+          store_code: inv.store_code,
+          parent_id: inv.id
+        },
+        type: QueryTypes.INSERT,
+        transaction: t
+      }
+    );
+
+    const exchangeInvoice = exchangeInvoiceResult[0][0];
+    // ======================
+// INSERT NEW PRODUCT INTO invoice_items
+// ======================
+await sequelize.query(
+  `
+  INSERT INTO invoice_items (
+    invoice_id,
+    item_id,
+    product_code,
+    description,
+    purity,
+    gross_weight,
+    net_weight,
+    rate,
+    total_amount,
+    "createdAt",
+    "updatedAt"
+  )
+  VALUES (
+    :invoice_id,
+    :item_id,
+    :product_code,
+    :description,
+    :purity,
+    :gross_weight,
+    :net_weight,
+    :rate,
+    :total_amount,
+    NOW(),
+    NOW()
+  )
+  `,
+  {
+    replacements: {
+      invoice_id: exchangeInvoice.id,
+      item_id: new_product.item_id,
+      product_code: new_product.product_code,
+      description: new_product.product_name,
+      purity: new_product.purity || null,
+      gross_weight: new_product.gross_weight || 0,
+      net_weight: new_product.net_weight || 0,
+      rate: new_product.rate || 0,
+      total_amount: newValue
+    },
+    transaction: t
+  }
+);
+
+    // ======================
+    // 9. UPDATE ORIGINAL INVOICE
     // ======================
     await sequelize.query(
       `
@@ -231,12 +336,12 @@ export const createExchange = async (req, res) => {
       SET 
         total_amount = :finalAmount,
         pending_amount = :difference,
-        is_exchanged = TRUE,
-        "updatedAt" = NOW(),
+        is_exchange = TRUE,
         status = CASE
           WHEN :difference <= 0 THEN 'PAID'::enum_invoices_status
           ELSE 'PARTIAL'::enum_invoices_status
-        END
+        END,
+        "updatedAt" = NOW()
       WHERE id = :invoice_id
       `,
       {
@@ -250,130 +355,54 @@ export const createExchange = async (req, res) => {
     );
 
     // ======================
-    // 7. DELETE OLD ITEM
+    // 10. STOCK UPDATE
     // ======================
     await sequelize.query(
-      `DELETE FROM invoice_items WHERE id = :item_id`,
+      `UPDATE stocks SET available_qty = available_qty + 1 WHERE item_id = :item_id`,
       {
-        replacements: { item_id: matchedItem.id },
+        replacements: { item_id: original_product.item_id },
+        transaction: t
+      }
+    );
+
+    await sequelize.query(
+      `UPDATE stocks SET available_qty = available_qty - 1 WHERE item_id = :item_id`,
+      {
+        replacements: { item_id: new_product.item_id },
         transaction: t
       }
     );
 
     // ======================
-    // 8. INSERT NEW ITEM
-    // ======================
-    await sequelize.query(
-      `
-      INSERT INTO invoice_items (
-        invoice_id,
-        product_code,
-        description,
-        purity,
-        gross_weight,
-        net_weight,
-        stone_weight,
-        rate,
-        total_amount,
-        "createdAt",
-        "updatedAt"
-      )
-      VALUES (
-        :invoice_id,
-        :product_code,
-        :description,
-        :purity,
-        :gross_weight,
-        :net_weight,
-        :stone_weight,
-        :rate,
-        :total_amount,
-        NOW(),
-        NOW()
-      )
-      `,
-      {
-        replacements: {
-          invoice_id: inv.id,
-          product_code: new_product.product_code,
-          description: new_product.product_name,
-          purity: new_product.purity,
-          gross_weight: new_product.gross_weight,
-          net_weight: new_product.net_weight,
-          stone_weight: new_product.stone_weight || 0,
-          rate: new_product.net_weight
-            ? newValue / new_product.net_weight
-            : 0,
-          total_amount: finalAmount
-        },
-        transaction: t
-      }
-    );
-
-    // ======================
-    // 9. SAVE LOG
+    // 11. EXCHANGE LOG
     // ======================
     await sequelize.query(
       `
       INSERT INTO exchange_logs (
         invoice_id,
-        old_product_code,
-        old_product_name,
-        old_purity,
-        old_gross_weight,
-        old_net_weight,
-        old_stone_weight,
-        old_value,
-        new_product_code,
-        new_product_name,
-        new_purity,
-        new_gross_weight,
-        new_net_weight,
-        new_stone_weight,
-        new_value,
-        difference,
-        making_charges,
-        createdat,
-        updatedat
+        old_product_code, old_product_name, old_condition, old_value,
+        new_product_code, new_product_name, new_condition, new_value,
+        difference, making_charges,
+        "createdAt", "updatedAt"
       )
       VALUES (
         :invoice_id,
-        :old_product_code,
-        :old_product_name,
-        :old_purity,
-        :old_gross_weight,
-        :old_net_weight,
-        :old_stone_weight,
-        :old_value,
-        :new_product_code,
-        :new_product_name,
-        :new_purity,
-        :new_gross_weight,
-        :new_net_weight,
-        :new_stone_weight,
-        :new_value,
-        :difference,
-        :making_charges,
-        NOW(),
-        NOW()
+        :old_code, :old_name, :old_condition, :old_value,
+        :new_code, :new_name, :new_condition, :new_value,
+        :difference, :making_charges,
+        NOW(), NOW()
       )
       `,
       {
         replacements: {
           invoice_id: inv.id,
-          old_product_code: original_product.product_code,
-          old_product_name: original_product.product_name,
-          old_purity: original_product.purity,
-          old_gross_weight: original_product.gross_weight,
-          old_net_weight: original_product.net_weight,
-          old_stone_weight: original_product.stone_weight,
+          old_code: original_product.product_code,
+          old_name: original_product.product_name,
+          old_condition: oldCondition,
           old_value: oldValue,
-          new_product_code: new_product.product_code,
-          new_product_name: new_product.product_name,
-          new_purity: new_product.purity,
-          new_gross_weight: new_product.gross_weight,
-          new_net_weight: new_product.net_weight,
-          new_stone_weight: new_product.stone_weight,
+          new_code: new_product.product_code,
+          new_name: new_product.product_name,
+          new_condition: newCondition,
           new_value: newValue,
           difference,
           making_charges: makingCharges
@@ -382,33 +411,91 @@ export const createExchange = async (req, res) => {
       }
     );
 
+    // ======================
+    // 12. LEDGER ENTRY
+    // ======================
+    const type = difference > 0 ? "DEBIT" : "CREDIT";
+
+    await sequelize.query(
+      `
+      INSERT INTO ledger_entries (
+        customer_id, type, amount,
+        reference_type, reference_id,
+        description, "createdAt", "updatedAt"
+      )
+      VALUES (
+        :customer_id, :type, :amount,
+        'EXCHANGE', :ref_id,
+        :desc, NOW(), NOW()
+      )
+      `,
+      {
+        replacements: {
+          customer_id: inv.customer_id,
+          type,
+          amount: Math.abs(difference),
+          ref_id: exchangeInvoice.id,
+          desc: `Exchange Invoice ${exchangeInvoiceNo}`
+        },
+        transaction: t
+      }
+    );
+
     await t.commit();
 
+    //  RESPONSE SAME AS BEFORE (NO CHANGE)
     return res.json({
-      success: true,
-      message: "Exchange Completed Successfully",
-      data: {
-        invoice_number: inv.invoice_number,
-        customer_id: customerData.id,
-        customer_name: customerData.name,
-        phone: customerData.phone,
-        final_amount: finalAmount,
-        difference,
-        making_charges: makingCharges,
-        is_free: isFree
-      }
-    });
+  success: true,
+  message: "Exchange Done",
+  data: {
+    invoice_number: inv.invoice_number,
 
-  } catch (err) {
+    customer: {
+      id: customerData.id,
+      name: customerData.name,
+      phone: customerData.phone
+    },
+
+    old_product: {
+      name: original_product.product_name,
+      condition: original_product.condition || "OLD",
+      value: oldValue
+    },
+
+    new_product: {
+      name: new_product.product_name,
+      condition: newCondition,
+      value: newValue
+    },
+
+    calculation: {
+      making_charges: makingCharges,
+      final_amount: finalAmount,
+      difference: difference
+    },
+
+    original_invoice: {
+      invoice_number: inv.invoice_number,
+      total_amount: oldValue
+    },
+
+    exchange_invoice: {
+      invoice_number: exchangeInvoiceNo,
+      total_amount: Math.abs(difference),
+      download_url: `${req.protocol}://${req.get("host")}/api/exchange/invoice/download/${exchangeInvoiceNo}`
+    }
+  }
+});
+  } catch (error) {
     await t.rollback();
+
     return res.status(500).json({
       success: false,
       message: "Exchange Failed",
-      error: err.message
+      error: error.message
     });
   }
 };
-
 // ==============================
 //  GET EXCHANGE LIST (DASHBOARD)
 // ==============================

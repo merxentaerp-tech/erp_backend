@@ -226,10 +226,10 @@ export const createExchange = async (req, res) => {
         pending_amount = GREATEST(:difference, 0),
         is_exchanged = TRUE,
         "updatedAt" = NOW(),
-        status = CASE
-          WHEN :difference <= 0 THEN 'PAID'
-          ELSE 'PARTIAL'
-        END
+       status = CASE
+  WHEN :difference <= 0 THEN 'PAID'
+  ELSE 'PARTIAL'
+END
       WHERE id = :invoice_id
       `,
       {

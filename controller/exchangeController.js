@@ -542,7 +542,6 @@ export const getExchangeDashboard = async (req, res) => {
       SELECT 
         e.id,
 
-        -- 🔥 AUTO GENERATED EXCHANGE NUMBER
         CONCAT(
           'EXG-',
           TO_CHAR(e.createdat, 'YYYY-MM'),
@@ -619,7 +618,16 @@ export const getExchangeDashboard = async (req, res) => {
           END
         ) AS after_7_days,
 
-        COALESCE(SUM(e.making_charges), 0) AS making_charges
+        -- 🔥 FIX APPLIED HERE ONLY
+        COALESCE(
+          SUM(
+            CASE 
+              WHEN DATE_PART('day', NOW() - i.invoice_date) > 7 
+              THEN e.making_charges
+              ELSE 0
+            END
+          ), 
+        0) AS making_charges
 
       FROM exchange_logs e
       JOIN invoices i ON e.invoice_id = i.id

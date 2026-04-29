@@ -33,7 +33,7 @@ const corsOptions = {
   origin: [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://erp-dash-board.vercel.app/",
+    "https://erp-dash-board.vercel.app",
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],

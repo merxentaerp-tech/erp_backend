@@ -516,16 +516,17 @@ export const getExchangeDashboard = async (req, res) => {
     const { filter = "all" } = req.query;
 
     const storeCode =
-  req.user?.store_code ||
-  req.user?.storeCode ||
-  req.headers.store_code;
+      req.user?.store_code ||
+      req.user?.storeCode ||
+      req.headers.store_code;
 
-if (!storeCode) {
-  return res.status(400).json({
-    success: false,
-    message: "Store code missing (token ya header me bhejo)"
-  });
-}
+    if (!storeCode) {
+      return res.status(400).json({
+        success: false,
+        message: "Store code missing (token ya header me bhejo)"
+      });
+    }
+
     let dateFilter = "";
 
     if (filter === "day") {
@@ -540,11 +541,28 @@ if (!storeCode) {
       `
       SELECT 
         e.id,
+
+        -- 🔥 AUTO GENERATED EXCHANGE NUMBER
+        CONCAT(
+          'EXG-',
+          TO_CHAR(e.createdat, 'YYYY-MM'),
+          '-',
+          LPAD(
+            ROW_NUMBER() OVER (
+              PARTITION BY DATE_TRUNC('month', e.createdat)
+              ORDER BY e.createdat
+            )::text,
+            3,
+            '0'
+          )
+        ) AS exchange_number,
+
         i.invoice_number,
         c.name,
         c.phone,
         i.invoice_date,
         e.createdat AS exchange_date,
+
         FLOOR(DATE_PART('day', NOW() - i.invoice_date)) AS days_since_purchase,
 
         e.old_product_code,

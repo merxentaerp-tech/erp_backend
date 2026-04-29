@@ -111,7 +111,10 @@ export const createExchange = async (req, res) => {
       stone_amount = 0
     } = req.body;
 
-    const storeCode = req.user?.store_code;
+    const storeCode =
+  req.user?.store_code ||
+  req.user?.storeCode ||
+  req.headers.store_code;
 
     if (!storeCode) {
       await t.rollback();

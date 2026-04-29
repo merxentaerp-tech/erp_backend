@@ -1548,6 +1548,8 @@ export const approveAndDispatchRequest = async (req, res) => {
 };
 
 
+
+
 // ==========================================
 // STORE -> RECEIVE TRANSFER
 // ==========================================
@@ -2349,6 +2351,204 @@ export const getEWayBillByTransferId = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch e-way bill",
+      error: error.message,
+    });
+  }
+};
+
+
+
+
+export const estimateDispatchRequestValue = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const user = req.user;
+    const parsedItems = parseItemsFromBody(req.body);
+
+    if (!Array.isArray(parsedItems) || parsedItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Items are required",
+      });
+    }
+
+    const request = await StockRequest.findByPk(requestId);
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Stock request not found",
+      });
+    }
+
+    if (Number(request.to_organization_id) !== Number(user.organization_id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to estimate this request",
+      });
+    }
+
+    const requestItems = await StockRequestItem.findAll({
+      where: { request_id: request.id },
+      raw: true,
+    });
+
+    const requestItemMap = new Map(
+      requestItems.map((x) => [Number(x.item_id), x])
+    );
+
+    let totalRequested = 0;
+    let totalSelectedQty = 0;
+    let totalWeight = 0;
+    let estimatedValue = 0;
+
+    const items = [];
+
+    for (const row of parsedItems) {
+      const itemId = toNumber(row.item_id);
+      const qty = toNumber(row.qty);
+
+      if (!itemId || qty < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Each item must have valid item_id and qty",
+        });
+      }
+
+      const requestItem = requestItemMap.get(itemId);
+
+      if (!requestItem) {
+        return res.status(400).json({
+          success: false,
+          message: `Requested item not found for item_id ${itemId}`,
+        });
+      }
+
+      const requestedQty = toNumber(requestItem.request_qty);
+
+      if (qty > requestedQty) {
+        return res.status(400).json({
+          success: false,
+          message: `Qty cannot exceed requested qty for item ${itemId}`,
+        });
+      }
+
+      const [itemData] = await sequelize.query(
+        `
+        SELECT 
+          i.id,
+          i.item_name,
+          i.article_code,
+          i.sku_code,
+          i.category,
+          i.metal_type,
+          i.purity,
+          i.unit,
+          COALESCE(i.gross_weight, 0) AS gross_weight,
+          COALESCE(i.net_weight, i.gross_weight, 0) AS net_weight,
+          COALESCE(i.net_weight, i.gross_weight, 0) AS per_item_weight,
+          COALESCE(i.sale_rate, i.purchase_rate, 0) AS rate
+        FROM items i
+        WHERE i.id = :itemId
+        LIMIT 1
+        `,
+        {
+          replacements: { itemId },
+          type: QueryTypes.SELECT,
+        }
+      );
+
+      if (!itemData) {
+        return res.status(404).json({
+          success: false,
+          message: `Item not found for item_id ${itemId}`,
+        });
+      }
+
+      const [stock] = await sequelize.query(
+        `
+        SELECT 
+          COALESCE(available_qty, 0) AS available_qty,
+          COALESCE(available_weight, 0) AS available_weight
+        FROM stocks
+        WHERE organization_id = :organizationId
+          AND item_id = :itemId
+        LIMIT 1
+        `,
+        {
+          replacements: {
+            organizationId: user.organization_id,
+            itemId,
+          },
+          type: QueryTypes.SELECT,
+        }
+      );
+
+      const availableQty = toNumber(stock?.available_qty);
+      const availableWeight = toNumber(stock?.available_weight);
+
+      const perItemWeight = toNumber(itemData.per_item_weight);
+      const rate = toNumber(itemData.rate);
+
+      const totalItemWeight = qty * perItemWeight;
+      const itemEstimatedValue = totalItemWeight * rate;
+
+      const isAvailable =
+        availableQty >= qty &&
+        (totalItemWeight <= 0 || availableWeight >= totalItemWeight);
+
+      totalRequested += requestedQty;
+      totalSelectedQty += qty;
+      totalWeight += totalItemWeight;
+      estimatedValue += itemEstimatedValue;
+
+      items.push({
+        item_id: itemId,
+        item_name: itemData.item_name,
+        article_code: itemData.article_code,
+        sku_code: itemData.sku_code,
+        category: itemData.category,
+        metal_type: itemData.metal_type,
+        purity: itemData.purity,
+        unit: itemData.unit,
+
+        requested_qty: requestedQty,
+        selected_qty: qty,
+
+        available_qty: availableQty,
+        available_weight: availableWeight,
+
+        gross_weight: toNumber(itemData.gross_weight),
+        net_weight: toNumber(itemData.net_weight),
+        per_item_weight: perItemWeight,
+        total_weight: Number(totalItemWeight.toFixed(3)),
+
+        rate,
+        estimated_value: Number(itemEstimatedValue.toFixed(2)),
+
+        is_available: isAvailable,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Dispatch estimate calculated successfully",
+      data: {
+        request_id: request.id,
+        request_no: request.request_no,
+        total_requested: totalRequested,
+        total_selected_qty: totalSelectedQty,
+        total_weight: Number(totalWeight.toFixed(3)),
+        estimated_value: Number(estimatedValue.toFixed(2)),
+        items,
+      },
+    });
+  } catch (error) {
+    console.error("estimateDispatchRequestValue error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to calculate dispatch estimate",
       error: error.message,
     });
   }

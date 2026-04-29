@@ -285,9 +285,6 @@ export const getTodayAuditItems = async (req, res) => {
       ];
     }
 
-    // =================================================
-    // FETCH INVENTORY ITEMS
-    // =================================================
     const items = await Item.findAll({
       attributes: [
         "id",
@@ -330,12 +327,12 @@ export const getTodayAuditItems = async (req, res) => {
           ],
         },
       ],
-      order: [["id", "DESC"]],
+      order: [
+        ["category", "ASC"],
+        ["id", "DESC"],
+      ],
     });
 
-    // =================================================
-    // FIND TODAY'S AUDIT
-    // =================================================
     const todayAudit = await InventoryAudit.findOne({
       where: {
         organization_id: scope.organization_id,
@@ -349,9 +346,7 @@ export const getTodayAuditItems = async (req, res) => {
 
     if (todayAudit) {
       const auditItems = await InventoryAuditItem.findAll({
-        where: {
-          audit_id: todayAudit.id,
-        },
+        where: { audit_id: todayAudit.id },
         attributes: [
           "id",
           "audit_id",
@@ -373,11 +368,9 @@ export const getTodayAuditItems = async (req, res) => {
       );
     }
 
-    // =================================================
-    // SPLIT INTO AUDITED + PENDING
-    // =================================================
     const auditedItems = [];
     const pendingItems = [];
+    const categoryMap = {};
 
     items.forEach((item, index) => {
       const stock =
@@ -386,6 +379,7 @@ export const getTodayAuditItems = async (req, res) => {
           : null;
 
       const auditItem = auditItemMap.get(Number(item.id));
+      const itemCategory = item.category || "Uncategorized";
 
       const row = {
         idx: index + 1,
@@ -394,7 +388,7 @@ export const getTodayAuditItems = async (req, res) => {
         sku_code: item.sku_code || "",
         item_name: item.item_name || "",
         metal_type: item.metal_type || "",
-        category: item.category || "",
+        category: itemCategory,
         purity: item.purity || "",
         gross_weight: safeNum(item.gross_weight),
         net_weight: safeNum(item.net_weight),
@@ -404,11 +398,11 @@ export const getTodayAuditItems = async (req, res) => {
         sale_rate: safeNum(item.sale_rate),
         unit: item.unit || "",
         current_status: item.current_status || "",
+
         system_qty: safeNum(stock?.available_qty),
         system_weight: safeNum(stock?.available_weight),
         stock_id: stock?.id || null,
 
-        // audit state
         audit_item_id: auditItem ? safeNum(auditItem.id) : null,
         audit_result: auditItem?.audit_result || "pending",
         is_checked: auditItem ? !!auditItem.is_checked : false,
@@ -424,12 +418,34 @@ export const getTodayAuditItems = async (req, res) => {
         is_selected: auditItem ? !!auditItem.is_checked : false,
       };
 
-      if (auditItem && auditItem.is_checked) {
+      if (!categoryMap[itemCategory]) {
+        categoryMap[itemCategory] = {
+          category: itemCategory,
+          total_items: 0,
+          audited_items: 0,
+          pending_items: 0,
+          is_completed: false,
+          items: [],
+        };
+      }
+
+      categoryMap[itemCategory].total_items += 1;
+
+      if (row.is_checked) {
         auditedItems.push(row);
+        categoryMap[itemCategory].audited_items += 1;
       } else {
         pendingItems.push(row);
+        categoryMap[itemCategory].pending_items += 1;
       }
+
+      categoryMap[itemCategory].items.push(row);
     });
+
+    const categories = Object.values(categoryMap).map((cat) => ({
+      ...cat,
+      is_completed: cat.pending_items === 0,
+    }));
 
     return res.status(200).json({
       success: true,
@@ -441,12 +457,18 @@ export const getTodayAuditItems = async (req, res) => {
       district_code: scope.district_code,
       audit_id: todayAudit?.id || null,
       audit_no: todayAudit?.audit_no || null,
+      status: todayAudit?.status || null,
+      verification_status: todayAudit?.verification_status || null,
       summary: {
+        total_categories: categories.length,
+        completed_categories: categories.filter((c) => c.is_completed).length,
+        pending_categories: categories.filter((c) => !c.is_completed).length,
         total_items: items.length,
         audited_items: auditedItems.length,
         pending_items: pendingItems.length,
       },
       data: {
+        categories,
         audited_items: auditedItems,
         pending_items: pendingItems,
       },
@@ -460,7 +482,6 @@ export const getTodayAuditItems = async (req, res) => {
     });
   }
 };
-
 /* =========================================================
    2) CREATE DAILY AUDIT
    - selected items => present/missing
@@ -472,7 +493,21 @@ export const createDailyAudit = async (req, res) => {
 
   try {
     const user = req.user;
-    const { audit_date, remark, items = [], submit = true } = req.body;
+    const {
+      audit_date,
+      remark,
+      category,
+      items = [],
+      submit = false,
+    } = req.body;
+
+    if (!category) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Category is required",
+      });
+    }
 
     if (!Array.isArray(items)) {
       await t.rollback();
@@ -485,25 +520,9 @@ export const createDailyAudit = async (req, res) => {
     const scope = await getUserScope(user);
     const finalAuditDate = audit_date || getTodayDate();
 
-    const existingAudit = await InventoryAudit.findOne({
-      where: {
-        organization_id: scope.organization_id,
-        audit_date: finalAuditDate,
-        audit_type: "daily",
-      },
-      transaction: t,
-    });
-
-    if (existingAudit) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Audit already submitted for this date",
-      });
-    }
-
     const itemWhere = {
       organization_id: scope.organization_id,
+      category,
     };
 
     if (
@@ -533,8 +552,73 @@ export const createDailyAudit = async (req, res) => {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "No stock items found for audit",
+        message: "No stock items found for this category",
       });
+    }
+
+    let auditHeader = await InventoryAudit.findOne({
+      where: {
+        organization_id: scope.organization_id,
+        audit_date: finalAuditDate,
+        audit_type: "daily",
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (
+      auditHeader &&
+      ["submitted", "verified", "rejected"].includes(auditHeader.status)
+    ) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "This audit is already locked and cannot be changed",
+      });
+    }
+
+    if (!auditHeader) {
+      const totalItems = await Item.count({
+        where: { organization_id: scope.organization_id },
+        transaction: t,
+      });
+
+      auditHeader = await InventoryAudit.create(
+        {
+          audit_no: generateAuditNo(scope.organization_id),
+          organization_id: scope.organization_id,
+          organization_level: scope.organization_level,
+          audit_scope: "self",
+          audit_date: finalAuditDate,
+          audit_type: "daily",
+
+          parent_organization_id: scope.parent_organization_id,
+          visible_to_organization_id:
+            scope.visible_to_organization_id ||
+            scope.parent_organization_id ||
+            scope.district_id ||
+            scope.organization_id,
+
+          store_id: scope.store_id,
+          store_code: scope.store_code,
+          store_name: scope.store_name,
+          district_id: scope.district_id,
+          district_code: scope.district_code,
+          district_name: scope.district_name,
+
+          total_items: totalItems,
+          checked_items: 0,
+          present_items: 0,
+          missing_items: 0,
+          pending_items: totalItems,
+
+          status: "draft",
+          verification_status: "draft",
+          remark: remark || null,
+          created_by: user.id,
+        },
+        { transaction: t }
+      );
     }
 
     const submittedMap = new Map();
@@ -544,92 +628,56 @@ export const createDailyAudit = async (req, res) => {
       if (itemId) submittedMap.set(itemId, row);
     }
 
-    // ✅ MAIN VALIDATION: submit true hai to unchecked/missing/pending item ka reason required
-    if (submit) {
-      const reasonErrors = [];
+    const reasonErrors = [];
 
-      for (const dbItem of dbItems) {
-        const itemId = safeNum(dbItem.id);
-        const submittedRow = submittedMap.get(itemId);
+    for (const dbItem of dbItems) {
+      const submittedRow = submittedMap.get(Number(dbItem.id));
 
-        if (!submittedRow) {
-          reasonErrors.push({
-            item_id: itemId,
-            article_code: dbItem.article_code || null,
-            sku_code: dbItem.sku_code || null,
-            item_name: dbItem.item_name || null,
-            message: "Item not selected. Reason is required.",
-          });
-          continue;
-        }
-
-        const auditResult = String(
-          submittedRow.audit_result || ""
-        ).toLowerCase();
-
-        const reason = String(
-          submittedRow.missing_reason ||
-            submittedRow.reason ||
-            submittedRow.checklist_note ||
-            ""
-        ).trim();
-
-        if (["missing", "pending"].includes(auditResult) && !reason) {
-          reasonErrors.push({
-            item_id: itemId,
-            article_code: dbItem.article_code || null,
-            sku_code: dbItem.sku_code || null,
-            item_name: dbItem.item_name || null,
-            audit_result: auditResult,
-            message: "Reason is required for missing/pending item.",
-          });
-        }
+      if (!submittedRow) {
+        reasonErrors.push({
+          item_id: dbItem.id,
+          article_code: dbItem.article_code || null,
+          sku_code: dbItem.sku_code || null,
+          item_name: dbItem.item_name || null,
+          category: dbItem.category || null,
+          message: "Category item not selected. Reason is required.",
+        });
+        continue;
       }
 
-      if (reasonErrors.length > 0) {
-        await t.rollback();
-        return res.status(400).json({
-          success: false,
-          message: "Reason required for unchecked/missing/pending items",
-          count: reasonErrors.length,
-          data: reasonErrors,
+      const auditResult = String(submittedRow.audit_result || "").toLowerCase();
+
+      const reason = String(
+        submittedRow.missing_reason ||
+          submittedRow.reason ||
+          submittedRow.checklist_note ||
+          ""
+      ).trim();
+
+      if (["missing", "pending"].includes(auditResult) && !reason) {
+        reasonErrors.push({
+          item_id: dbItem.id,
+          article_code: dbItem.article_code || null,
+          sku_code: dbItem.sku_code || null,
+          item_name: dbItem.item_name || null,
+          category: dbItem.category || null,
+          audit_result: auditResult,
+          message: "Reason is required for missing/pending item.",
         });
       }
     }
 
-    const auditHeader = await InventoryAudit.create(
-      {
-        audit_no: generateAuditNo(scope.organization_id),
-        organization_id: scope.organization_id,
-        organization_level: scope.organization_level,
-        audit_scope: "self",
-        audit_date: finalAuditDate,
-        audit_type: "daily",
-        parent_organization_id: scope.parent_organization_id,
-        visible_to_organization_id: scope.visible_to_organization_id,
-        store_id: scope.store_id,
-        store_code: scope.store_code,
-        store_name: scope.store_name,
-        district_id: scope.district_id,
-        district_code: scope.district_code,
-        district_name: scope.district_name,
-        total_items: dbItems.length,
-        checked_items: 0,
-        present_items: 0,
-        missing_items: 0,
-        pending_items: 0,
-        status: submit ? "submitted" : "draft",
-        remark: remark || null,
-        submitted_at: submit ? new Date() : null,
-        created_by: user.id,
-      },
-      { transaction: t }
-    );
+    if (reasonErrors.length > 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Reason required for category missing/pending items",
+        count: reasonErrors.length,
+        data: reasonErrors,
+      });
+    }
 
-    let checked = 0;
-    let present = 0;
-    let missing = 0;
-    let pending = 0;
+    let savedCount = 0;
 
     for (const dbItem of dbItems) {
       const stock =
@@ -637,107 +685,108 @@ export const createDailyAudit = async (req, res) => {
           ? dbItem.stocks[0]
           : null;
 
-      const submittedRow = submittedMap.get(safeNum(dbItem.id));
+      const submittedRow = submittedMap.get(Number(dbItem.id));
 
       const systemQty = safeNum(stock?.available_qty);
       const systemWeight = safeNum(stock?.available_weight);
 
-      let finalResult = "pending";
-      let physicalQty = 0;
-      let physicalWeight = 0;
-      let checklistNote = null;
-      let missingReason = null;
+      const requestedResult = String(
+        submittedRow.audit_result || ""
+      ).toLowerCase();
 
-      if (submittedRow) {
-        const requestedResult = String(
-          submittedRow.audit_result || ""
-        ).toLowerCase();
+      const finalResult = [
+        "present",
+        "missing",
+        "pending",
+        "mismatch",
+        "extra",
+      ].includes(requestedResult)
+        ? requestedResult
+        : "pending";
 
-        finalResult = [
-          "present",
-          "missing",
-          "pending",
-          "mismatch",
-          "extra",
-        ].includes(requestedResult)
-          ? requestedResult
-          : "pending";
+      const physicalQty =
+        submittedRow.physical_qty !== undefined
+          ? safeNum(submittedRow.physical_qty)
+          : finalResult === "present"
+          ? systemQty
+          : 0;
 
-        physicalQty =
-          submittedRow.physical_qty !== undefined
-            ? safeNum(submittedRow.physical_qty)
-            : finalResult === "present"
-            ? systemQty
-            : 0;
+      const physicalWeight =
+        submittedRow.physical_weight !== undefined
+          ? safeNum(submittedRow.physical_weight)
+          : finalResult === "present"
+          ? systemWeight
+          : 0;
 
-        physicalWeight =
-          submittedRow.physical_weight !== undefined
-            ? safeNum(submittedRow.physical_weight)
-            : finalResult === "present"
-            ? systemWeight
-            : 0;
+      const checklistNote =
+        submittedRow.checklist_note || submittedRow.note || null;
 
-        checklistNote = submittedRow.checklist_note || submittedRow.note || null;
+      const missingReason =
+        submittedRow.missing_reason || submittedRow.reason || null;
 
-        missingReason =
-          submittedRow.missing_reason || submittedRow.reason || null;
-      }
+      const payload = {
+        audit_id: auditHeader.id,
+        item_id: dbItem.id,
+        article_code: dbItem.article_code || null,
+        sku_code: dbItem.sku_code || null,
+        item_name: dbItem.item_name || null,
+        metal_type: dbItem.metal_type || null,
+        category: dbItem.category || null,
+        purity: dbItem.purity || null,
 
-      if (finalResult !== "pending") checked++;
-      if (finalResult === "present") present++;
-      if (finalResult === "missing") missing++;
-      if (finalResult === "pending") pending++;
+        system_qty: systemQty,
+        system_weight: systemWeight,
+        physical_qty: physicalQty,
+        physical_weight: physicalWeight,
 
-      const auditItem = await InventoryAuditItem.create(
-        {
+        audit_result: finalResult,
+        is_checked: finalResult !== "pending",
+        is_available: finalResult === "present",
+        is_matched:
+          finalResult === "present" &&
+          physicalQty === systemQty &&
+          physicalWeight === systemWeight,
+        is_missing: finalResult === "missing",
+        is_extra: finalResult === "extra",
+
+        variance_qty: Number((physicalQty - systemQty).toFixed(3)),
+        variance_weight: Number((physicalWeight - systemWeight).toFixed(3)),
+
+        checklist_note: checklistNote,
+        missing_reason: missingReason,
+        reason_submitted_at: missingReason ? new Date() : null,
+        reason_submitted_by: missingReason ? user.id : null,
+
+        escalation_status:
+          finalResult === "missing"
+            ? "under_review"
+            : finalResult === "pending"
+            ? "audit_pending"
+            : "none",
+
+        image_url: submittedRow?.image_url || null,
+        attachment_url: submittedRow?.attachment_url || null,
+      };
+
+      const existingAuditItem = await InventoryAuditItem.findOne({
+        where: {
           audit_id: auditHeader.id,
           item_id: dbItem.id,
-          article_code: dbItem.article_code || null,
-          sku_code: dbItem.sku_code || null,
-          item_name: dbItem.item_name || null,
-          metal_type: dbItem.metal_type || null,
-          category: dbItem.category || null,
-          purity: dbItem.purity || null,
-
-          system_qty: systemQty,
-          system_weight: systemWeight,
-          physical_qty: physicalQty,
-          physical_weight: physicalWeight,
-
-          audit_result: finalResult,
-          is_checked: finalResult !== "pending",
-          is_available: finalResult === "present",
-          is_matched:
-            finalResult === "present" &&
-            physicalQty === systemQty &&
-            physicalWeight === systemWeight,
-          is_missing: finalResult === "missing",
-          is_extra: finalResult === "extra",
-
-          variance_qty: Number((physicalQty - systemQty).toFixed(3)),
-          variance_weight: Number((physicalWeight - systemWeight).toFixed(3)),
-
-          checklist_note: checklistNote,
-          missing_reason: missingReason,
-          reason_submitted_at: missingReason ? new Date() : null,
-          reason_submitted_by: missingReason ? user.id : null,
-
-          escalation_status:
-            finalResult === "missing"
-              ? missingReason
-                ? "under_review"
-                : "reason_pending"
-              : finalResult === "pending"
-              ? "audit_pending"
-              : "none",
-
-          image_url: submittedRow?.image_url || null,
-          attachment_url: submittedRow?.attachment_url || null,
         },
-        { transaction: t }
-      );
+        transaction: t,
+      });
 
-      // ✅ Item checked/missing/mismatch/extra hua to item flag true
+      let auditItem;
+
+      if (existingAuditItem) {
+        await existingAuditItem.update(payload, { transaction: t });
+        auditItem = existingAuditItem;
+      } else {
+        auditItem = await InventoryAuditItem.create(payload, {
+          transaction: t,
+        });
+      }
+
       if (finalResult !== "pending") {
         await Item.update(
           {
@@ -754,38 +803,6 @@ export const createDailyAudit = async (req, res) => {
         );
       }
 
-      if (finalResult === "missing" && !missingReason) {
-        await InventoryAuditFollowup.create(
-          {
-            audit_id: auditHeader.id,
-            audit_item_id: auditItem.id,
-            item_id: dbItem.id,
-            followup_date: finalAuditDate,
-            followup_type: "reason_request",
-            status: "open",
-            note: "Item marked missing during daily audit. Reason required.",
-            created_by: user.id,
-          },
-          { transaction: t }
-        );
-      }
-
-      if (finalResult === "pending") {
-        await InventoryAuditFollowup.create(
-          {
-            audit_id: auditHeader.id,
-            audit_item_id: auditItem.id,
-            item_id: dbItem.id,
-            followup_date: finalAuditDate,
-            followup_type: "audit_pending",
-            status: "open",
-            note: "This stock item was not audited. Please complete audit and add note.",
-            created_by: user.id,
-          },
-          { transaction: t }
-        );
-      }
-
       await createAuditLog({
         t,
         req,
@@ -799,10 +816,14 @@ export const createDailyAudit = async (req, res) => {
             ? "mark_missing"
             : finalResult === "present"
             ? "mark_present"
+            : finalResult === "mismatch"
+            ? "mark_mismatch"
+            : finalResult === "extra"
+            ? "mark_extra"
             : "mark_pending",
         status: finalResult,
         reference_no: auditHeader.audit_no,
-        title: "Audit item updated",
+        title: "Category audit item updated",
         audit_date: finalAuditDate,
         item_id: dbItem.id,
         article_code: dbItem.article_code || null,
@@ -816,6 +837,86 @@ export const createDailyAudit = async (req, res) => {
           user_id: user.id,
         },
       });
+
+      savedCount++;
+    }
+
+    const allAuditItems = await InventoryAuditItem.findAll({
+      where: { audit_id: auditHeader.id },
+      transaction: t,
+    });
+
+    const checked = allAuditItems.filter((x) => x.is_checked).length;
+    const present = allAuditItems.filter(
+      (x) => x.audit_result === "present"
+    ).length;
+    const missing = allAuditItems.filter(
+      (x) => x.audit_result === "missing"
+    ).length;
+    const pending = Math.max(safeNum(auditHeader.total_items) - checked, 0);
+
+    let finalStatus = auditHeader.status;
+    let finalVerificationStatus = auditHeader.verification_status || "draft";
+    let submittedAt = auditHeader.submitted_at || null;
+
+    if (submit) {
+      const allOrgItems = await Item.findAll({
+        where: { organization_id: scope.organization_id },
+        attributes: ["id", "article_code", "sku_code", "item_name", "category"],
+        transaction: t,
+      });
+
+      const auditMap = new Map(
+        allAuditItems.map((row) => [Number(row.item_id), row])
+      );
+
+      const pendingErrors = [];
+
+      for (const item of allOrgItems) {
+        const auditItem = auditMap.get(Number(item.id));
+
+        if (!auditItem) {
+          pendingErrors.push({
+            item_id: item.id,
+            article_code: item.article_code || null,
+            sku_code: item.sku_code || null,
+            item_name: item.item_name || null,
+            category: item.category || null,
+            message: "Item audit not completed",
+          });
+          continue;
+        }
+
+        if (
+          ["missing", "pending"].includes(auditItem.audit_result) &&
+          !auditItem.missing_reason &&
+          !auditItem.checklist_note
+        ) {
+          pendingErrors.push({
+            item_id: item.id,
+            article_code: item.article_code || null,
+            sku_code: item.sku_code || null,
+            item_name: item.item_name || null,
+            category: item.category || null,
+            audit_result: auditItem.audit_result,
+            message: "Reason is required",
+          });
+        }
+      }
+
+      if (pendingErrors.length > 0) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Audit cannot be submitted. Some items are not audited.",
+          count: pendingErrors.length,
+          data: pendingErrors,
+        });
+      }
+
+      finalStatus = "submitted";
+      finalVerificationStatus = "pending";
+      submittedAt = new Date();
     }
 
     await auditHeader.update(
@@ -824,6 +925,10 @@ export const createDailyAudit = async (req, res) => {
         present_items: present,
         missing_items: missing,
         pending_items: pending,
+        status: finalStatus,
+        verification_status: finalVerificationStatus,
+        submitted_at: submittedAt,
+        remark: remark || auditHeader.remark || null,
       },
       { transaction: t }
     );
@@ -834,15 +939,18 @@ export const createDailyAudit = async (req, res) => {
       module: "inventory_audit",
       entity_type: "audit",
       entity_id: auditHeader.id,
-      action: submit ? "submit" : "create",
-      status: auditHeader.status,
+      action: submit ? "submit" : "category_submit",
+      status: finalStatus,
       reference_no: auditHeader.audit_no,
-      title: "Daily inventory audit created",
+      title: submit
+        ? "Daily inventory audit submitted"
+        : "Inventory audit category submitted",
       audit_date: finalAuditDate,
       remarks: remark || null,
-      new_values: auditHeader.toJSON(),
       meta: {
-        total_items: dbItems.length,
+        category,
+        saved_items: savedCount,
+        total_items: auditHeader.total_items,
         checked,
         present,
         missing,
@@ -856,21 +964,26 @@ export const createDailyAudit = async (req, res) => {
 
     await t.commit();
 
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message: "Daily audit submitted successfully",
+      message: submit
+        ? "Daily audit submitted successfully"
+        : "Category audit saved successfully",
       data: {
         id: auditHeader.id,
         audit_no: auditHeader.audit_no,
         audit_date: auditHeader.audit_date,
         organization_id: auditHeader.organization_id,
         organization_level: auditHeader.organization_level,
-        total_items: dbItems.length,
+        category,
+        saved_items: savedCount,
+        total_items: auditHeader.total_items,
         checked_items: checked,
         present_items: present,
         missing_items: missing,
         pending_items: pending,
-        status: auditHeader.status,
+        status: finalStatus,
+        verification_status: finalVerificationStatus,
       },
     });
   } catch (error) {
@@ -878,7 +991,7 @@ export const createDailyAudit = async (req, res) => {
     console.error("createDailyAudit error:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to create daily audit",
+      message: "Failed to save daily audit",
       error: error.message,
     });
   }
@@ -934,6 +1047,7 @@ export const getAuditDetails = async (req, res) => {
     const user = req.user;
     const scope = await getUserScope(user);
     const { id } = req.params;
+    const { category } = req.query;
 
     const whereClause = { id: safeNum(id) };
 
@@ -954,7 +1068,12 @@ export const getAuditDetails = async (req, res) => {
           model: InventoryAuditItem,
           as: "audit_items",
           required: false,
+          where: category ? { category } : undefined,
         },
+      ],
+      order: [
+        [{ model: InventoryAuditItem, as: "audit_items" }, "category", "ASC"],
+        [{ model: InventoryAuditItem, as: "audit_items" }, "id", "DESC"],
       ],
     });
 
@@ -965,10 +1084,74 @@ export const getAuditDetails = async (req, res) => {
       });
     }
 
+    const json = audit.toJSON();
+    const auditItems = json.audit_items || [];
+
+    const categoryMap = {};
+
+    auditItems.forEach((item) => {
+      const itemCategory = item.category || "Uncategorized";
+
+      if (!categoryMap[itemCategory]) {
+        categoryMap[itemCategory] = {
+          category: itemCategory,
+          total_items: 0,
+          audited_items: 0,
+          pending_items: 0,
+          present_items: 0,
+          missing_items: 0,
+          mismatch_items: 0,
+          extra_items: 0,
+          is_completed: false,
+          items: [],
+        };
+      }
+
+      categoryMap[itemCategory].total_items += 1;
+
+      if (item.is_checked) {
+        categoryMap[itemCategory].audited_items += 1;
+      } else {
+        categoryMap[itemCategory].pending_items += 1;
+      }
+
+      if (item.audit_result === "present") {
+        categoryMap[itemCategory].present_items += 1;
+      }
+
+      if (item.audit_result === "missing") {
+        categoryMap[itemCategory].missing_items += 1;
+      }
+
+      if (item.audit_result === "mismatch") {
+        categoryMap[itemCategory].mismatch_items += 1;
+      }
+
+      if (item.audit_result === "extra") {
+        categoryMap[itemCategory].extra_items += 1;
+      }
+
+      categoryMap[itemCategory].items.push(item);
+    });
+
+    const categories = Object.values(categoryMap).map((cat) => ({
+      ...cat,
+      is_completed: cat.pending_items === 0,
+    }));
+
     return res.status(200).json({
       success: true,
       message: "Audit details fetched successfully",
-      data: audit,
+      data: {
+        ...json,
+        category_filter: category || null,
+        category_summary: {
+          total_categories: categories.length,
+          completed_categories: categories.filter((c) => c.is_completed).length,
+          pending_categories: categories.filter((c) => !c.is_completed).length,
+        },
+        categories,
+      },
     });
   } catch (error) {
     console.error("getAuditDetails error:", error);
@@ -979,7 +1162,6 @@ export const getAuditDetails = async (req, res) => {
     });
   }
 };
-
 /* =========================================================
    5) PENDING REMINDERS
 ========================================================= */

@@ -112,9 +112,9 @@ export const createExchange = async (req, res) => {
     } = req.body;
 
     const storeCode =
-  req.user?.store_code ||
-  req.user?.storeCode ||
-  req.headers.store_code;
+      req.user?.store_code ||
+      req.user?.storeCode ||
+      req.headers.store_code;
 
     if (!storeCode) {
       await t.rollback();
@@ -184,17 +184,12 @@ export const createExchange = async (req, res) => {
       });
     }
 
-    // ✅ VALIDATION
+    // ✅ VALIDATION (UPDATED)
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
-    const userValue = parseFloat(original_product.value || 0);
-
     const matchedItem = items.find((item) => {
-      return (
-        normalize(item.product_code) === normalize(original_product.product_code) &&
-        Math.abs(parseFloat(item.total_amount) - userValue) < 1
-      );
+      return normalize(item.product_code) === normalize(original_product.product_code);
     });
 
     if (!matchedItem) {
@@ -205,22 +200,24 @@ export const createExchange = async (req, res) => {
       });
     }
 
-    // 🧮 CALCULATIONS
+    // 🧮 CALCULATIONS (UPDATED 🔥)
     const diffDays = Math.floor(
       (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
     );
 
     const isFree = diffDays <= 7;
 
-    const oldValue = userValue;
+    const oldValue = parseFloat(original_product.value || 0);
     const newValue = parseFloat(new_product.value || 0);
 
     const makingCharges = isFree ? 0 : (making_charge + stone_amount);
 
-    const finalAmount = newValue + makingCharges;
-    const difference = finalAmount - oldValue;
+    // 🔥 CORE CHANGE
+    const difference = newValue - oldValue;
 
-    // 🧾 UPDATE INVOICE
+    const finalAmount = newValue + makingCharges;
+
+    // 🧾 UPDATE INVOICE (UNCHANGED)
     await sequelize.query(
       `
       UPDATE invoices
@@ -362,7 +359,7 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    // 📊 SAVE LOG
+    // 📊 SAVE LOG (UNCHANGED)
     await sequelize.query(
       `
       INSERT INTO exchange_logs (
@@ -432,33 +429,6 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    // 📦 STOCK UPDATE
-    await sequelize.query(
-      `UPDATE stocks SET available_weight = available_weight + :weight WHERE item_id = :item_id`,
-      {
-        replacements: {
-          item_id: matchedItem.item_id,
-          weight: original_product.net_weight || 0
-        },
-        transaction: t
-      }
-    );
-
-    await sequelize.query(
-      `
-      UPDATE stocks
-      SET available_weight = available_weight - :weight
-      WHERE item_id = (SELECT id FROM items WHERE article_code = :code LIMIT 1)
-      `,
-      {
-        replacements: {
-          code: new_product.product_code,
-          weight: new_product.net_weight || 0
-        },
-        transaction: t
-      }
-    );
-
     // 📒 LEDGER ENTRY
     const entryType = difference > 0 ? "DEBIT" : "CREDIT";
 
@@ -499,7 +469,7 @@ export const createExchange = async (req, res) => {
 
     await t.commit();
 
-    // ✅ RESPONSE SAME
+    // ✅ RESPONSE (UNCHANGED)
     return res.json({
       success: true,
       message: "Exchange Done",

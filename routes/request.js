@@ -12,7 +12,7 @@ import {
   receiveTransfer,
   getIncomingTransfers,
   getOutgoingTransfers,
-  getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId
+  getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId,estimateDispatchRequestValue
 } from "../controller/stockRequest.controller.js";
 
 const router = express.Router();
@@ -47,5 +47,10 @@ router.get(
   "/transfers/:id/e-way-bill",
   auth,
   getEWayBillByTransferId
+);
+router.post(
+  "/stock-requests/:requestId/estimate-dispatch-value",
+  auth,
+  estimateDispatchRequestValue
 );
 export default router;

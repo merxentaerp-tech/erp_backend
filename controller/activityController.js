@@ -249,21 +249,27 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
 
     const { districtOrgId, districtCode } = getDistrictScope(req);
 
-    // IMPORTANT: yahan Store me organization_id bilkul use nahi ho raha
-    const districtStoreRows = await getDistrictSelfStoreRows(districtOrgId, districtCode);
+    const districtStoreRows = await getDistrictSelfStoreRows(
+      districtOrgId,
+      districtCode
+    );
+
     const storeMap = buildStoreMap(districtStoreRows);
 
     const activityLogWhere = {
       [Op.or]: [
         { organization_id: districtOrgId },
+
         Sequelize.where(
           Sequelize.cast(Sequelize.json("meta.organization_id"), "TEXT"),
           String(districtOrgId)
         ),
+
         Sequelize.where(
           Sequelize.cast(Sequelize.json("meta.district_id"), "TEXT"),
           String(districtOrgId)
         ),
+
         ...(districtCode
           ? [
               Sequelize.where(
@@ -281,19 +287,54 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
 
     const systemActivityWhere = districtCode
       ? {
-          [Op.or]: [{ district_code: districtCode }, { store_code: districtCode }],
+          [Op.or]: [
+            { district_code: districtCode },
+            { store_code: districtCode },
+          ],
         }
       : undefined;
 
     const [activityLogs, systemActivities] = await Promise.all([
       ActivityLog.findAll({
         where: activityLogWhere,
+        attributes: [
+          "id",
+          "organization_id",
+          "user_id",
+          "action",
+          "module_name",
+          "reference_id",
+          "reference_no",
+          "title",
+          "description",
+          "meta",
+          "icon",
+          "color",
+          "created_at",
+          "updated_at",
+        ],
         order: [["created_at", "DESC"]],
         limit: parsedLimit * 3,
         raw: true,
       }),
+
       SystemActivity.findAll({
         ...(systemActivityWhere ? { where: systemActivityWhere } : {}),
+        attributes: [
+          "id",
+          "activity_type",
+          "module_name",
+          "reference_id",
+          "reference_no",
+          "title",
+          "description",
+          "state_code",
+          "district_code",
+          "store_code",
+          "store_name",
+          "created_by",
+          "created_at",
+        ],
         order: [["created_at", "DESC"]],
         limit: parsedLimit * 3,
         raw: true,
@@ -301,13 +342,39 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
     ]);
 
     const handledByMap = await buildHandledByMap([
-      ...activityLogs.map((x) => x.user_id),
-      ...systemActivities.map((x) => x.created_by),
+      ...activityLogs.map((x) => x.user_id).filter(Boolean),
+      ...systemActivities.map((x) => x.created_by).filter(Boolean),
     ]);
 
     const merged = [
-      ...activityLogs.map((row) => formatActivityLogRow(row, handledByMap, storeMap)),
-      ...systemActivities.map((row) => formatSystemActivityRow(row, handledByMap)),
+      ...activityLogs.map((row) => {
+        const formatted = formatActivityLogRow(row, handledByMap, storeMap);
+
+        return {
+          ...formatted,
+
+          // ✅ DB se direct fetched created_at
+          created_at: row.created_at || null,
+          updated_at: row.updated_at || null,
+
+          // ✅ sorting ke liye
+          activity_at: row.created_at || formatted.activity_at || null,
+        };
+      }),
+
+      ...systemActivities.map((row) => {
+        const formatted = formatSystemActivityRow(row, handledByMap);
+
+        return {
+          ...formatted,
+
+          // ✅ DB se direct fetched created_at
+          created_at: row.created_at || null,
+
+          // ✅ sorting ke liye
+          activity_at: row.created_at || formatted.activity_at || null,
+        };
+      }),
     ]
       .sort((a, b) => new Date(b.activity_at) - new Date(a.activity_at))
       .slice(0, parsedLimit);
@@ -320,6 +387,7 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
     });
   } catch (error) {
     console.error("getDistrictOwnRecentActivities error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch district own recent activities",
@@ -327,7 +395,6 @@ export const getDistrictOwnRecentActivities = async (req, res) => {
     });
   }
 };
-
 /* =========================================================
    DISTRICT RETAIL STORES RECENT ACTIVITIES
 ========================================================= */

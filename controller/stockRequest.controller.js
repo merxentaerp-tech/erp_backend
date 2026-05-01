@@ -464,26 +464,55 @@ export const createStockRequest = async (req, res) => {
 
     await StockRequestItem.bulkCreate(requestItemsPayload, { transaction });
 
-    // ================= TASK CREATE =================
+    // ================= TASK (FOR RECEIVER - DISTRICT) =================
     await Task.create(
       {
         title: "Stock request approval required",
-        description: `${store.store_name} submitted stock request ${stockRequest.request_no} for district ${districtName}`,
+        description: `${store.store_name} submitted stock request ${stockRequest.request_no}`,
         priority: priority || "medium",
         status: "pending",
         task_type: "stock_request_approval",
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
+
+        // 👉 Receiver scope
         district_code: String(district.id),
-        store_code: store.store_code || null,
-        store_name: store.store_name || null,
-        assigned_to: null, // district manager user id later if needed
+        store_code: null,
+        store_name: null,
+
+        assigned_to: null,
         created_by: user.id,
       },
       { transaction }
     );
 
-    // ================= RECENT / SYSTEM ACTIVITY =================
+    // ================= ACTIVITY LOG (FOR REQUESTER) =================
+    await ActivityLog.create(
+      {
+        organization_id: user.organization_id,
+        user_id: user.id,
+        action: "stock_request_created",
+        module_name: "stock_request",
+
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+
+        title: "Stock request created",
+        description: `You created stock request ${stockRequest.request_no} for ${districtName}`,
+
+        meta: {
+          total_items: requestItemsPayload.length,
+          store_name: store.store_name,
+          district_name: districtName,
+        },
+
+        icon: "request",
+        color: "blue",
+      },
+      { transaction }
+    );
+
+    // ================= SYSTEM ACTIVITY (GLOBAL / ADMIN VIEW) =================
     await SystemActivity.create(
       {
         title: "New stock request submitted",
@@ -1621,7 +1650,10 @@ export const receiveTransfer = async (req, res) => {
       await sourceStock.update(
         {
           transit_qty: Math.max(0, toNumber(sourceStock.transit_qty) - qty),
-          transit_weight: Math.max(0, toNumber(sourceStock.transit_weight) - weight),
+          transit_weight: Math.max(
+            0,
+            toNumber(sourceStock.transit_weight) - weight
+          ),
         },
         { transaction }
       );
@@ -1730,17 +1762,48 @@ export const receiveTransfer = async (req, res) => {
       }
     }
 
-    await createActivity({
-      user_id: user.id,
-      action: "stock_transfer_received",
-      title: "Stock transfer received",
-      description: `Transfer ${transfer.transfer_no} received successfully`,
-      meta: {
-        transfer_id: transfer.id,
-        transfer_no: transfer.transfer_no,
+    // ================= SYSTEM ACTIVITY =================
+    await SystemActivity.create(
+      {
+        title: "Stock transfer received",
+        description: `Transfer ${transfer.transfer_no} received successfully`,
+        activity_type: "stock_transfer_received",
+        module_name: "stock_transfer",
+        reference_id: transfer.id,
+        reference_no: transfer.transfer_no,
+        district_code: user.district_code || null,
+        store_code: user.store_code || null,
+        store_name: user.store_name || null,
+        created_by: user.id,
+        created_at: new Date(),
       },
-      transaction,
-    });
+      { transaction }
+    );
+
+    // ================= ACTIVITY LOG =================
+    await ActivityLog.create(
+      {
+        organization_id: user.organization_id || null,
+        user_id: user.id,
+        action: "stock_transfer_received",
+        module_name: "stock_transfer",
+        reference_id: transfer.id,
+        reference_no: transfer.transfer_no,
+        title: "Stock transfer received",
+        description: `Transfer ${transfer.transfer_no} received successfully`,
+        meta: {
+          transfer_id: transfer.id,
+          transfer_no: transfer.transfer_no,
+          from_organization_id: transfer.from_organization_id,
+          to_organization_id: transfer.to_organization_id,
+          status: "received",
+          remarks: remarks || null,
+        },
+        icon: "activity",
+        color: "green",
+      },
+      { transaction }
+    );
 
     await transaction.commit();
 

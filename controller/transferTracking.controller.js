@@ -489,9 +489,12 @@ export const updateLiveLocation = async (req, res) => {
       updated_at: Date.now(),
     };
 
-    if (global.io) {
-      global.io.emit(`transfer_tracking_${transfer.id}`, payload);
-    }
+if (global.io) {
+  global.io
+    .to(`transfer_${transfer.id}`)
+    .emit(`transfer_tracking_${transfer.id}`, payload);
+}
+
 
     return res.status(200).json({
       success: true,
@@ -665,38 +668,46 @@ export const getTransferLiveLocation = async (req, res) => {
       });
     }
 
-    const lat = transfer.last_latitude
-      ? Number(transfer.last_latitude)
+    const lat = transfer.last_latitude ? Number(transfer.last_latitude) : null;
+    const lng = transfer.last_longitude ? Number(transfer.last_longitude) : null;
+
+    const destinationLat = transfer.drop_lat
+      ? Number(transfer.drop_lat)
+      : transfer.destination_latitude
+      ? Number(transfer.destination_latitude)
       : null;
 
-    const lng = transfer.last_longitude
-      ? Number(transfer.last_longitude)
+    const destinationLng = transfer.drop_lng
+      ? Number(transfer.drop_lng)
+      : transfer.destination_longitude
+      ? Number(transfer.destination_longitude)
       : null;
+
+    const payload = {
+      transfer_id: transfer.id,
+      transfer_no: transfer.transfer_no,
+      status: transfer.status,
+      is_tracking_active: transfer.is_tracking_active,
+
+      current_location: {
+        latitude: lat,
+        longitude: lng,
+        recorded_at: transfer.last_tracked_at,
+        source: "last_known",
+      },
+
+      destination: {
+        address: transfer.delivery_address || null,
+        latitude: destinationLat,
+        longitude: destinationLng,
+      },
+
+      updated_at: Date.now(),
+    };
 
     return res.status(200).json({
       success: true,
-      data: {
-        transfer_id: transfer.id,
-        transfer_no: transfer.transfer_no,
-        status: transfer.status,
-        is_tracking_active: transfer.is_tracking_active,
-
-        live_location: {
-          latitude: lat,
-          longitude: lng,
-          updated_at: transfer.last_tracked_at,
-        },
-
-        destination: {
-          address: transfer.delivery_address || null,
-          latitude: transfer.drop_lat
-            ? Number(transfer.drop_lat)
-            : null,
-          longitude: transfer.drop_lng
-            ? Number(transfer.drop_lng)
-            : null,
-        },
-      },
+      data: payload,
     });
   } catch (error) {
     console.error("getTransferLiveLocation error:", error);

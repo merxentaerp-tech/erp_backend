@@ -497,3 +497,204 @@ export const getDistrictRetailRecentActivities = async (req, res) => {
     });
   }
 };
+
+
+export const getRetailOwnRecentActivities = async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    const parsedLimit = Math.max(1, Number(limit) || 10);
+
+    const user = req.user;
+
+    if (!user?.organization_id) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const orgId = user.organization_id;
+    const storeCode = user.store_code;
+
+    const activityLogWhere = {
+      [Op.or]: [
+        { organization_id: orgId },
+
+        Sequelize.where(
+          Sequelize.cast(Sequelize.json("meta.organization_id"), "TEXT"),
+          String(orgId)
+        ),
+
+        ...(storeCode
+          ? [
+              Sequelize.where(
+                Sequelize.cast(Sequelize.json("meta.store_code"), "TEXT"),
+                storeCode
+              ),
+            ]
+          : []),
+      ],
+    };
+
+    const systemActivityWhere = storeCode
+      ? {
+          [Op.or]: [{ store_code: storeCode }, { created_by: user.id }],
+        }
+      : { created_by: user.id };
+
+    const [activityLogs, systemActivities] = await Promise.all([
+      ActivityLog.findAll({
+        where: activityLogWhere,
+        order: [["created_at", "DESC"]],
+        limit: parsedLimit * 3,
+        raw: true,
+      }),
+
+      SystemActivity.findAll({
+        where: systemActivityWhere,
+        order: [["created_at", "DESC"]],
+        limit: parsedLimit * 3,
+        raw: true,
+      }),
+    ]);
+
+    const handledByMap = await buildHandledByMap([
+      ...activityLogs.map((x) => x.user_id).filter(Boolean),
+      ...systemActivities.map((x) => x.created_by).filter(Boolean),
+    ]);
+
+    const merged = [
+      ...activityLogs.map((row) => {
+        const formatted = formatActivityLogRow(row, handledByMap, {});
+        return {
+          ...formatted,
+          created_at: row.created_at || row.createdAt || null,
+        };
+      }),
+
+      ...systemActivities.map((row) => {
+        const formatted = formatSystemActivityRow(row, handledByMap);
+        return {
+          ...formatted,
+          created_at: row.created_at || row.createdAt || null,
+        };
+      }),
+    ]
+      .sort((a, b) => new Date(b.activity_at) - new Date(a.activity_at))
+      .slice(0, parsedLimit);
+
+    return res.status(200).json({
+      success: true,
+      message: "Retail own recent activities fetched successfully",
+      count: merged.length,
+      data: merged,
+    });
+  } catch (error) {
+    console.error("getRetailOwnRecentActivities error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch retail own recent activities",
+      error: error.message,
+    });
+  }
+};
+
+export const getHeadOwnRecentActivities = async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    const parsedLimit = Math.max(1, Number(limit) || 10);
+
+    const user = req.user;
+
+    if (!user?.organization_id) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const orgId = user.organization_id;
+    const storeCode = user.store_code;
+
+    const activityLogWhere = {
+      [Op.or]: [
+        { organization_id: orgId },
+        Sequelize.where(
+          Sequelize.cast(Sequelize.json("meta.organization_id"), "TEXT"),
+          String(orgId)
+        ),
+        ...(storeCode
+          ? [
+              Sequelize.where(
+                Sequelize.cast(Sequelize.json("meta.store_code"), "TEXT"),
+                storeCode
+              ),
+            ]
+          : []),
+      ],
+    };
+
+    const systemActivityWhere = storeCode
+      ? {
+          [Op.or]: [{ store_code: storeCode }, { created_by: user.id }],
+        }
+      : { created_by: user.id };
+
+    const [activityLogs, systemActivities] = await Promise.all([
+      ActivityLog.findAll({
+        where: activityLogWhere,
+        order: [["created_at", "DESC"]],
+        limit: parsedLimit * 3,
+        raw: true,
+      }),
+
+      SystemActivity.findAll({
+        where: systemActivityWhere,
+        order: [["created_at", "DESC"]],
+        limit: parsedLimit * 3,
+        raw: true,
+      }),
+    ]);
+
+    const handledByMap = await buildHandledByMap([
+      ...activityLogs.map((x) => x.user_id).filter(Boolean),
+      ...systemActivities.map((x) => x.created_by).filter(Boolean),
+    ]);
+
+    const merged = [
+      ...activityLogs.map((row) => {
+        const formatted = formatActivityLogRow(row, handledByMap, {});
+        return {
+          ...formatted,
+          created_at: row.created_at || row.createdAt || null,
+        };
+      }),
+
+      ...systemActivities.map((row) => {
+        const formatted = formatSystemActivityRow(row, handledByMap);
+        return {
+          ...formatted,
+          created_at: row.created_at || row.createdAt || null,
+        };
+      }),
+    ]
+      .sort((a, b) => new Date(b.activity_at) - new Date(a.activity_at))
+      .slice(0, parsedLimit);
+
+    return res.status(200).json({
+      success: true,
+      message: "Head own recent activities fetched successfully",
+      count: merged.length,
+      data: merged,
+    });
+  } catch (error) {
+    console.error("getHeadOwnRecentActivities error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch head own recent activities",
+      error: error.message,
+    });
+  }
+};

@@ -16,12 +16,10 @@ import District from "./routes/districtRoute.js";
 import ladger from "./routes/ledgerRoutes.js";
 import Bill from "./routes/billRoute.js";
 import Activity from "./routes/activityRoutes.js";
- import exchange from "./routes/Exchange.js";
+import exchange from "./routes/Exchange.js";
 import tracklocation from "./routes/transferlocation.js";
 import { getGoldRate } from "./service/goldService.js";
-// import { getGoldRate } from "./Services/goldService.js";
-
-// ✅ path apne project ke hisab se adjust kar lena
+import profile from "./routes/profileRoute.js"
 import { getDashboardSummary } from "./controller/dashboardController.js";
 import { getDistrictDashboard } from "./controller/districtController.js";
 
@@ -33,7 +31,7 @@ const corsOptions = {
   origin: [
     "http://localhost:3000",
     "http://localhost:5173",
-    "https://erp-dash-board.vercel.app",
+    "https://inventorysystem-opal.vercel.app",
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization"],
@@ -69,7 +67,7 @@ app.use("/bill", Bill);
 app.use("/Activity", Activity);
 app.use("/exchange", exchange);
 app.use("/track", tracklocation);
-
+app.use('/Profile',profile)
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
@@ -93,13 +91,11 @@ const emitDashboardData = async (socket, user) => {
 
   const fakeReq = { user };
 
-  // ✅ Normal dashboard cards live
   await getDashboardSummary(
     fakeReq,
     makeSocketRes(socket, "dashboard-summary-live")
   );
 
-  // ✅ District dashboard cards live
   if (
     user.role === "district_manager" ||
     String(user.organization_level || "").toLowerCase() === "district"
@@ -124,18 +120,45 @@ async function startServer() {
       cors: corsOptions,
     });
 
+    // ✅ IMPORTANT: controller me global.io.emit use karne ke liye
+    global.io = io;
+
     io.on("connection", async (socket) => {
       console.log("✅ Client connected:", socket.id);
 
-      // ✅ frontend se user bhejna hoga
+      // ✅ Transfer live tracking room
+      socket.on("join-transfer-tracking", (transferId) => {
+        if (!transferId) return;
+
+        socket.join(`transfer_${transferId}`);
+
+        console.log(
+          `✅ Socket ${socket.id} joined transfer_${transferId}`
+        );
+
+        socket.emit("transfer-tracking-joined", {
+          success: true,
+          transfer_id: transferId,
+          room: `transfer_${transferId}`,
+        });
+      });
+
+      socket.on("leave-transfer-tracking", (transferId) => {
+        if (!transferId) return;
+
+        socket.leave(`transfer_${transferId}`);
+
+        console.log(
+          `❌ Socket ${socket.id} left transfer_${transferId}`
+        );
+      });
+
       socket.on("join-dashboard", async (userData) => {
         try {
           socket.data.user = userData;
 
-          // ✅ connect hote hi full cards data bhej do
           await emitDashboardData(socket, userData);
 
-          // ✅ gold rate bhi bhej do
           const goldRate = await getGoldRate();
 
           socket.emit("gold-rate-updated", {
@@ -155,7 +178,6 @@ async function startServer() {
       });
     });
 
-    // ✅ Har 30 sec me gold + cards dono live update
     setInterval(async () => {
       try {
         const goldRate = await getGoldRate();

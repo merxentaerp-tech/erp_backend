@@ -1,6 +1,7 @@
 import sequelize from "../config/db.js";
 import { QueryTypes } from "sequelize";
-
+import SystemActivity from "../model/SystemActivity.js";
+import ActivityLog from "../model/ActivityLog.js";
 
 // ==============================
 //  GET INVOICE FOR EXCHANGE
@@ -96,9 +97,7 @@ export const getInvoiceForExchange = async (req, res) => {
 };
 
 
-// ==============================
-//  CREATE EXCHANGE
-// ==============================
+
 export const createExchange = async (req, res) => {
   const t = await sequelize.transaction();
 
@@ -108,23 +107,20 @@ export const createExchange = async (req, res) => {
       original_product,
       new_product,
       making_charge = 0,
-      stone_amount = 0
+      stone_amount = 0,
     } = req.body;
 
     const storeCode =
-      req.user?.store_code ||
-      req.user?.storeCode ||
-      req.headers.store_code;
+      req.user?.store_code || req.user?.storeCode || req.headers.store_code;
 
     if (!storeCode) {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "Store code missing in token"
+        message: "Store code missing in token",
       });
     }
 
-    // 🔒 LOCK INVOICE
     const invoice = await sequelize.query(
       `
       SELECT *
@@ -136,7 +132,7 @@ export const createExchange = async (req, res) => {
       {
         replacements: { invoice_number, store_code: storeCode },
         type: QueryTypes.SELECT,
-        transaction: t
+        transaction: t,
       }
     );
 
@@ -144,25 +140,23 @@ export const createExchange = async (req, res) => {
       await t.rollback();
       return res.status(404).json({
         success: false,
-        message: "Invoice not found"
+        message: "Invoice not found",
       });
     }
 
     const inv = invoice[0];
 
-    // 👤 CUSTOMER
     const customer = await sequelize.query(
       `SELECT id, name, phone FROM customers WHERE id = :customer_id`,
       {
         replacements: { customer_id: inv.customer_id },
         type: QueryTypes.SELECT,
-        transaction: t
+        transaction: t,
       }
     );
 
     const customerData = customer[0] || {};
 
-    // 📦 ITEMS
     const items = await sequelize.query(
       `
       SELECT id, product_code, description, total_amount, item_id
@@ -172,7 +166,7 @@ export const createExchange = async (req, res) => {
       {
         replacements: { invoice_id: inv.id },
         type: QueryTypes.SELECT,
-        transaction: t
+        transaction: t,
       }
     );
 
@@ -180,27 +174,28 @@ export const createExchange = async (req, res) => {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "No items found for this invoice"
+        message: "No items found for this invoice",
       });
     }
 
-    // ✅ VALIDATION (UPDATED)
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
     const matchedItem = items.find((item) => {
-      return normalize(item.product_code) === normalize(original_product.product_code);
+      return (
+        normalize(item.product_code) ===
+        normalize(original_product.product_code)
+      );
     });
 
     if (!matchedItem) {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "Invalid product details for this invoice"
+        message: "Invalid product details for this invoice",
       });
     }
 
-    // 🧮 CALCULATIONS (UPDATED 🔥)
     const diffDays = Math.floor(
       (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
     );
@@ -210,14 +205,10 @@ export const createExchange = async (req, res) => {
     const oldValue = parseFloat(original_product.value || 0);
     const newValue = parseFloat(new_product.value || 0);
 
-    const makingCharges = isFree ? 0 : (making_charge + stone_amount);
-
-    // 🔥 CORE CHANGE
+    const makingCharges = isFree ? 0 : making_charge + stone_amount;
     const difference = newValue - oldValue;
-
     const finalAmount = newValue + makingCharges;
 
-    // 🧾 UPDATE INVOICE (UNCHANGED)
     await sequelize.query(
       `
       UPDATE invoices
@@ -226,32 +217,30 @@ export const createExchange = async (req, res) => {
         pending_amount = GREATEST(:difference, 0),
         is_exchanged = TRUE,
         "updatedAt" = NOW(),
-     status = CASE
-  WHEN :difference <= 0 THEN 'PAID'::enum_invoices_status
-  ELSE 'PARTIAL'::enum_invoices_status
-END
+        status = CASE
+          WHEN :difference <= 0 THEN 'PAID'::enum_invoices_status
+          ELSE 'PARTIAL'::enum_invoices_status
+        END
       WHERE id = :invoice_id
       `,
       {
         replacements: {
           finalAmount,
           difference,
-          invoice_id: inv.id
+          invoice_id: inv.id,
         },
-        transaction: t
+        transaction: t,
       }
     );
 
-    // ❌ SOFT DELETE OLD ITEM
     await sequelize.query(
       `UPDATE invoice_items SET is_active = false WHERE id = :item_id`,
       {
         replacements: { item_id: matchedItem.id },
-        transaction: t
+        transaction: t,
       }
     );
 
-    // ➕ INSERT NEW ITEM
     await sequelize.query(
       `
       INSERT INTO invoice_items (
@@ -297,26 +286,31 @@ END
           rate: new_product.net_weight
             ? parseFloat((newValue / new_product.net_weight).toFixed(2))
             : 0,
-          total_amount: finalAmount
+          total_amount: finalAmount,
         },
-        transaction: t
+        transaction: t,
       }
     );
 
-    // 🔢 EXCHANGE NUMBER
     const countData = await sequelize.query(
       `SELECT COUNT(*) as count FROM exchange_logs WHERE invoice_id = :invoice_id`,
       {
         replacements: { invoice_id: inv.id },
         type: QueryTypes.SELECT,
-        transaction: t
+        transaction: t,
       }
     );
 
-    const exchangeNumber = String(parseInt(countData[0].count) + 1).padStart(2, "0");
-    const exchangeInvoiceNumber = `EX-${inv.invoice_number.replace("BILL-", "")}-${exchangeNumber}`;
+    const exchangeNumber = String(parseInt(countData[0].count) + 1).padStart(
+      2,
+      "0"
+    );
 
-    // 🧾 CREATE EXCHANGE INVOICE
+    const exchangeInvoiceNumber = `EX-${inv.invoice_number.replace(
+      "BILL-",
+      ""
+    )}-${exchangeNumber}`;
+
     await sequelize.query(
       `
       INSERT INTO invoices (
@@ -353,13 +347,12 @@ END
           total_amount: Math.abs(difference),
           pending_amount: Math.abs(difference),
           store_code: storeCode,
-          created_by: req.user?.id || null
+          created_by: req.user?.id || null,
         },
-        transaction: t
+        transaction: t,
       }
     );
 
-    // 📊 SAVE LOG (UNCHANGED)
     await sequelize.query(
       `
       INSERT INTO exchange_logs (
@@ -423,13 +416,12 @@ END
           new_stone_weight: new_product.stone_weight,
           new_value: newValue,
           difference,
-          making_charges: makingCharges
+          making_charges: makingCharges,
         },
-        transaction: t
+        transaction: t,
       }
     );
 
-    // 📒 LEDGER ENTRY
     const entryType = difference > 0 ? "DEBIT" : "CREDIT";
 
     await sequelize.query(
@@ -461,15 +453,65 @@ END
           type: entryType,
           amount: Math.abs(difference),
           invoice_id: inv.id,
-          desc: `Exchange for invoice ${inv.invoice_number}`
+          desc: `Exchange for invoice ${inv.invoice_number}`,
         },
-        transaction: t
+        transaction: t,
       }
+    );
+
+    // ================= SYSTEM ACTIVITY =================
+    await SystemActivity.create(
+      {
+        title: "Product exchange completed",
+        description: `Exchange completed for invoice ${inv.invoice_number}`,
+        activity_type: "exchange_created",
+        module_name: "exchange",
+        reference_id: inv.id,
+        reference_no: exchangeInvoiceNumber,
+        store_code: storeCode || null,
+        store_name: req.user?.store_name || null,
+        created_by: req.user?.id || null,
+        created_at: new Date(),
+      },
+      { transaction: t }
+    );
+
+    // ================= ACTIVITY LOG =================
+    await ActivityLog.create(
+      {
+        organization_id: req.user?.organization_id || null,
+        user_id: req.user?.id || null,
+        action: "exchange_created",
+        module_name: "exchange",
+        reference_id: inv.id,
+        reference_no: exchangeInvoiceNumber,
+        title: "Product exchange completed",
+        description: `Exchange completed for invoice ${inv.invoice_number}`,
+        meta: {
+          invoice_id: inv.id,
+          invoice_number: inv.invoice_number,
+          exchange_invoice_number: exchangeInvoiceNumber,
+          customer_id: inv.customer_id,
+          customer_name: customerData.name || null,
+          old_product_code: original_product.product_code,
+          old_product_name: original_product.product_name,
+          old_value: oldValue,
+          new_product_code: new_product.product_code,
+          new_product_name: new_product.product_name,
+          new_value: newValue,
+          difference,
+          making_charges: makingCharges,
+          final_amount: finalAmount,
+          store_code: storeCode,
+        },
+        icon: "activity",
+        color: "green",
+      },
+      { transaction: t }
     );
 
     await t.commit();
 
-    // ✅ RESPONSE (UNCHANGED)
     return res.json({
       success: true,
       message: "Exchange Done",
@@ -478,34 +520,33 @@ END
         customer: {
           id: customerData.id,
           name: customerData.name,
-          phone: customerData.phone
+          phone: customerData.phone,
         },
         old_product: {
           name: original_product.product_name,
           condition: original_product.condition || "OLD",
-          value: oldValue
+          value: oldValue,
         },
         new_product: {
           name: new_product.product_name,
           condition: new_product.condition || "NEW",
-          value: newValue
+          value: newValue,
         },
         calculation: {
           making_charges: makingCharges,
           final_amount: finalAmount,
-          difference: difference
+          difference: difference,
         },
         original_invoice: {
           invoice_number: inv.invoice_number,
-          total_amount: oldValue
+          total_amount: oldValue,
         },
         exchange_invoice: {
           invoice_number: exchangeInvoiceNumber,
-          total_amount: Math.abs(difference)
-        }
-      }
+          total_amount: Math.abs(difference),
+        },
+      },
     });
-
   } catch (err) {
     await t.rollback();
     return res.status(500).json({ error: err.message });

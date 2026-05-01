@@ -613,7 +613,6 @@ export const getPaymentInvoiceList = async (req, res) => {
     });
   }
 };
-
 export const getPaymentTracker = async (req, res) => {
   try {
     const { customer_id } = req.params;
@@ -631,16 +630,19 @@ export const getPaymentTracker = async (req, res) => {
 
     const customerWhere = {
       id: customer_id,
-      organization_id,
     };
 
+    // retail user apne store ka customer hi dekhega
     if (level === "retail" && store_code) {
       customerWhere.store_code = store_code;
+    } else {
+      // head/district ke liye org customer check
+      customerWhere.organization_id = organization_id;
     }
 
     const customer = await Customer.findOne({
       where: customerWhere,
-      attributes: ["id", "name", "phone", "store_code"],
+      attributes: ["id", "name", "phone", "store_code", "organization_id"],
     });
 
     if (!customer) {
@@ -651,12 +653,16 @@ export const getPaymentTracker = async (req, res) => {
     }
 
     const invoiceWhere = {
-      customer_id,
-      organization_id,
+      customer_id: customer.id,
     };
 
+    // retail ke liye store_code best filter hai
     if (level === "retail" && store_code) {
       invoiceWhere.store_code = store_code;
+    } else if (customer.store_code) {
+      invoiceWhere.store_code = customer.store_code;
+    } else {
+      invoiceWhere.organization_id = organization_id;
     }
 
     const invoices = await Invoice.findAll({
@@ -670,7 +676,6 @@ export const getPaymentTracker = async (req, res) => {
       ? await Payment.findAll({
           where: {
             invoice_id: invoiceIds,
-            organization_id,
           },
           order: [["payment_date", "DESC"]],
         })
@@ -686,7 +691,7 @@ export const getPaymentTracker = async (req, res) => {
       paymentMap[pay.invoice_id].push({
         id: pay.id,
         date: pay.payment_date,
-        received_amount: pay.amount,
+        received_amount: Number(pay.amount || 0).toFixed(2),
         self_financer: pay.financier,
         payment_method: pay.payment_method,
         txn_id: pay.txn_id,
@@ -722,7 +727,6 @@ export const getPaymentTracker = async (req, res) => {
     });
   }
 };
-
 
 
 const DISTRICT_LEVELS = ["district", "District", "DISTRICT"];

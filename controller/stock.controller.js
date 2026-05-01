@@ -445,6 +445,24 @@ export const getStockItemsByCategory = async (req, res) => {
 
     let orgId = null;
 
+    const getAuditBusinessDate = () => {
+      const indiaNow = new Date(
+        new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
+      );
+
+      // 8 AM se pehle previous day audit valid rahega
+      if (indiaNow.getHours() < 8) {
+        indiaNow.setDate(indiaNow.getDate() - 1);
+      }
+
+      return indiaNow.toISOString().slice(0, 10);
+    };
+
+    const isSameDate = (dateValue, targetDate) => {
+      if (!dateValue) return false;
+      return new Date(dateValue).toISOString().slice(0, 10) === targetDate;
+    };
+
     // =========================
     // Resolve organization
     // =========================
@@ -523,6 +541,8 @@ export const getStockItemsByCategory = async (req, res) => {
         "unit",
         "current_status",
         "organization_id",
+        "isItemAudit",
+        "itemAuditAt",
         "createdAt",
         "updatedAt",
       ],
@@ -559,6 +579,8 @@ export const getStockItemsByCategory = async (req, res) => {
       order: [["id", "DESC"]],
     });
 
+    const auditBusinessDate = getAuditBusinessDate();
+
     // =========================
     // Flatten response
     // =========================
@@ -592,7 +614,6 @@ export const getStockItemsByCategory = async (req, res) => {
         unit: item.unit || "",
         current_status: item.current_status || "",
 
-        // stock fields
         stock_id: stock ? Number(stock.id || 0) : null,
         quantity: Number(stock?.available_qty || 0),
         available_qty: Number(stock?.available_qty || 0),
@@ -606,12 +627,14 @@ export const getStockItemsByCategory = async (req, res) => {
         dead_qty: Number(stock?.dead_qty || 0),
         dead_weight: Number(stock?.dead_weight || 0),
 
-        // store / org fields
         store_id: item.organization ? Number(item.organization.id || 0) : null,
         storeCode: item.organization?.store_code || null,
         storeName: item.organization?.store_name || null,
         organization_level: item.organization?.organization_level || null,
         organization_id: Number(item.organization_id || 0),
+
+        isItemAudit: isSameDate(item.itemAuditAt, auditBusinessDate),
+        itemAuditAt: item.itemAuditAt || null,
 
         createdAt: item.createdAt || null,
         updatedAt: item.updatedAt || null,

@@ -622,19 +622,80 @@ export const updateEmployee = async (req, res) => {
     const { id } = req.params;
 
     const user = await User.findByPk(id);
+
     if (!user) {
-      return res.status(404).json({ error: "Staff not found" });
+      return res.status(404).json({
+        error: "Staff not found",
+      });
     }
 
-    await user.update(req.body);
+    // ================= ALLOWED FIELDS =================
+    const allowedFields = [
+      "username",
+      "phoneNumber",
+      "email",
+      "address",
+      "role",
+      "isActive",
+    ];
+
+    const updates = {};
+
+    // ================= PICK ONLY SENT FIELDS =================
+    allowedFields.forEach((field) => {
+      if (req.body[field] !== undefined) {
+        updates[field] = req.body[field];
+      }
+    });
+
+    // ================= OPTIONAL: PASSWORD UPDATE =================
+    if (req.body.password) {
+      const hashedPassword = await bcrypt.hash(req.body.password, 10);
+      updates.password = hashedPassword;
+    }
+
+    // ================= OPTIONAL: FILE UPDATE =================
+    if (req.files) {
+      const { aadhaar, pan, policeDoc } = req.files;
+
+      if (aadhaar) {
+        const resUpload = await cloudinary.uploader.upload(
+          aadhaar[0].path,
+          { resource_type: "auto" }
+        );
+        updates.aadhaarUrl = resUpload.secure_url;
+      }
+
+      if (pan) {
+        const resUpload = await cloudinary.uploader.upload(
+          pan[0].path,
+          { resource_type: "auto" }
+        );
+        updates.panUrl = resUpload.secure_url;
+      }
+
+      if (policeDoc) {
+        const resUpload = await cloudinary.uploader.upload(
+          policeDoc[0].path,
+          { resource_type: "auto" }
+        );
+        updates.policeDocUrl = resUpload.secure_url;
+      }
+    }
+
+    // ================= UPDATE ONLY PROVIDED FIELDS =================
+    await user.update(updates);
 
     res.json({
       success: true,
-      data: user
+      message: "Employee updated successfully",
+      data: user,
     });
-
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.log("UPDATE EMPLOYEE ERROR:", err);
+    res.status(500).json({
+      error: err.message,
+    });
   }
 };
 

@@ -35,7 +35,7 @@ router.post(
 );
 
 // Update
-// router.put("/:id", updateEmployee);
+router.put("/:id", updateEmployee);
 
 //  Delete
 router.delete("/:id", deleteEmployee);

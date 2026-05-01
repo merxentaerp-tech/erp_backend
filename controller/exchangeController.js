@@ -1,7 +1,7 @@
 import sequelize from "../config/db.js";
 import { QueryTypes } from "sequelize";
-import SystemActivity from "../model/systemActivity.js";
-import ActivityLog from "../model/activityLog.js";
+// import SystemActivity from "../model/systemActivity.js";
+// import ActivityLog from "../model/activityLog.js";
 
 // ==============================
 //  GET INVOICE FOR EXCHANGE

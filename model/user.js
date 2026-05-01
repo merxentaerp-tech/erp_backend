@@ -1,18 +1,21 @@
+// models/User.js
+
 import { DataTypes } from "sequelize";
 import sequelize from "../config/db.js";
 
-const user = sequelize.define(
-  "user",
+const User = sequelize.define(
+  "User",
   {
     id: {
-      type: DataTypes.INTEGER,
-       autoIncrement: true,  
+      type: DataTypes.BIGINT,
+      autoIncrement: true,
       primaryKey: true,
     },
 
-    name: {
+    storeCode: {
       type: DataTypes.STRING,
       allowNull: false,
+      field: "store_code",
     },
 
     email: {
@@ -26,13 +29,15 @@ const user = sequelize.define(
 
     username: {
       type: DataTypes.STRING,
-      allowNull: true,
+      allowNull: false,
       unique: true,
+      field: "username", 
     },
 
-    phone_number: {
+    phoneNumber: {
       type: DataTypes.STRING,
       unique: true,
+      field: "phone_number",
     },
 
     role: {
@@ -41,67 +46,88 @@ const user = sequelize.define(
       defaultValue: "user",
     },
 
+    isPoliceVerified: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      field: "is_police_verified",
+    },
+
+    policeDocUrl: {
+      type: DataTypes.STRING,
+      field: "police_doc_url",
+    },
+
+    aadhaarUrl: {
+      type: DataTypes.STRING,
+      field: "aadhaar_url",
+    },
+
+    panUrl: {
+      type: DataTypes.STRING,
+      field: "pan_url",
+    },
+
+    storeName: {
+      type: DataTypes.STRING,
+      field: "store_name",
+    },
+
+    organizationLevel: {
+      type: DataTypes.STRING,
+      field: "organization_level",
+    },
+
     password: {
       type: DataTypes.STRING,
       allowNull: false,
     },
 
-    organization_id: {
-      type: DataTypes.INTEGER,
-    },
-
-    store_code: {
-      type: DataTypes.STRING,
-    },
-
-    store_name: {
-      type: DataTypes.STRING,
-    },
-
-    district_code: {
-      type: DataTypes.STRING,
-    },
-
-    state_code: {
-      type: DataTypes.STRING,
-    },
-
-    organization_level: {
-      type: DataTypes.STRING,
-    },
-
-    user_code: {
+    userCode: {
       type: DataTypes.STRING,
       unique: true,
+      field: "user_code",
     },
 
-    is_police_verified: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    },
-
-    police_doc_url: {
-      type: DataTypes.STRING,
-    },
-
-    aadhaar_url: {
-      type: DataTypes.STRING,
-    },
-
-    pan_url: {
-      type: DataTypes.STRING,
-    },
-
-    is_active: {
+    isActive: {
       type: DataTypes.BOOLEAN,
       defaultValue: true,
-      
+      field: "is_active",
     },
+
+
+    resetOtp: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "reset_otp",
+    },
+
+    resetOtpExpire: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "reset_otp_expire",
+    },
+
+    otpAttempts: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      field: "otp_attempts",
+    },
+    profile_image: {
+  type: DataTypes.STRING,
+  allowNull: true,
+},
+
+is_profile_set: {
+  type: DataTypes.BOOLEAN,
+  defaultValue: false,
+},
   },
   {
-    tableName: "users",
-    timestamps: false,
-  }
-);
+  tableName: "users",
+  schema: "public", 
+  timestamps: true,
+  createdAt: "created_at",
+  updatedAt: "updated_at"
+});
 
-export default user;
+export default User;

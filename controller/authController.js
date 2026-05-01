@@ -178,28 +178,28 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: "User not found" });
     }
 
+    // Password check (ENABLE THIS)
     // const isMatch = await bcrypt.compare(password, user.password);
-
     // if (!isMatch) {
     //   return res.status(400).json({ error: "Invalid password" });
     // }
 
-    if (!user.is_active) {
-      return res.status(403).json({
-        error: "Account is inactive",
-      });
-    }
+    //  FIXED FIELD NAME
+    // if (!user.isActive) {
+    //   return res.status(403).json({
+    //     error: "Account is inactive",
+    //   });
+    // }
 
-    // 🔥 Fresh token generate every login
+    //  CORRECT TOKEN
     const token = jwt.sign(
       {
+        id: user.id,
         email: user.email,
         role: user.role,
-        id:user.id,
+        store_code: user.storeCode, 
+        organization_level: user.organizationLevel,
         organization_id: user.organization_id,
-        // userCode: user.userCode,
-        organization_level:user.organization_level,
-          store_code: user.store_code,
       },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
@@ -209,22 +209,18 @@ export const login = async (req, res) => {
       message: "Login successful",
       token,
       user: {
-      
+        id: user.id,
         email: user.email,
         username: user.username,
         role: user.role,
-        id:user.id,
+        store_code: user.storeCode, 
+        organization_level: user.organizationLevel,
         organization_id: user.organization_id,
-        store_code: user.store_code,
-        // userCode: user.userCode,
-        organization_level:user.organization_level,
       },
     });
 
   } catch (err) {
     console.log("LOGIN ERROR:", err);
-    res.status(500).json({
-      error: err.message,
-    });
+    res.status(500).json({ error: err.message });
   }
 };

@@ -66,7 +66,11 @@ const User = sequelize.define(
       type: DataTypes.STRING,
       field: "pan_url",
     },
-
+address: {
+  type: DataTypes.TEXT,
+  allowNull: true,
+  field: "address",
+},
     storeName: {
       type: DataTypes.STRING,
       field: "store_name",
@@ -94,7 +98,11 @@ const User = sequelize.define(
       field: "is_active",
     },
 
-
+organization_id: {
+  type: DataTypes.BIGINT,
+  allowNull: true,
+  field: "organization_id",
+},
     resetOtp: {
       type: DataTypes.STRING,
       allowNull: true,

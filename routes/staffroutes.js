@@ -5,7 +5,7 @@ import {
   addEmployee,
   deleteEmployee,
   toggleEmployeeStatus,
-  exportStaffExcel
+  exportStaffExcel,getOrganizationsByLevel
 } from "../controller/headoffice/staffController.js";
 
 import { upload2 } from "../middlewares/upload2.js";
@@ -45,5 +45,5 @@ router.patch("/:id/status", toggleEmployeeStatus);
 
 // Get by ID (ALWAYS LAST)
 // router.get("/:id", getStaffById);
-
+router.get("/organizations-by-level", getOrganizationsByLevel);
 export default router;

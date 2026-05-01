@@ -22,36 +22,41 @@ export const getStaffWithStats = async (req, res) => {
       limit = 10,
     } = req.query;
 
-    const offset = (page - 1) * limit;
+    const pageNum = Number(page);
+    const limitNum = Number(limit);
+    const offset = (pageNum - 1) * limitNum;
 
-    // ================= WHERE CLAUSE =================
     let whereClause = `WHERE 1=1`;
+    const replacements = {
+      limit: limitNum,
+      offset,
+    };
 
-    // 🔍 SEARCH
     if (search) {
       whereClause += `
         AND (
-          LOWER(name) LIKE LOWER('%${search}%')
-          OR LOWER(email) LIKE LOWER('%${search}%')
-          OR LOWER(user_code) LIKE LOWER('%${search}%')
+          LOWER(name) LIKE LOWER(:search)
+          OR LOWER(email) LIKE LOWER(:search)
+          OR LOWER(user_code) LIKE LOWER(:search)
+          OR LOWER(address) LIKE LOWER(:search)
         )
       `;
+      replacements.search = `%${search}%`;
     }
 
-    //  ROLE FILTER
     if (role) {
-      whereClause += ` AND role = '${role}'`;
+      whereClause += ` AND role = :role`;
+      replacements.role = role;
     }
 
-    //  STATUS FILTER
     if (status === "active") {
       whereClause += ` AND is_active = true`;
     } else if (status === "inactive") {
       whereClause += ` AND is_active = false`;
     }
 
-    // ================= STAFF LIST =================
-    const data = await sequelize.query(`
+    const data = await sequelize.query(
+      `
       SELECT 
         id,
         username,
@@ -62,28 +67,38 @@ export const getStaffWithStats = async (req, res) => {
         user_code,
         role,
         is_police_verified,
-         aadhaar_url,
+        aadhaar_url,
         pan_url,
-         police_doc_url,
+        police_doc_url,
         store_code,
         is_active,
         created_at
       FROM public.users
       ${whereClause}
       ORDER BY id DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `, { type: QueryTypes.SELECT });
+      LIMIT :limit OFFSET :offset
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-    // ================= PAGINATION =================
-    const countResult = await sequelize.query(`
+    const countResult = await sequelize.query(
+      `
       SELECT COUNT(*) FROM public.users
       ${whereClause}
-    `, { type: QueryTypes.SELECT });
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
     const total = parseInt(countResult[0].count);
 
-    // ================= STATS =================
-    const stats = await sequelize.query(`
+    const stats = await sequelize.query(
+      `
       SELECT 
         COUNT(*) AS total_staff,
         COUNT(*) FILTER (WHERE is_active = true) AS active,
@@ -91,21 +106,24 @@ export const getStaffWithStats = async (req, res) => {
         COUNT(DISTINCT role) AS departments
       FROM public.users
       ${whereClause}
-    `, { type: QueryTypes.SELECT });
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-    // ================= RESPONSE =================
     res.json({
       success: true,
-      stats: stats[0],   // ❗ same structure
+      stats: stats[0],
       data,
       pagination: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / limit),
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
       },
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -350,6 +368,64 @@ const generateUserCode = async () => {
   return `USR/${year}/${String(nextNumber).padStart(3, "0")}`;
 };
 
+export const getOrganizationsByLevel = async (req, res) => {
+  try {
+    const { level } = req.query;
+
+    if (!level) {
+      return res.status(400).json({
+        success: false,
+        message: "level is required",
+      });
+    }
+
+    let organizationLevel = "";
+
+    if (level === "retail") organizationLevel = "Retail";
+    else if (level === "district") organizationLevel = "District";
+    else if (level === "head") organizationLevel = "Head";
+    else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid level",
+      });
+    }
+
+    const data = await sequelize.query(
+      `
+      SELECT
+        id,
+        store_name,
+        store_code,
+        organization_level,
+        state,
+        district,
+        district_id,
+        address,
+        phone_number
+      FROM public.stores
+      WHERE organization_level = :organizationLevel
+      AND is_active = true
+      ORDER BY store_name ASC
+      `,
+      {
+        replacements: { organizationLevel },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: data.length,
+      data,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+};
 
 export const addEmployee = async (req, res) => {
   try {
@@ -358,52 +434,72 @@ export const addEmployee = async (req, res) => {
       username,
       password,
       role,
-      storeCode,
       phoneNumber,
-      storeName,
-      organizationLevel,
+      organization_id,
+      address,
       isPoliceVerified,
     } = req.body;
 
-    if (!email || !username || !password || !role || !organizationLevel) {
+    if (!email || !username || !password || !role || !organization_id) {
       return res.status(400).json({
         error: "Missing required fields",
       });
     }
 
-    
-    const validLevels = ["HEAD", "District_Store", "retail_Store"];
+    const allowedRoles = [
+      "ADMIN",
+      "INVENTORY_MANAGER",
+      "SALES_MANAGER",
+      "SUPER_ADMIN",
+    ];
 
-    if (!validLevels.includes(organizationLevel)) {
-      return res.status(400).json({
-        error: "Invalid organization level",
-      });
-    }
-
-   
-    const allowedRoles = ["ADMIN", "INVENTORY_MANAGER", "SALES_MANAGER"];
-
-    if (!["SUPER_ADMIN", ...allowedRoles].includes(role)) {
+    if (!allowedRoles.includes(role)) {
       return res.status(400).json({
         error: "Invalid role",
       });
     }
 
-    if (role === "SUPER_ADMIN" && organizationLevel !== "HEAD") {
+    const selectedStoreResult = await sequelize.query(
+      `
+      SELECT
+        id,
+        store_code,
+        store_name,
+        organization_level,
+        address
+      FROM public.stores
+      WHERE id = :organization_id
+      AND is_active = true
+      LIMIT 1
+      `,
+      {
+        replacements: { organization_id },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const selectedStore = selectedStoreResult[0];
+
+    if (!selectedStore) {
+      return res.status(404).json({
+        error: "Selected store/district not found",
+      });
+    }
+
+    if (role === "SUPER_ADMIN" && selectedStore.organization_level !== "Head") {
       return res.status(400).json({
         error: "Super Admin only allowed at HEAD",
       });
     }
 
-    
     const existingUser = await User.findOne({ where: { email } });
+
     if (existingUser) {
       return res.status(400).json({
         error: "Email already exists",
       });
     }
 
-    
     if (phoneNumber) {
       const existingPhone = await User.findOne({
         where: { phoneNumber },
@@ -416,12 +512,9 @@ export const addEmployee = async (req, res) => {
       }
     }
 
- 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-   
     const userCode = await generateUserCode();
-
 
     let aadhaarUrl = null;
     let panUrl = null;
@@ -454,25 +547,34 @@ export const addEmployee = async (req, res) => {
       policeDocUrl = policeRes.secure_url;
     }
 
-    
     const token = jwt.sign(
-      { email, role, userCode },
+      {
+        email,
+        role,
+        userCode,
+        organization_id: selectedStore.id,
+        store_code: selectedStore.store_code,
+        organization_level: selectedStore.organization_level,
+      },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    
     const user = await User.create({
       email,
       username,
       password: hashedPassword,
       role,
-      storeCode,
+
+      // auto from selected store/district
+      storeCode: selectedStore.store_code,
+      storeName: selectedStore.store_name,
+      organizationLevel: selectedStore.organization_level,
+      organization_id: selectedStore.id,
+
       phoneNumber,
-      storeName,
-      organizationLevel,
+      address: address || selectedStore.address || null,
       userCode,
-      token, // ❗ if you don't want DB token → remove
       isPoliceVerified: isPoliceVerified === "true",
       aadhaarUrl,
       panUrl,
@@ -480,19 +582,20 @@ export const addEmployee = async (req, res) => {
       isActive: true,
     });
 
-  
     res.status(201).json({
       success: true,
       message: "Employee added successfully",
-      data:{
+      data: {
         id: user.id,
         email: user.email,
         username: user.username,
         role: user.role,
         storeCode: user.storeCode,
         phoneNumber: user.phoneNumber,
+        address: user.address,
         storeName: user.storeName,
         organizationLevel: user.organizationLevel,
+        organization_id: user.organization_id,
         userCode: user.userCode,
         isPoliceVerified: user.isPoliceVerified,
         aadhaarUrl: user.aadhaarUrl,
@@ -502,7 +605,6 @@ export const addEmployee = async (req, res) => {
       },
       token,
     });
-
   } catch (err) {
     console.log("ADD EMPLOYEE ERROR:", err);
     res.status(500).json({
@@ -510,7 +612,6 @@ export const addEmployee = async (req, res) => {
     });
   }
 };
-
 
 // /**
 //  *  UPDATE EMPLOYEE

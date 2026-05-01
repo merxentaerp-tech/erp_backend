@@ -1,16 +1,11 @@
-import Store from "../models/Store.js"; 
-import sequelize from "../config/db.js";
+import Store from "../../model/Store.js";
+import sequelize from "../../config/db.js";
 
-export const getStoreSummaryCards = async (req, res) => {
+// ================= SUMMARY CARDS (UNCHANGED) =================
+export const getStoreDashboard = async (req, res) => {
   try {
-    const { district_id } = req.query;
-
-    let filter = "";
-    if (district_id) {
-      filter = `WHERE st.district_id = ${Number(district_id)}`;
-    }
-
-    const data = await sequelize.query(`
+    // ================= SUMMARY =================
+    const summaryData = await sequelize.query(`
       SELECT 
         COUNT(DISTINCT st.id) AS total_stores,
 
@@ -29,60 +24,101 @@ export const getStoreSummaryCards = async (req, res) => {
 
       LEFT JOIN invoices inv 
         ON inv.store_code = st.store_code
-
-      ${filter}
     `);
 
-    const result = data[0][0];
+    const summary = summaryData[0][0];
 
-    res.json({
-      success: true,
-      data: {
-        totalStores: Number(result.total_stores),
-        activeStores: Number(result.active_stores),
-        totalEmployees: Number(result.total_employees),
-        totalRevenue: Number(result.total_revenue),
-      },
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-export const getDistricts = async (req, res) => {
-  try {
-    const data = await Store.findAll({
-      where: { organizationlevel: "District" },
+    // ================= DISTRICTS =================
+    const districts = await Store.findAll({
+      where: { organization_level: "District" },
       attributes: ["id", "store_name", "store_code"]
     });
 
-    res.json({ success: true, data });
+    // ================= FINAL RESPONSE =================
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          totalStores: Number(summary.total_stores),
+          activeStores: Number(summary.active_stores),
+          totalEmployees: Number(summary.total_employees),
+          totalRevenue: Number(summary.total_revenue),
+        },
+        districts
+      }
+    });
 
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ================= DISTRICT INVENTORY =================
 export const getDistrictInventory = async (req, res) => {
   try {
-    const { district_id } = req.params;
+    const { store_code } = req.params;
+    const { category } = req.query;
 
+    let condition = `WHERE st.store_code = :store_code`;
+
+    if (category) {
+      condition += ` AND i.category = :category`;
+    }
+
+    // CATEGORY VIEW
+    if (!category) {
+      const data = await sequelize.query(`
+        SELECT 
+          i.category,
+          '-' as code,
+          COUNT(*) as quantity,
+          0 as selling_price,
+          0 as making_charge,
+          '-' as purity,
+          SUM(i.net_weight) as net_weight,
+          SUM(i.stone_weight) as stone_weight,
+          SUM(i.gross_weight) as gross_weight
+
+        FROM items i
+        JOIN stores st ON st.id = i.store_id
+
+        ${condition}
+
+        GROUP BY i.category
+      `, {
+        replacements: { store_code },
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      return res.json({ success: true, data });
+    }
+
+    //  ITEM VIEW
     const data = await sequelize.query(`
       SELECT 
         i.category,
-        i.sku_code,
-        SUM(s.available_qty) as quantity,
-        i.rate as selling_price,
+        i.sku_code as code,
+        COUNT(*) as quantity,
+        i.sale_rate as selling_price,
         i.making_charge,
         i.purity,
         SUM(i.net_weight) as net_weight,
+        SUM(i.stone_weight) as stone_weight,
         SUM(i.gross_weight) as gross_weight
+
       FROM items i
-      JOIN stocks s ON i.id = s.item_id
-      JOIN stores st ON st.id = s.organization_id
-      WHERE st.district_id = :district_id
-      GROUP BY i.category, i.sku_code, i.rate, i.making_charge, i.purity
+      JOIN stores st ON st.id = i.store_id
+
+      ${condition}
+
+      GROUP BY 
+        i.category,
+        i.sku_code,
+        i.sale_rate,
+        i.making_charge,
+        i.purity
     `, {
-      replacements: { district_id },
+      replacements: { store_code, category },
       type: sequelize.QueryTypes.SELECT
     });
 
@@ -92,16 +128,22 @@ export const getDistrictInventory = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ================= RETAIL STORES =================
 export const getRetailStores = async (req, res) => {
   try {
-    const { district_id } = req.params;
+    const { store_code } = req.params;
 
-    const data = await Store.findAll({
-      where: {
-        district_id,
-        organizationlevel: "Retail"
-      },
-      attributes: ["id", "store_name", "store_code"]
+    const data = await sequelize.query(`
+      SELECT id, store_name, store_code
+      FROM stores
+      WHERE district_id = (
+        SELECT id FROM stores WHERE store_code = :store_code
+      )
+      AND organization_level = 'Retail' 
+    `, {
+      replacements: { store_code },
+      type: sequelize.QueryTypes.SELECT
     });
 
     res.json({ success: true, data });
@@ -110,32 +152,63 @@ export const getRetailStores = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ================= STORE INVENTORY =================
 export const getStoreInventory = async (req, res) => {
   try {
-    const { store_id } = req.params;
+    const { store_code } = req.params;
     const { category } = req.query;
 
-    let condition = `WHERE s.organization_id = :store_id`;
+    //  CATEGORY VIEW
+    if (!category) {
+      const data = await sequelize.query(`
+        SELECT 
+          i.category,
+          '-' as code,
+          COUNT(*) as quantity,
+          0 as selling_price,
+          0 as making_charge,
+          '-' as purity,
+          SUM(i.net_weight) as net_weight,
+          SUM(i.stone_weight) as stone_weight,
+          SUM(i.gross_weight) as gross_weight
+        FROM items i
+        JOIN stores st ON st.id = i.store_id
+        WHERE st.store_code = :store_code
+        GROUP BY i.category
+        ORDER BY i.category
+      `, {
+        replacements: { store_code },
+        type: sequelize.QueryTypes.SELECT
+      });
 
-    if (category) {
-      condition += ` AND i.category = :category`;
+      return res.json({ success: true, data });
     }
 
+    //  ITEM VIEW
     const data = await sequelize.query(`
       SELECT 
         i.item_name,
-        i.sku_code,
-        s.available_qty as quantity,
-        i.rate,
+        i.sku_code as code,
+        COUNT(*) as quantity,
+        i.sale_rate as selling_price,
         i.making_charge,
         i.purity,
-        i.net_weight,
-        i.gross_weight
+        SUM(i.net_weight) as net_weight,
+        SUM(i.stone_weight) as stone_weight,
+        SUM(i.gross_weight) as gross_weight
       FROM items i
-      JOIN stocks s ON i.id = s.item_id
-      ${condition}
+      JOIN stores st ON st.id = i.store_id
+      WHERE st.store_code = :store_code
+      AND i.category = :category
+      GROUP BY 
+        i.item_name,
+        i.sku_code,
+        i.sale_rate,
+        i.making_charge,
+        i.purity
     `, {
-      replacements: { store_id, category },
+      replacements: { store_code, category },
       type: sequelize.QueryTypes.SELECT
     });
 

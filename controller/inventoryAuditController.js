@@ -488,7 +488,7 @@ export const getTodayAuditItems = async (req, res) => {
    - non-selected stock items => pending
 ========================================================= */
 
-export const createDailyAudit = async (req, res) => {
+ export const createDailyAudit = async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
@@ -649,12 +649,13 @@ export const createDailyAudit = async (req, res) => {
 
       const reason = String(
         submittedRow.missing_reason ||
+          submittedRow.not_audited_reason ||
           submittedRow.reason ||
           submittedRow.checklist_note ||
           ""
       ).trim();
 
-      if (["missing", "pending"].includes(auditResult) && !reason) {
+      if (["missing", "pending", "not_audited"].includes(auditResult) && !reason) {
         reasonErrors.push({
           item_id: dbItem.id,
           article_code: dbItem.article_code || null,
@@ -700,6 +701,7 @@ export const createDailyAudit = async (req, res) => {
         "pending",
         "mismatch",
         "extra",
+        "not_audited",
       ].includes(requestedResult)
         ? requestedResult
         : "pending";
@@ -722,7 +724,10 @@ export const createDailyAudit = async (req, res) => {
         submittedRow.checklist_note || submittedRow.note || null;
 
       const missingReason =
-        submittedRow.missing_reason || submittedRow.reason || null;
+        submittedRow.missing_reason ||
+        submittedRow.not_audited_reason ||
+        submittedRow.reason ||
+        null;
 
       const payload = {
         audit_id: auditHeader.id,
@@ -740,7 +745,7 @@ export const createDailyAudit = async (req, res) => {
         physical_weight: physicalWeight,
 
         audit_result: finalResult,
-        is_checked: finalResult !== "pending",
+        is_checked: finalResult !== "pending" && finalResult !== "not_audited",
         is_available: finalResult === "present",
         is_matched:
           finalResult === "present" &&
@@ -760,7 +765,7 @@ export const createDailyAudit = async (req, res) => {
         escalation_status:
           finalResult === "missing"
             ? "under_review"
-            : finalResult === "pending"
+            : finalResult === "pending" || finalResult === "not_audited"
             ? "audit_pending"
             : "none",
 
@@ -787,21 +792,27 @@ export const createDailyAudit = async (req, res) => {
         });
       }
 
-      if (finalResult !== "pending") {
-        await Item.update(
-          {
-            isItemAudit: true,
-            itemAuditAt: new Date(),
+      const latestAuditReason =
+        missingReason ||
+        checklistNote ||
+        (finalResult === "present" ? "Audit completed" : null);
+
+      await Item.update(
+        {
+          isItemAudit: finalResult !== "pending" && finalResult !== "not_audited",
+          itemAuditAt: new Date(),
+          lastAuditStatus:
+            finalResult === "not_audited" ? "not_audited" : "audit_done",
+          lastAuditReason: latestAuditReason,
+        },
+        {
+          where: {
+            id: dbItem.id,
+            organization_id: scope.organization_id,
           },
-          {
-            where: {
-              id: dbItem.id,
-              organization_id: scope.organization_id,
-            },
-            transaction: t,
-          }
-        );
-      }
+          transaction: t,
+        }
+      );
 
       await createAuditLog({
         t,
@@ -820,6 +831,8 @@ export const createDailyAudit = async (req, res) => {
             ? "mark_mismatch"
             : finalResult === "extra"
             ? "mark_extra"
+            : finalResult === "not_audited"
+            ? "mark_not_audited"
             : "mark_pending",
         status: finalResult,
         reference_no: auditHeader.audit_no,
@@ -888,7 +901,7 @@ export const createDailyAudit = async (req, res) => {
         }
 
         if (
-          ["missing", "pending"].includes(auditItem.audit_result) &&
+          ["missing", "pending", "not_audited"].includes(auditItem.audit_result) &&
           !auditItem.missing_reason &&
           !auditItem.checklist_note
         ) {

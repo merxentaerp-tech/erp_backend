@@ -1,65 +1,115 @@
-
-import sequelize from "../config/db.js";
+import sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
-import User from "../models/User.js";
+import User from "../../model/user.js";
 import bcrypt from "bcrypt";
 import ExcelJS from "exceljs";
 import jwt from "jsonwebtoken";
 import { Op } from "sequelize";
-import cloudinary from "../utils/cloudinary.js";
+import cloudinary from "../../utils/cloudinary.js";
 
-
-/**
- *  STAFF DASHBOARD STATS
- */
-export const getStaffStats = async (req, res) => {
-  try {
-    const data = await sequelize.query(`
-      SELECT 
-        COUNT(*) AS total_staff,
-        COUNT(*) FILTER (WHERE is_active = true) AS active,
-        COUNT(*) FILTER (WHERE is_active = false) AS on_leave,
-        COUNT(DISTINCT role) AS departments
-      FROM public.users   
-    `, { type: QueryTypes.SELECT });
-
-    res.json({ success: true, data: data[0] });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
 
 
 /**
- *  GET ALL STAFF
+ *  GET STAFF + STATS 
  */
-export const getAllStaff = async (req, res) => {
+export const getStaffWithStats = async (req, res) => {
   try {
+    const {
+      search = "",
+      role,
+      status,
+      page = 1,
+      limit = 10,
+    } = req.query;
+
+    const offset = (page - 1) * limit;
+
+    // ================= WHERE CLAUSE =================
+    let whereClause = `WHERE 1=1`;
+
+    // 🔍 SEARCH
+    if (search) {
+      whereClause += `
+        AND (
+          LOWER(name) LIKE LOWER('%${search}%')
+          OR LOWER(email) LIKE LOWER('%${search}%')
+          OR LOWER(user_code) LIKE LOWER('%${search}%')
+        )
+      `;
+    }
+
+    //  ROLE FILTER
+    if (role) {
+      whereClause += ` AND role = '${role}'`;
+    }
+
+    //  STATUS FILTER
+    if (status === "active") {
+      whereClause += ` AND is_active = true`;
+    } else if (status === "inactive") {
+      whereClause += ` AND is_active = false`;
+    }
+
+    // ================= STAFF LIST =================
     const data = await sequelize.query(`
       SELECT 
         id,
-        name AS username,
+        username,
         email,
+        address,
         phone_number,
         store_name,
         user_code,
         role,
         is_police_verified,
+         aadhaar_url,
+        pan_url,
+         police_doc_url,
         store_code,
         is_active,
         created_at
-      FROM public.users 
+      FROM public.users
+      ${whereClause}
       ORDER BY id DESC
+      LIMIT ${limit} OFFSET ${offset}
     `, { type: QueryTypes.SELECT });
 
-    res.json({ success: true, data });
+    // ================= PAGINATION =================
+    const countResult = await sequelize.query(`
+      SELECT COUNT(*) FROM public.users
+      ${whereClause}
+    `, { type: QueryTypes.SELECT });
+
+    const total = parseInt(countResult[0].count);
+
+    // ================= STATS =================
+    const stats = await sequelize.query(`
+      SELECT 
+        COUNT(*) AS total_staff,
+        COUNT(*) FILTER (WHERE is_active = true) AS active,
+        COUNT(*) FILTER (WHERE is_active = false) AS on_leave,
+        COUNT(DISTINCT role) AS departments
+      FROM public.users
+      ${whereClause}
+    `, { type: QueryTypes.SELECT });
+
+    // ================= RESPONSE =================
+    res.json({
+      success: true,
+      stats: stats[0],   // ❗ same structure
+      data,
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / limit),
+      },
+    });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
-
 
 /**
  *  EXPORT STAFF (EXCEL)
@@ -149,26 +199,128 @@ export const exportStaffExcel = async (req, res) => {
   }
 };
 
+/**
+ *  GET STAFF BY ORGANIZATION LEVEL (DISTRICT / STORE)
+ */
+export const getStaffByLevel = async (req, res) => {
+  try {
+    const {
+      level,        // DISTRICT / STORE / HEAD
+      search = "",
+      page = 1,
+      limit = 10,
+    } = req.query;
 
+    if (!level) {
+      return res.status(400).json({
+        error: "Level is required (DISTRICT / STORE / HEAD)",
+      });
+    }
+
+    const offset = (page - 1) * limit;
+
+    // ================= WHERE CLAUSE =================
+    let whereClause = `WHERE 1=1`;
+
+    const lvl = level.toLowerCase();
+
+    // 🎯 LEVEL FILTER (SMART MAPPING)
+    if (lvl === "store") {
+      whereClause += `
+        AND LOWER(organization_level) IN ('store', 'retail')
+      `;
+    } else if (lvl === "district") {
+      whereClause += `
+        AND LOWER(organization_level) = 'district'
+      `;
+    } else if (lvl === "head") {
+      whereClause += `
+        AND LOWER(organization_level) IN ('head', 'head_office')
+      `;
+    } else {
+      return res.status(400).json({
+        error: "Invalid level. Use DISTRICT / STORE / HEAD",
+      });
+    }
+
+    // 🔍 SEARCH FILTER
+    if (search) {
+      whereClause += `
+        AND (
+          LOWER(name) LIKE LOWER('%${search}%')
+          OR LOWER(email) LIKE LOWER('%${search}%')
+          OR LOWER(user_code) LIKE LOWER('%${search}%')
+        )
+      `;
+    }
+
+    // ================= DATA QUERY =================
+    const data = await sequelize.query(`
+      SELECT 
+        id,
+        username,
+        email,
+        phone_number,
+        store_name,
+        user_code,
+        role,
+        is_police_verified,
+        store_code,
+        is_active,
+        created_at,
+        organization_level
+      FROM public.users
+      ${whereClause}
+      ORDER BY id DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `, { type: QueryTypes.SELECT });
+
+    // ================= COUNT QUERY =================
+    const countResult = await sequelize.query(`
+      SELECT COUNT(*) FROM public.users
+      ${whereClause}
+    `, { type: QueryTypes.SELECT });
+
+    const total = parseInt(countResult[0].count);
+
+    // ================= RESPONSE =================
+    res.json({
+      success: true,
+      data,
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+
+  } catch (err) {
+    console.error("GET STAFF BY LEVEL ERROR:", err);
+    res.status(500).json({
+      error: err.message,
+    });
+  }
+};
 /**
  *  GET SINGLE STAFF
  */
-export const getStaffById = async (req, res) => {
-  try {
-    const { id } = req.params;
+// export const getStaffById = async (req, res) => {
+//   try {
+//     const { id } = req.params;
 
-    const user = await User.findByPk(id);
+//     const user = await User.findByPk(id);
 
-    if (!user) {
-      return res.status(404).json({ error: "Staff not found" });
-    }
+//     if (!user) {
+//       return res.status(404).json({ error: "Staff not found" });
+//     }
 
-    res.json({ success: true, data: user });
+//     res.json({ success: true, data: user });
 
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// };
 
 
 /**
@@ -220,7 +372,7 @@ export const addEmployee = async (req, res) => {
     }
 
     
-    const validLevels = ["HEAD", "DISTRICT", "STORE"];
+    const validLevels = ["HEAD", "District_Store", "retail_Store"];
 
     if (!validLevels.includes(organizationLevel)) {
       return res.status(400).json({
@@ -360,9 +512,9 @@ export const addEmployee = async (req, res) => {
 };
 
 
-/**
- *  UPDATE EMPLOYEE
- */
+// /**
+//  *  UPDATE EMPLOYEE
+//  */
 export const updateEmployee = async (req, res) => {
   try {
     const { id } = req.params;

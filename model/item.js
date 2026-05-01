@@ -76,16 +76,6 @@ const Item = sequelize.define(
       allowNull: false,
       defaultValue: 0,
     },
-    isItemAudit: {
-  type: DataTypes.BOOLEAN,
-  allowNull: false,
-  defaultValue: false,
-},
-
-itemAuditAt: {
-  type: DataTypes.DATE,
-  allowNull: true,
-},
 
     purchase_rate: {
       type: DataTypes.DECIMAL(14, 2),
@@ -109,16 +99,6 @@ itemAuditAt: {
       allowNull: false,
       defaultValue: "gram",
     },
-    isItemAudit: {
-  type: DataTypes.BOOLEAN,
-  allowNull: false,
-  defaultValue: false,
-},
-
-itemAuditAt: {
-  type: DataTypes.DATE,
-  allowNull: true,
-},
 
     current_status: {
       type: DataTypes.ENUM(
@@ -132,6 +112,31 @@ itemAuditAt: {
       ),
       allowNull: false,
       defaultValue: "in_stock",
+    },
+
+    isItemAudit: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "is_item_audit",
+    },
+
+    itemAuditAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "item_audit_at",
+    },
+
+    lastAuditStatus: {
+      type: DataTypes.STRING(30),
+      allowNull: true,
+      field: "last_audit_status",
+    },
+
+    lastAuditReason: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "last_audit_reason",
     },
 
     organization_id: {
@@ -151,6 +156,8 @@ itemAuditAt: {
       { fields: ["category"] },
       { fields: ["current_status"] },
       { fields: ["organization_id"] },
+      { fields: ["is_item_audit"] },
+      { fields: ["last_audit_status"] },
     ],
   }
 );

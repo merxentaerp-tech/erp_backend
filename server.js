@@ -13,13 +13,16 @@ import stock from "./routes/stockRoute.js";
 import Profile from "./routes/userRoute.js";
 import Audit from "./routes/Audit.js";
 import District from "./routes/districtRoute.js";
+import storemanage from "./routes/store_managment.js"
 import ladger from "./routes/ledgerRoutes.js";
 import Bill from "./routes/billRoute.js";
 import Activity from "./routes/activityRoutes.js";
 import exchange from "./routes/Exchange.js";
 import tracklocation from "./routes/transferlocation.js";
+import staff from "./routes/staffroutes.js"
 import { getGoldRate } from "./service/goldService.js";
 import profile from "./routes/profileRoute.js"
+import ledger from "./routes/headladger.js"
 import { getDashboardSummary } from "./controller/dashboardController.js";
 import { getDistrictDashboard } from "./controller/districtController.js";
 
@@ -68,6 +71,9 @@ app.use("/Activity", Activity);
 app.use("/exchange", exchange);
 app.use("/track", tracklocation);
 app.use('/Profile',profile)
+app.use('/headstore/manage',storemanage);
+app.use('/staff',staff)
+app.use('/headledger',ledger)
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,

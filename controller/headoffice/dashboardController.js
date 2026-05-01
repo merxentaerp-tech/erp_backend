@@ -1,0 +1,196 @@
+import sequelize from "../../config/db.js";
+import { QueryTypes } from "sequelize";
+
+export const getFullDashboard = async (req, res) => {
+  try {
+
+    // ================= CARDS =================
+    const [totalStock] = await sequelize.query(`
+      SELECT COUNT(*) as total FROM items
+    `, { type: QueryTypes.SELECT });
+
+    const [stockValue] = await sequelize.query(`
+      SELECT COALESCE(SUM(s.available_qty * i.purchase_rate), 0) as total
+      FROM stocks s
+      JOIN items i ON i.id = s.item_id
+    `, { type: QueryTypes.SELECT });
+
+    // ================= DEAD STOCK (IMPROVED) =================
+    const [deadStockData] = await sequelize.query(`
+      SELECT 
+        COUNT(*) AS dead_stock,
+        COUNT(*) FILTER (WHERE s.available_qty > 0) AS total_stock
+      FROM items i
+      JOIN stocks s ON s.item_id = i.id
+      WHERE s.available_qty > 0
+      AND i.id NOT IN (
+        SELECT DISTINCT ii.item_id
+        FROM invoice_items ii
+        JOIN invoices inv ON inv.id = ii.invoice_id
+        WHERE inv."createdAt" > NOW() - INTERVAL '30 days'
+      )
+    `, { type: QueryTypes.SELECT });
+
+    const deadPercent = deadStockData.total_stock > 0
+      ? ((deadStockData.dead_stock / deadStockData.total_stock) * 100).toFixed(2)
+      : 0;
+
+    const [transitStock] = await sequelize.query(`
+      SELECT COALESCE(SUM(transit_qty), 0) as total 
+      FROM stocks
+    `, { type: QueryTypes.SELECT });
+
+    // ================= SALES vs PURCHASE TREND =================
+    const salesTrend = await sequelize.query(`
+      SELECT 
+        TO_CHAR(inv."createdAt", 'Mon') as label,
+        SUM(ii.total_amount) as sales
+      FROM invoice_items ii
+      JOIN invoices inv ON inv.id = ii.invoice_id
+      GROUP BY label
+    `, { type: QueryTypes.SELECT });
+
+    const purchaseTrend = await sequelize.query(`
+      SELECT 
+        TO_CHAR("createdAt", 'Mon') as label,
+        SUM(purchase_rate) as purchase
+      FROM items
+      GROUP BY label
+    `, { type: QueryTypes.SELECT });
+
+    const trendMap = {};
+
+    salesTrend.forEach(s => {
+      trendMap[s.label] = {
+        label: s.label,
+        sales: Number(s.sales),
+        purchase: 0
+      };
+    });
+
+    purchaseTrend.forEach(p => {
+      if (!trendMap[p.label]) {
+        trendMap[p.label] = {
+          label: p.label,
+          sales: 0,
+          purchase: Number(p.purchase)
+        };
+      } else {
+        trendMap[p.label].purchase = Number(p.purchase);
+      }
+    });
+
+    const salesPurchaseTrend = Object.values(trendMap);
+
+    // ================= PROFIT LOSS (IMPROVED) =================
+    const profitLossRaw = await sequelize.query(`
+      SELECT 
+        TO_CHAR(inv."createdAt", 'YYYY-MM') as label,
+        SUM(ii.total_amount) as revenue,
+        SUM(i.purchase_rate * ii.quantity) as cost
+      FROM invoice_items ii
+      JOIN invoices inv ON inv.id = ii.invoice_id
+      JOIN items i ON i.id = ii.item_id
+      GROUP BY label
+      ORDER BY label
+    `, { type: QueryTypes.SELECT });
+
+    const profitLoss = profitLossRaw.map(row => {
+      const profit = Number(row.revenue) - Number(row.cost);
+      return {
+        label: row.label,
+        profit: profit > 0 ? profit : 0,
+        loss: profit < 0 ? Math.abs(profit) : 0
+      };
+    });
+
+    // ================= REVENUE TREND =================
+    const revenueTrendRaw = await sequelize.query(`
+      SELECT 
+        TO_CHAR(invoice_date, 'Mon') as label,
+        SUM(total_amount) as revenue
+      FROM invoices
+      WHERE status IN ('PAID', 'PARTIAL')
+      GROUP BY label
+      ORDER BY MIN(invoice_date)
+    `, { type: QueryTypes.SELECT });
+
+    const revenueTrend = revenueTrendRaw.map(r => ({
+      label: r.label,
+      revenue: Number(r.revenue)
+    }));
+
+    // ================= TOP PRODUCTS =================
+    const topProducts = await sequelize.query(`
+      SELECT 
+        i.item_name,
+        SUM(ii.quantity) as units_sold,
+        SUM(ii.total_amount) as revenue
+      FROM invoice_items ii
+      JOIN items i ON i.id = ii.item_id
+      GROUP BY i.item_name
+      ORDER BY revenue DESC
+      LIMIT 5
+    `, { type: QueryTypes.SELECT });
+
+    // ================= RECENT ACTIVITIES =================
+    const salesAct = await sequelize.query(`
+      SELECT 
+        'Sales Transaction' as title,
+        CONCAT('Sale completed - ₹', total_amount) as description,
+        "createdAt" as time
+      FROM invoices
+      ORDER BY "createdAt" DESC
+      LIMIT 3
+    `, { type: QueryTypes.SELECT });
+
+    const stockAct = await sequelize.query(`
+      SELECT 
+        'Stock Updated' as title,
+        'Inventory updated' as description,
+        updated_at as time
+      FROM stocks
+      ORDER BY updated_at DESC
+      LIMIT 2
+    `, { type: QueryTypes.SELECT });
+
+    const transitAct = await sequelize.query(`
+      SELECT 
+        'Transit Item' as title,
+        'Items moved between stores' as description,
+        created_at as time
+      FROM stock_transfers
+      ORDER BY created_at DESC
+      LIMIT 2
+    `, { type: QueryTypes.SELECT });
+
+    const activities = [...salesAct, ...stockAct, ...transitAct]
+      .sort((a, b) => new Date(b.time) - new Date(a.time))
+      .slice(0, 5);
+
+    // ================= FINAL RESPONSE =================
+    res.json({
+      success: true,
+      data: {
+        cards: {
+          totalStock: Number(totalStock.total),
+          stockValue: Number(stockValue.total),
+          deadStock: {
+            count: Number(deadStockData.dead_stock),
+            percentage: deadPercent + "%"
+          },
+          transitStock: Number(transitStock.total)
+        },
+        salesPurchaseTrend,
+        profitLoss,
+        revenueTrend,
+        topProducts,
+        recentActivities: activities
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Dashboard Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+};

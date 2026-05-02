@@ -18,9 +18,8 @@ const calcGrowth = (current, previous) => {
   return (((current - previous) / previous) * 100).toFixed(1);
 };
 
-export const getHeadOfficeDashboard = async (req, res) => {
+export const getHeadOfficeReports = async (req, res) => {
   try {
-
     // ================= TOTAL REVENUE =================
     const [revenue] = await sequelize.query(`
       SELECT COALESCE(SUM(total_amount),0) AS value
@@ -31,7 +30,9 @@ export const getHeadOfficeDashboard = async (req, res) => {
     // ================= TOTAL PROFIT =================
     const [profit] = await sequelize.query(`
       SELECT COALESCE(SUM(
-        ii.total_amount - (COALESCE(i.purchase_rate,0) * COALESCE(ii.quantity,1))
+        COALESCE(ii.total_amount,0) - (
+          COALESCE(i.purchase_rate,0) * COALESCE(ii.quantity,1)
+        )
       ),0) AS value
       FROM invoice_items ii
       JOIN items i ON i.id = ii.item_id
@@ -56,7 +57,7 @@ export const getHeadOfficeDashboard = async (req, res) => {
       ) t
     `, { type: QueryTypes.SELECT });
 
-    // ================= MONTH GROWTH =================
+    // ================= LAST MONTH =================
     const [currMonth] = await sequelize.query(`
       SELECT COALESCE(SUM(total_amount),0) AS value
       FROM invoices
@@ -106,19 +107,15 @@ export const getHeadOfficeDashboard = async (req, res) => {
       value: Number(c.value || 0)
     }));
 
-    // ================= ✅ FIXED METAL DISTRIBUTION =================
+    // ================= METAL =================
     const metalRaw = await sequelize.query(`
       SELECT 
-        CONCAT(
-          COALESCE(i.metal_type::text, 'Unknown'),
-          ' ',
-          COALESCE(i.purity::text, '')
-        ) AS label,
+        CONCAT(i.metal_type::text, ' ', COALESCE(i.purity::text, '')) AS label,
         SUM(ii.total_amount) AS value
       FROM invoice_items ii
       JOIN items i ON i.id = ii.item_id
       JOIN invoices inv ON inv.id = ii.invoice_id
-      WHERE inv.status IN ('PAID','PARTIAL')
+      WHERE inv.status IN ('PAID', 'PARTIAL')
       GROUP BY i.metal_type, i.purity
       ORDER BY value DESC
     `, { type: QueryTypes.SELECT });
@@ -143,25 +140,26 @@ export const getHeadOfficeDashboard = async (req, res) => {
       sales: Number(d.sales || 0)
     }));
 
-    // ================= ✅ INVENTORY AUDIT =================
-  const auditRaw = await sequelize.query(`
-  SELECT
-    i.id,
-    i.item_name,
-    i.article_code,
-    i.sku_code,
-    i.category,
-    i.metal_type,
-    i.purity,
-    COALESCE(i.net_weight,0) AS net_weight,
-    COALESCE(i.stone_weight,0) AS stone_weight,
-    COALESCE(i.gross_weight,0) AS gross_weight,
-    COALESCE(i.is_item_audit,false) AS checklist,
-    i.last_audit_status,
-    i.last_audit_reason
-  FROM items i
-  ORDER BY i.id DESC
-`, { type: QueryTypes.SELECT });
+    // ================= INVENTORY AUDIT REPORT =================
+    const auditRaw = await sequelize.query(`
+      SELECT
+        i.id,
+        i.item_name,
+        i.article_code,
+        i.sku_code,
+        i.category,
+        i.metal_type,
+        i.purity,
+        COALESCE(i.net_weight,0) AS net_weight,
+        COALESCE(i.stone_weight,0) AS stone_weight,
+        COALESCE(i.gross_weight,0) AS gross_weight,
+        COALESCE(i.is_item_audit,false) AS checklist,
+        i.last_audit_status,
+        i.last_audit_reason
+      FROM items i
+      ORDER BY i.id DESC
+    `, { type: QueryTypes.SELECT });
+
     const inventoryAuditReport = auditRaw.map(i => ({
       id: i.id,
       item: i.item_name,
@@ -170,15 +168,15 @@ export const getHeadOfficeDashboard = async (req, res) => {
       category: i.category,
       metal_type: i.metal_type,
       purity: i.purity,
-      netWt: `${i.net_weight}g`,
-      stoneWt: `${i.stone_weight}g`,
-      grossWt: `${i.gross_weight}g`,
+      netWt: `${Number(i.net_weight || 0)}g`,
+      stoneWt: `${Number(i.stone_weight || 0)}g`,
+      grossWt: `${Number(i.gross_weight || 0)}g`,
       checklist: Boolean(i.checklist),
       audit_status: i.last_audit_status || "pending",
       audit_reason: i.last_audit_reason || null
     }));
 
-    // ================= FINAL =================
+    // ================= FINAL RESPONSE =================
     return res.json({
       success: true,
       data: {
@@ -194,16 +192,13 @@ export const getHeadOfficeDashboard = async (req, res) => {
         metalDistribution,
         dailyTrend,
 
-        // ✅ ONLY NEW ADD (no change in old response)
+        // ✅ only new added
         inventoryAuditReport
       }
     });
 
   } catch (err) {
     console.error("❌ Dashboard Error:", err);
-    return res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };

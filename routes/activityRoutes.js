@@ -2,7 +2,7 @@ import express from "express";
 import {auth} from "../middlewares/authMiddleware.js";
 import {
   getDistrictOwnRecentActivities,
-  getDistrictRetailRecentActivities,getRetailOwnRecentActivities
+  getHeadOwnRecentActivities,getRetailOwnRecentActivities
 } from "../controller/activityController.js";
 
 const router = express.Router();
@@ -14,13 +14,14 @@ router.get(
 );
 
 router.get(
-  "/district/retails",
+  "/head/own",
   auth,
-  getDistrictRetailRecentActivities
+  getHeadOwnRecentActivities
 );
 router.get(
   "/retail/own",
   auth,
   getRetailOwnRecentActivities
 );
+
 export default router;

@@ -13,6 +13,7 @@ router.get('/report',auth,getAllReports)
 
 
 
+router.get("/reports",auth, getHeadOfficeDashboard);
 
 
 router.get("/dashboard/full", getFullDashboard);

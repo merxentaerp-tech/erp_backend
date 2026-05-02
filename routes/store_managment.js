@@ -4,22 +4,33 @@ import {
   getDistrictInventory,
   getRetailStores,
   getStoreInventory,
-  getStoreDashboard
+  getStoreDashboard,createStore,mapStoresToDistrict,getStoreCategoryItems,getDistrictCategoryItems
 } from "../controller/headoffice/storeManagementFlowController.js";
 import { auth } from "../middlewares/authMiddleware.js";
 const router = express.Router();
-
-// District list
-// router.get("/districts", getDistricts);
-
-// District flow
-router.get("/district/:store_code/inventory", auth,getDistrictInventory);
-router.get("/district/:store_code/stores", auth,getRetailStores);
+router.get("/district/:store_code/inventory", getDistrictInventory);
+router.get("/district/:store_code/stores", getRetailStores);
+router.get(
+  "/district/:store_code/category-items",
+  getDistrictCategoryItems
+);
 
 // Store inventory
-router.get("/store/:store_code/inventory",auth, getStoreInventory);
+router.get("/store/:store_code/inventory", getStoreInventory);
+router.get(
+  "/store/:store_code/category-items",
+  getStoreCategoryItems
+);
 
-// Summary (unchanged)
-router.get("/dashboard",auth, getStoreDashboard);
+// Summary
+router.get("/dashboard", getStoreDashboard);
+
+// ================= NEW ROUTES (ADDED) =================
+
+//  Create Store (Retail + District)
+router.post("/create", createStore);
+
+// Get Unassigned Retail Stores (for dropdown)
+router.post("/map-stores-to-district", mapStoresToDistrict);
 
 export default router;

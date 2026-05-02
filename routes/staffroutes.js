@@ -5,7 +5,7 @@ import {
   addEmployee,
   deleteEmployee,
   toggleEmployeeStatus,
-  exportStaffExcel,getOrganizationsByLevel
+  exportStaffExcel,getOrganizationsByLevel,updateEmployee
 } from "../controller/headoffice/staffController.js";
 
 import { upload2 } from "../middlewares/upload2.js";

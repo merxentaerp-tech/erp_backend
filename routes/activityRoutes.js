@@ -2,7 +2,7 @@ import express from "express";
 import {auth} from "../middlewares/authMiddleware.js";
 import {
   getDistrictOwnRecentActivities,
-  getDistrictRetailRecentActivities,
+  getDistrictRetailRecentActivities,getRetailOwnRecentActivities
 } from "../controller/activityController.js";
 
 const router = express.Router();
@@ -18,5 +18,9 @@ router.get(
   auth,
   getDistrictRetailRecentActivities
 );
-
+router.get(
+  "/retail/own",
+  auth,
+  getRetailOwnRecentActivities
+);
 export default router;

@@ -501,21 +501,21 @@ export const getTodayAuditItems = async (req, res) => {
       submit = false,
     } = req.body;
 
-    if (!category) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Category is required",
-      });
-    }
+    // if (!category) {
+    //   await t.rollback();
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: "Category is required",
+    //   });
+    // }
 
-    if (!Array.isArray(items)) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Items must be an array",
-      });
-    }
+    // if (!Array.isArray(items)) {
+    //   await t.rollback();
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: "Items must be an array",
+    //   });
+    // }
 
     const scope = await getUserScope(user);
     const finalAuditDate = audit_date || getTodayDate();

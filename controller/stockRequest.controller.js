@@ -2616,3 +2616,253 @@ export const estimateDispatchRequestValue = async (req, res) => {
     });
   }
 };
+export const createDistrictStockRequest = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const user = req.user;
+
+    const {
+      target_type, // "head" OR "retail"
+      to_store_id, // required only when target_type = "retail"
+      items,
+      priority,
+      category,
+      notes,
+    } = req.body;
+
+    const userLevel = String(user.organization_level || "").toLowerCase();
+
+    if (userLevel !== "district") {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "Only district can create this stock request",
+      });
+    }
+
+    if (!target_type || !["head", "retail"].includes(String(target_type).toLowerCase())) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "target_type must be head or retail",
+      });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "items are required",
+      });
+    }
+
+    const districtStore = await Store.findOne({
+      where: {
+        id: user.organization_id,
+      },
+      transaction,
+    });
+
+    if (!districtStore) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "District store not found",
+      });
+    }
+
+    let receiverStore = null;
+    let receiverType = String(target_type).toLowerCase();
+
+    if (receiverType === "head") {
+      receiverStore = await Store.findOne({
+        where: {
+          organization_level: {
+            [Op.in]: ["head", "head_office", "HEAD", "HEAD_OFFICE"],
+          },
+          is_active: true,
+        },
+        transaction,
+      });
+
+      if (!receiverStore) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Head office not found",
+        });
+      }
+    }
+
+    if (receiverType === "retail") {
+      if (!to_store_id) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "to_store_id is required for retail request",
+        });
+      }
+
+      receiverStore = await Store.findOne({
+        where: {
+          id: to_store_id,
+          organization_level: {
+            [Op.in]: ["retail", "RETAIL"],
+          },
+          district_id: districtStore.id,
+          is_active: true,
+        },
+        transaction,
+      });
+
+      if (!receiverStore) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Retail store not found under this district",
+        });
+      }
+    }
+
+    const validItems = items
+      .filter((i) => i.item_id && Number(i.request_qty) > 0)
+      .map((i) => ({
+        item_id: Number(i.item_id),
+        request_qty: Number(i.request_qty),
+        approved_qty: 0,
+        status: "pending",
+      }));
+
+    if (validItems.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "No valid items found",
+      });
+    }
+
+    const request_no = `REQ-DIST-${user.organization_id}-${Date.now()}`;
+
+    const stockRequest = await StockRequest.create(
+      {
+        request_no,
+
+        from_organization_id: user.organization_id,
+        from_store_code: districtStore.store_code,
+        from_store_name: districtStore.store_name,
+
+        to_organization_id: receiverStore.id,
+        to_store_code: receiverStore.store_code,
+        to_store_name: receiverStore.store_name,
+
+        to_district_code: receiverType === "retail" ? receiverStore.store_code : null,
+        to_district_name: receiverType === "retail" ? receiverStore.store_name : null,
+
+        priority: priority || "medium",
+        category: category || null,
+        notes: notes || null,
+        status: "pending",
+        created_by: user.id,
+      },
+      { transaction }
+    );
+
+    const requestItemsPayload = validItems.map((item) => ({
+      request_id: stockRequest.id,
+      item_id: item.item_id,
+      request_qty: item.request_qty,
+      approved_qty: item.approved_qty,
+      status: item.status,
+    }));
+
+    await StockRequestItem.bulkCreate(requestItemsPayload, { transaction });
+
+    await Task.create(
+      {
+        title: "Stock request approval required",
+        description: `${districtStore.store_name} submitted stock request ${stockRequest.request_no} to ${receiverStore.store_name}`,
+        priority: priority || "medium",
+        status: "pending",
+        task_type:
+          receiverType === "head"
+            ? "district_to_head_stock_request"
+            : "district_to_retail_stock_request",
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+
+        district_code: receiverType === "head" ? null : receiverStore.store_code,
+        store_code: receiverStore.store_code,
+        store_name: receiverStore.store_name,
+
+        assigned_to: null,
+        created_by: user.id,
+      },
+      { transaction }
+    );
+
+    await ActivityLog.create(
+      {
+        organization_id: user.organization_id,
+        user_id: user.id,
+        action: "stock_request_created",
+        module_name: "stock_request",
+
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+
+        title: "Stock request created",
+        description: `You created stock request ${stockRequest.request_no} for ${receiverStore.store_name}`,
+
+        meta: {
+          total_items: requestItemsPayload.length,
+          from_store_name: districtStore.store_name,
+          to_store_name: receiverStore.store_name,
+          target_type: receiverType,
+        },
+
+        icon: "request",
+        color: "blue",
+      },
+      { transaction }
+    );
+
+    await SystemActivity.create(
+      {
+        title: "New district stock request submitted",
+        description: `${districtStore.store_name} submitted request ${stockRequest.request_no} to ${receiverStore.store_name}`,
+        activity_type: "stock_request_created",
+        module_name: "stock_request",
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+        district_code: districtStore.store_code || null,
+        store_code: receiverStore.store_code || null,
+        store_name: receiverStore.store_name || null,
+        created_by: user.id,
+        created_at: new Date(),
+      },
+      { transaction }
+    );
+
+    await transaction.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "Stock request created successfully",
+      data: {
+        request_id: stockRequest.id,
+        request_no: stockRequest.request_no,
+        total_items: requestItemsPayload.length,
+      },
+    });
+  } catch (error) {
+    await transaction.rollback();
+    console.error("createDistrictStockRequest error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};

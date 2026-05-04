@@ -463,6 +463,7 @@ export const getCustomerLedgerDetail = async (req, res) => {
       const debitAmount = parseFloat(entry.amount || 0);
 
       let receivedAmount = 0;
+
       if (totalCreditPool > 0) {
         receivedAmount = Math.min(totalCreditPool, debitAmount);
         totalCreditPool -= receivedAmount;
@@ -470,9 +471,20 @@ export const getCustomerLedgerDetail = async (req, res) => {
 
       const pendingAmount = debitAmount - receivedAmount;
 
-      let invoiceNumber = entry.reference_id;
+      let invoiceNumber = entry.reference_id || "-";
+      let invoiceId = null;
+
+      if (
+        (entry.reference_type === "BILL" ||
+          entry.reference_type === "INVOICE") &&
+        entry.reference_id
+      ) {
+        invoiceId = entry.reference_id;
+      }
+
       if (entry.reference_type === "BILL" && entry.reference_id) {
         const billWhere = { id: entry.reference_id };
+
         if (organization_id) {
           billWhere.organization_id = organization_id;
         }
@@ -484,17 +496,19 @@ export const getCustomerLedgerDetail = async (req, res) => {
         });
 
         if (bill) {
+          invoiceId = bill.id;
           invoiceNumber = bill.bill_number;
         }
       }
 
       rows.push({
         ledger_id: entry.id,
+        invoice_id: invoiceId,
         invoice_number: invoiceNumber || "-",
         date: entry.createdAt,
-        total_amount: debitAmount,
-        received_amount: receivedAmount,
-        pending_amount: pendingAmount,
+        total_amount: Number(debitAmount.toFixed(2)),
+        received_amount: Number(receivedAmount.toFixed(2)),
+        pending_amount: Number(pendingAmount.toFixed(2)),
         reference_type: entry.reference_type,
         reference_id: entry.reference_id,
         action: "View",
@@ -535,6 +549,7 @@ export const getCustomerLedgerDetail = async (req, res) => {
     });
   } catch (err) {
     console.error("Ledger Detail Error:", err);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch customer ledger detail",
@@ -542,7 +557,6 @@ export const getCustomerLedgerDetail = async (req, res) => {
     });
   }
 };
-
 const DISTRICT_LEVELS = ["district", "District", "DISTRICT"];
 
 const getStoreNameField = () => {
@@ -580,32 +594,12 @@ const resolveDistrictOrganization = async (user) => {
     throw new Error("Only district users can access this ledger");
   }
 
-  let districtOrg = await Store.findOne({
-    where: {
-      id: user.organization_id,
-      organization_level: "District",
-    },
-    raw: true,
-  });
-
-  if (districtOrg) return districtOrg;
-
-  districtOrg = await Store.findOne({
-    where: {
-      district_id: user.organization_id,
-      organization_level: "District",
-    },
-    order: [["id", "ASC"]],
-    raw: true,
-  });
-
-  if (districtOrg) return districtOrg;
+  let districtOrg = null;
 
   if (user.store_code) {
     districtOrg = await Store.findOne({
       where: {
         store_code: user.store_code,
-        organization_level: "District",
       },
       raw: true,
     });
@@ -613,7 +607,26 @@ const resolveDistrictOrganization = async (user) => {
     if (districtOrg) return districtOrg;
   }
 
+  districtOrg = await Store.findOne({
+    where: {
+      id: user.organization_id,
+    },
+    raw: true,
+  });
+
+  if (districtOrg) return districtOrg;
+
   throw new Error("District office organization not found");
+};
+
+const getDistrictScope = async (user) => {
+  const districtOrg = await resolveDistrictOrganization(user);
+
+  return {
+    districtOrg,
+    districtStoreCode: user.store_code || districtOrg[getStoreCodeField()],
+    districtOrgId: user.organization_id || districtOrg.id,
+  };
 };
 
 export const getDistrictLedger = async (req, res) => {
@@ -634,10 +647,11 @@ export const getDistrictLedger = async (req, res) => {
       });
     }
 
-    const districtOrg = await resolveDistrictOrganization(req.user);
+    const { districtOrg, districtStoreCode, districtOrgId } =
+      await getDistrictScope(req.user);
 
     const customerWhere = {
-      organization_id: districtOrg.id,
+      store_code: districtStoreCode,
     };
 
     if (search?.trim()) {
@@ -648,7 +662,7 @@ export const getDistrictLedger = async (req, res) => {
     }
 
     const ledgerWhere = {
-      organization_id: districtOrg.id,
+      store_code: districtStoreCode,
     };
 
     const summaryRaw = await LedgerEntry.findOne({
@@ -659,7 +673,9 @@ export const getDistrictLedger = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`
+              )
             ),
             0
           ),
@@ -670,7 +686,9 @@ export const getDistrictLedger = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`
+              )
             ),
             0
           ),
@@ -689,10 +707,7 @@ export const getDistrictLedger = async (req, res) => {
         "address",
         "store_code",
         "organization_id",
-        [
-          fn("COUNT", literal(`DISTINCT "invoices"."id"`)),
-          "total_deals",
-        ],
+        [fn("COUNT", literal(`DISTINCT "invoices"."id"`)), "total_deals"],
         [
           fn("COALESCE", fn("SUM", col(`invoices.total_amount`)), 0),
           "total_amount",
@@ -713,7 +728,7 @@ export const getDistrictLedger = async (req, res) => {
           attributes: [],
           required: false,
           where: {
-            organization_id: districtOrg.id,
+            store_code: districtStoreCode,
           },
         },
       ],
@@ -730,7 +745,7 @@ export const getDistrictLedger = async (req, res) => {
       store_code: row.store_code || "",
       source_type: "district",
       source_name: districtOrg[getStoreNameField()] || "District Office",
-      source_store_code: districtOrg[getStoreCodeField()] || null,
+      source_store_code: districtStoreCode,
       total_deals: Number(row.get("total_deals") || 0),
       total_amount: Number(row.get("total_amount") || 0),
       received_amount: Number(row.get("received_amount") || 0),
@@ -742,9 +757,18 @@ export const getDistrictLedger = async (req, res) => {
       loss: 0,
       goods_receipt: Number(summaryRaw?.goods_receipt || 0),
       total_clients: clients.length,
-      total_amount: clients.reduce((sum, item) => sum + Number(item.total_amount || 0), 0),
-      total_received: clients.reduce((sum, item) => sum + Number(item.received_amount || 0), 0),
-      total_pending: clients.reduce((sum, item) => sum + Number(item.pending_amount || 0), 0),
+      total_amount: clients.reduce(
+        (sum, item) => sum + Number(item.total_amount || 0),
+        0
+      ),
+      total_received: clients.reduce(
+        (sum, item) => sum + Number(item.received_amount || 0),
+        0
+      ),
+      total_pending: clients.reduce(
+        (sum, item) => sum + Number(item.pending_amount || 0),
+        0
+      ),
     };
 
     return res.status(200).json({
@@ -752,11 +776,11 @@ export const getDistrictLedger = async (req, res) => {
       message: "District ledger dashboard fetched successfully",
       data: {
         district: {
-          organization_id: districtOrg.id,
-          district_id: districtOrg.district_id,
-          store_code: districtOrg[getStoreCodeField()] || null,
+          organization_id: districtOrgId,
+          district_id: districtOrg.district_id || districtOrgId,
+          store_code: districtStoreCode,
           store_name: districtOrg[getStoreNameField()] || "District Office",
-          organization_level: districtOrg.organization_level,
+          organization_level: req.user.organization_level,
         },
         summary,
         clients,
@@ -797,12 +821,13 @@ export const getDistrictLedgerClientDetail = async (req, res) => {
       });
     }
 
-    const districtOrg = await resolveDistrictOrganization(req.user);
+    const { districtOrg, districtStoreCode, districtOrgId } =
+      await getDistrictScope(req.user);
 
     const customer = await Customer.findOne({
       where: {
         id: customerId,
-        organization_id: districtOrg.id,
+        store_code: districtStoreCode,
       },
       attributes: [
         "id",
@@ -828,7 +853,7 @@ export const getDistrictLedgerClientDetail = async (req, res) => {
     const invoices = await Invoice.findAll({
       where: {
         customer_id: customer.id,
-        organization_id: districtOrg.id,
+        store_code: districtStoreCode,
       },
       attributes: [
         "id",
@@ -862,9 +887,9 @@ export const getDistrictLedgerClientDetail = async (req, res) => {
       message: "District client ledger detail fetched successfully",
       data: {
         district: {
-          organization_id: districtOrg.id,
-          district_id: districtOrg.district_id,
-          store_code: districtOrg[getStoreCodeField()] || null,
+          organization_id: districtOrgId,
+          district_id: districtOrg.district_id || districtOrgId,
+          store_code: districtStoreCode,
           store_name: districtOrg[getStoreNameField()] || "District Office",
         },
         client: {
@@ -879,8 +904,14 @@ export const getDistrictLedgerClientDetail = async (req, res) => {
         summary: {
           total_deals: rows.length,
           total_amount: rows.reduce((sum, item) => sum + item.total_amount, 0),
-          received_amount: rows.reduce((sum, item) => sum + item.received_amount, 0),
-          pending_amount: rows.reduce((sum, item) => sum + item.pending_amount, 0),
+          received_amount: rows.reduce(
+            (sum, item) => sum + item.received_amount,
+            0
+          ),
+          pending_amount: rows.reduce(
+            (sum, item) => sum + item.pending_amount,
+            0
+          ),
         },
         rows,
       },
@@ -913,10 +944,11 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
       });
     }
 
-    const districtOrg = await resolveDistrictOrganization(req.user);
+    const { districtOrg, districtStoreCode, districtOrgId } =
+      await getDistrictScope(req.user);
 
     const customerWhere = {
-      organization_id: districtOrg.id,
+      store_code: districtStoreCode,
     };
 
     if (search?.trim()) {
@@ -927,7 +959,7 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
     }
 
     const ledgerWhere = {
-      organization_id: districtOrg.id,
+      store_code: districtStoreCode,
     };
 
     const summaryRaw = await LedgerEntry.findOne({
@@ -938,7 +970,9 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`
+              )
             ),
             0
           ),
@@ -949,7 +983,9 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`
+              )
             ),
             0
           ),
@@ -968,10 +1004,7 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
         "address",
         "store_code",
         "organization_id",
-        [
-          fn("COUNT", literal(`DISTINCT "invoices"."id"`)),
-          "total_deals",
-        ],
+        [fn("COUNT", literal(`DISTINCT "invoices"."id"`)), "total_deals"],
         [
           fn("COALESCE", fn("SUM", col(`invoices.total_amount`)), 0),
           "total_amount",
@@ -992,7 +1025,7 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
           attributes: [],
           required: false,
           where: {
-            organization_id: districtOrg.id,
+            store_code: districtStoreCode,
           },
         },
       ],
@@ -1026,7 +1059,6 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("District Ledger");
 
-    // Title
     worksheet.mergeCells("A1:I1");
     worksheet.getCell("A1").value = "District Ledger Dashboard Report";
     worksheet.getCell("A1").font = { bold: true, size: 16 };
@@ -1035,22 +1067,21 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
       vertical: "middle",
     };
 
-    // District Info
     worksheet.getCell("A3").value = "District Office Name";
-    worksheet.getCell("B3").value = districtOrg[getStoreNameField()] || "";
+    worksheet.getCell("B3").value =
+      districtOrg[getStoreNameField()] || "District Office";
 
     worksheet.getCell("A4").value = "District Office Code";
-    worksheet.getCell("B4").value =
-      districtOrg[getStoreCodeField()] || req.user?.store_code || "";
+    worksheet.getCell("B4").value = districtStoreCode;
 
     worksheet.getCell("A5").value = "Organization ID";
-    worksheet.getCell("B5").value = districtOrg.id;
+    worksheet.getCell("B5").value = districtOrgId;
 
     worksheet.getCell("A6").value = "District ID";
-    worksheet.getCell("B6").value = districtOrg.district_id || "";
+    worksheet.getCell("B6").value = districtOrg.district_id || districtOrgId;
 
     worksheet.getCell("A7").value = "Organization Level";
-    worksheet.getCell("B7").value = districtOrg.organization_level || "District";
+    worksheet.getCell("B7").value = req.user.organization_level || "District";
 
     worksheet.getCell("A8").value = "Generated At";
     worksheet.getCell("B8").value = new Date().toLocaleString();
@@ -1059,7 +1090,6 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
       worksheet.getCell(cell).font = { bold: true };
     });
 
-    // Summary block
     worksheet.getCell("D3").value = "Total Sales";
     worksheet.getCell("E3").value = summary.total_sales;
 
@@ -1085,7 +1115,6 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
       worksheet.getCell(cell).font = { bold: true };
     });
 
-    // Table header
     const headerRowIndex = 11;
 
     worksheet.getRow(headerRowIndex).values = [
@@ -1137,16 +1166,13 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
       }
     });
 
-    const fileName = `district_ledger_${districtOrg[getStoreCodeField()] || districtOrg.id}_${Date.now()}.xlsx`;
+    const fileName = `district_ledger_${districtStoreCode}_${Date.now()}.xlsx`;
 
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${fileName}"`
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
 
     await workbook.xlsx.write(res);
     return res.end();
@@ -1159,3 +1185,4 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
     });
   }
 };
+ladger controller

@@ -18,12 +18,17 @@ const ALLOWED_PAYMENT_ROLES = [
   "district_manager",
   "district_tl",
   "super_admin",
+  "finance",
+  "super_sales_manager",
+  "sales_admin",
 ];
+
+const normalize = (value) => String(value || "").trim().toLowerCase();
 
 const getUserRole = (user) => {
   if (!user) return null;
-  if (typeof user.role === "string") return user.role;
-  if (user.role?.name) return user.role.name;
+  if (typeof user.role === "string") return normalize(user.role);
+  if (user.role?.name) return normalize(user.role.name);
   return null;
 };
 
@@ -32,26 +37,40 @@ const canManagePayments = (user) => {
   return ALLOWED_PAYMENT_ROLES.includes(role);
 };
 
-const normalizeLevel = (level = "") => String(level).toLowerCase();
-
-const validateInvoiceAccess = (invoice, user) => {
+const validateInvoiceAccess = async (invoice, user) => {
   if (!invoice || !user) return false;
+
+  const role = getUserRole(user);
+  const level = normalize(user.organization_level);
+
+  if (!canManagePayments(user)) return false;
+
+  const fullAccessRoles = [
+    "super_admin",
+    "admin",
+    "finance",
+    "super_sales_manager",
+    "sales_admin",
+
+    // added: every retail store access
+    "retail_manager",
+    "retail_tl",
+  ];
+
+  if (fullAccessRoles.includes(role)) {
+    return true;
+  }
 
   const userOrgId = Number(user.organization_id);
   const invoiceOrgId = Number(invoice.organization_id);
 
-  if (!userOrgId || userOrgId !== invoiceOrgId) return false;
+  const districtRoles = ["district_manager", "district_tl"];
 
-  const level = normalizeLevel(user.organization_level);
-  const userStoreCode = user.store_code || null;
-
-  // retail user => same store only
-  if (level === "retail" && userStoreCode) {
-    return invoice.store_code === userStoreCode;
+  if (districtRoles.includes(role) || level === "district") {
+    return userOrgId === invoiceOrgId;
   }
 
-  // district/head => same organization enough
-  return true;
+  return userOrgId === invoiceOrgId;
 };
 
 /**
@@ -273,6 +292,7 @@ export const createPayment = async (req, res) => {
  * @desc    Get payments of one invoice
  * @route   GET /api/payment/invoice/:invoice_id
  */
+
 export const getPaymentsByInvoice = async (req, res) => {
   try {
     const { invoice_id } = req.params;
@@ -293,17 +313,19 @@ export const getPaymentsByInvoice = async (req, res) => {
       });
     }
 
-    if (!validateInvoiceAccess(invoice, req.user)) {
+    const hasAccess = await validateInvoiceAccess(invoice, req.user);
+
+    if (!hasAccess) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to access this invoice payments",
       });
     }
 
+    // 🔥 FIX: removed organization_id filter
     const payments = await Payment.findAll({
       where: {
         invoice_id: invoice.id,
-        organization_id: invoice.organization_id,
       },
       order: [["payment_date", "DESC"]],
     });
@@ -330,7 +352,7 @@ export const getPaymentsByInvoice = async (req, res) => {
       data: payments.map((p) => ({
         id: p.id,
         invoice_id: p.invoice_id,
-        amount: parseFloat(p.amount).toFixed(2),
+        amount: parseFloat(p.amount || 0).toFixed(2),
         payment_method: p.payment_method,
         financier: p.financier,
         txn_id: p.txn_id,
@@ -613,6 +635,7 @@ export const getPaymentInvoiceList = async (req, res) => {
     });
   }
 };
+
 export const getPaymentTracker = async (req, res) => {
   try {
     const { customer_id } = req.params;
@@ -630,19 +653,16 @@ export const getPaymentTracker = async (req, res) => {
 
     const customerWhere = {
       id: customer_id,
+      organization_id,
     };
 
-    // retail user apne store ka customer hi dekhega
     if (level === "retail" && store_code) {
       customerWhere.store_code = store_code;
-    } else {
-      // head/district ke liye org customer check
-      customerWhere.organization_id = organization_id;
     }
 
     const customer = await Customer.findOne({
       where: customerWhere,
-      attributes: ["id", "name", "phone", "store_code", "organization_id"],
+      attributes: ["id", "name", "phone", "store_code"],
     });
 
     if (!customer) {
@@ -653,16 +673,12 @@ export const getPaymentTracker = async (req, res) => {
     }
 
     const invoiceWhere = {
-      customer_id: customer.id,
+      customer_id,
+      organization_id,
     };
 
-    // retail ke liye store_code best filter hai
     if (level === "retail" && store_code) {
       invoiceWhere.store_code = store_code;
-    } else if (customer.store_code) {
-      invoiceWhere.store_code = customer.store_code;
-    } else {
-      invoiceWhere.organization_id = organization_id;
     }
 
     const invoices = await Invoice.findAll({
@@ -676,6 +692,7 @@ export const getPaymentTracker = async (req, res) => {
       ? await Payment.findAll({
           where: {
             invoice_id: invoiceIds,
+            organization_id,
           },
           order: [["payment_date", "DESC"]],
         })
@@ -691,7 +708,7 @@ export const getPaymentTracker = async (req, res) => {
       paymentMap[pay.invoice_id].push({
         id: pay.id,
         date: pay.payment_date,
-        received_amount: Number(pay.amount || 0).toFixed(2),
+        received_amount: pay.amount,
         self_financer: pay.financier,
         payment_method: pay.payment_method,
         txn_id: pay.txn_id,
@@ -727,6 +744,7 @@ export const getPaymentTracker = async (req, res) => {
     });
   }
 };
+
 
 
 const DISTRICT_LEVELS = ["district", "District", "DISTRICT"];
@@ -805,10 +823,14 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
 
     const districtOrg = await resolveDistrictOrganization(req.user);
 
+    // IMPORTANT: token ka store_code priority me rakho
+    const districtStoreCode = req.user.store_code || districtOrg.store_code;
+    const districtOrgId = req.user.organization_id || districtOrg.id;
+
     const invoice = await Invoice.findOne({
       where: {
         id: invoice_id,
-        organization_id: districtOrg.id,
+        store_code: districtStoreCode,
       },
       raw: true,
     });
@@ -823,9 +845,16 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
     const customer = await Customer.findOne({
       where: {
         id: invoice.customer_id,
-        organization_id: districtOrg.id,
+        store_code: districtStoreCode,
       },
-      attributes: ["id", "name", "phone", "address", "store_code", "organization_id"],
+      attributes: [
+        "id",
+        "name",
+        "phone",
+        "address",
+        "store_code",
+        "organization_id",
+      ],
       raw: true,
     });
 
@@ -839,9 +868,12 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
     const payments = await Payment.findAll({
       where: {
         invoice_id: invoice.id,
-        organization_id: districtOrg.id,
+        store_code: districtStoreCode,
       },
-      order: [["payment_date", "DESC"], ["id", "DESC"]],
+      order: [
+        ["payment_date", "DESC"],
+        ["id", "DESC"],
+      ],
       raw: true,
     });
 
@@ -854,11 +886,11 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
       success: true,
       message: "District invoice payment tracker fetched successfully",
       district: {
-        organization_id: districtOrg.id,
-        district_id: districtOrg.district_id,
-        store_code: districtOrg.store_code,
+        organization_id: districtOrgId,
+        district_id: districtOrg.district_id || districtOrgId,
+        store_code: districtStoreCode,
         store_name: districtOrg.store_name,
-        organization_level: districtOrg.organization_level,
+        organization_level: req.user.organization_level,
       },
       customer: {
         id: customer.id,
@@ -890,6 +922,7 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
         operator: p.operator || null,
         payment_date: p.payment_date || null,
         store_code: p.store_code || null,
+        organization_id: p.organization_id || null,
         createdAt: p.createdAt || null,
       })),
     });
@@ -903,3 +936,4 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
     });
   }
 };
+payment

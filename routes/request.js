@@ -12,8 +12,10 @@ import {
   receiveTransfer,
   getIncomingTransfers,
   getOutgoingTransfers,
-  getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId,estimateDispatchRequestValue
+  getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId,estimateDispatchRequestValue,createDistrictStockRequest
 } from "../controller/stockRequest.controller.js";
+
+import {getHeadReceivedStockRequests,approveAndDispatchHeadRequest,createHeadStockRequest,getHeadAllTransfers} from "../controller/headoffice/headrequestflow.js"
 
 const router = express.Router();
 
@@ -53,4 +55,28 @@ router.post(
   auth,
   estimateDispatchRequestValue
 );
+router.post(
+  "/district-stock-request",
+  auth,
+  createDistrictStockRequest
+);
+
+
+
+//head request flow
+router.get('/headrece',auth,getHeadReceivedStockRequests)
+
+router.put(
+  "/requestshead/:requestId/approve-dispatch",
+  auth,
+  upload.fields([
+    { name: "driver_photo", maxCount: 1 },
+    { name: "dispatch_images", maxCount: 3 },
+    { name: "dispatch_video", maxCount: 1 },
+  ]),
+  approveAndDispatchHeadRequest
+);
+
+router.post("/head-stock-request", auth, createHeadStockRequest);
+router.get("/transfers/head/all", auth, getHeadAllTransfers);
 export default router;

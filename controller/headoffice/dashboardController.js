@@ -1,9 +1,37 @@
 import sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
+import axios from "axios"; 
 
 export const getFullDashboard = async (req, res) => {
   try {
 
+let goldPrice = 0;
+let silverPrice = 0;
+
+try {
+  // 1 Gold & Silver (USD per ounce)
+  const goldRes = await axios.get("https://api.gold-api.com/price/XAU");
+  const silverRes = await axios.get("https://api.gold-api.com/price/XAG");
+
+  // 2 LIVE USD → INR
+  const rateRes = await axios.get("https://open.er-api.com/v6/latest/USD");
+  const usdToInr = rateRes.data.rates.INR;
+
+  const ounceToGram = 31.1035;
+
+  // 3 Gold (24K per gram INR)
+  const gold24K = ((goldRes.data.price || 0) / ounceToGram) * usdToInr;
+
+  // 4 Silver (999 → 925 per gram INR)
+  const silver999 = ((silverRes.data.price || 0) / ounceToGram) * usdToInr;
+  const silver925 = silver999 * 0.925;
+
+  goldPrice = gold24K;
+  silverPrice = silver925;
+
+} catch (err) {
+  console.log(" API Error:", err.message);
+}
     // ================= CARDS =================
     const [totalStock] = await sequelize.query(`
       SELECT COUNT(*) as total FROM items
@@ -50,13 +78,16 @@ export const getFullDashboard = async (req, res) => {
       GROUP BY label
     `, { type: QueryTypes.SELECT });
 
-    const purchaseTrend = await sequelize.query(`
-      SELECT 
-        TO_CHAR("createdAt", 'Mon') as label,
-        SUM(purchase_rate) as purchase
-      FROM items
-      GROUP BY label
-    `, { type: QueryTypes.SELECT });
+   const purchaseTrend = await sequelize.query(`
+  SELECT 
+    TO_CHAR(sm.created_at,'Mon') as label,
+    ROUND(SUM(sm.qty * i.purchase_rate)::numeric, 2) as purchase
+  FROM stock_movements sm
+  JOIN items i ON i.id = sm.item_id
+  WHERE sm.movement_type IN ('purchase','adjustment_in','return_in')
+  GROUP BY label
+  ORDER BY MIN(sm.created_at)
+`, { type: QueryTypes.SELECT });
 
     const trendMap = {};
 
@@ -179,7 +210,11 @@ export const getFullDashboard = async (req, res) => {
             count: Number(deadStockData.dead_stock),
             percentage: deadPercent + "%"
           },
-          transitStock: Number(transitStock.total)
+          transitStock: Number(transitStock.total),
+
+          // ONLY ADDED
+          goldPrice: Number(goldPrice.toFixed(2)),
+          silverPrice: Number(silverPrice.toFixed(2))
         },
         salesPurchaseTrend,
         profitLoss,
@@ -190,7 +225,7 @@ export const getFullDashboard = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ Dashboard Error:", error);
+    console.error(" Dashboard Error:", error);
     res.status(500).json({ error: error.message });
   }
 };

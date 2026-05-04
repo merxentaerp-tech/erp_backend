@@ -936,4 +936,4 @@ export const getDistrictPaymentsByInvoice = async (req, res) => {
     });
   }
 };
-payment
+

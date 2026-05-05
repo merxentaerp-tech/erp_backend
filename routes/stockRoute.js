@@ -30,7 +30,7 @@ router.get("/category/:category", auth, getStockItemsByCategory);
 //   uploadInventoryFile.single("file"),
 //   uploadStockInItems
 // );
-router.get("/items/:itemId/qr", auth, getItemQR);
+// router.get("/items/:itemId/qr", auth, getItemQR);
 
 router.get("/district/inventory/category/:category",auth, getDistrictStockItemsByCategory);
 

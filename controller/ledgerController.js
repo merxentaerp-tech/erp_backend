@@ -1,8 +1,13 @@
 // controllers/LedgerEntry.js
-
+// controllers/LedgerEntry.js
+import { QueryTypes } from "sequelize";
+import sequelize from "../config/db.js";
+import axios from "axios";
 import Customer from "../model/Customer.js";
 import LedgerEntry from "../model/LedgerEntry.js";
 import Bill from "../model/Bill.js"
+import PDFDocument from "pdfkit";
+import InvoiceItem from "../model/InvoiceItem.js"
 // import Customer from "../model/Customer.js";
 import Store from "../model/Store.js";
 import Invoice from "../model/invoices.js"; // if available in your project
@@ -1186,3 +1191,353 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
   }
 };
 
+
+export const downloadInvoiceById = async (req, res) => {
+  try {
+    const invoice_id = Number(req.params.invoice_id);
+
+    if (isNaN(invoice_id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid invoice_id",
+      });
+    }
+
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
+    const organization_id = req.user?.organization_id || null;
+
+    const invoiceWhere = {
+      id: invoice_id,
+    };
+
+    // Access check same org ke basis par
+    if (organization_id) {
+      invoiceWhere.organization_id = organization_id;
+    }
+
+    // 1. Invoice fetch
+    const invoice = await Invoice.findOne({
+      where: invoiceWhere,
+      raw: true,
+    });
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: "Invoice not found or access denied",
+      });
+    }
+
+    // 2. Customer fetch separately
+    let customer = null;
+
+    if (invoice.customer_id) {
+      customer = await Customer.findOne({
+        where: {
+          id: invoice.customer_id,
+          ...(organization_id ? { organization_id } : {}),
+        },
+        raw: true,
+      });
+    }
+
+    // 3. Invoice items fetch with raw SQL
+    // IMPORTANT: InvoiceItem model use nahi karna, kyunki model/DB column mismatch aa raha hai.
+    const items = await sequelize.query(
+      `
+      SELECT *
+      FROM invoice_items
+      WHERE invoice_id = :invoice_id
+      ORDER BY id ASC
+      `,
+      {
+        replacements: {
+          invoice_id: invoice.id,
+        },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const safeFileName = String(
+      invoice.invoice_number || `invoice_${invoice.id}`
+    ).replace(/[^\w\-]/g, "_");
+
+    const fileName = `${safeFileName}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${fileName}"`
+    );
+
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 40,
+      bufferPages: true,
+    });
+
+    doc.pipe(res);
+
+    const formatMoney = (value) => {
+      const num = Number(value || 0);
+      return `Rs. ${num.toFixed(2)}`;
+    };
+
+    const formatWeight = (value) => {
+      const num = Number(value || 0);
+      return num.toFixed(3);
+    };
+
+    const formatDate = (value) => {
+      if (!value) return "-";
+
+      const date = new Date(value);
+
+      if (isNaN(date.getTime())) {
+        return "-";
+      }
+
+      return date.toLocaleDateString("en-IN");
+    };
+
+    // ================= HEADER =================
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(20)
+      .text("TAX INVOICE", {
+        align: "center",
+      });
+
+    doc.moveDown(0.5);
+
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .text(`Invoice No: ${invoice.invoice_number || "-"}`, 40, 80)
+      .text(`Invoice Date: ${formatDate(invoice.invoice_date)}`, 40, 96)
+      .text(`Store Code: ${invoice.store_code || "-"}`, 40, 112);
+
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .text(`Invoice ID: ${invoice.id}`, 390, 80, {
+        width: 160,
+        align: "right",
+      })
+      .text(`Status: ${invoice.status || "-"}`, 390, 96, {
+        width: 160,
+        align: "right",
+      });
+
+    doc.moveDown(3);
+
+    // ================= CUSTOMER =================
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(13)
+      .text("Customer Details", 40, 145);
+
+    doc
+      .moveTo(40, 163)
+      .lineTo(555, 163)
+      .stroke();
+
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .text(`Name: ${customer?.name || "-"}`, 40, 175)
+      .text(`Phone: ${customer?.phone || "-"}`, 40, 191)
+      .text(`Address: ${customer?.address || "-"}`, 40, 207, {
+        width: 320,
+      })
+      .text(`PAN: ${customer?.pan_card_number || "-"}`, 40, 237);
+
+    // ================= ITEMS TABLE =================
+    let y = 275;
+
+    const drawTableHeader = () => {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(9)
+        .text("No.", 40, y, { width: 25 })
+        .text("Product", 68, y, { width: 115 })
+        .text("Purity", 185, y, { width: 45 })
+        .text("Qty", 230, y, { width: 35, align: "right" })
+        .text("Net Wt", 270, y, { width: 55, align: "right" })
+        .text("Rate", 330, y, { width: 60, align: "right" })
+        .text("Making", 395, y, { width: 65, align: "right" })
+        .text("Total", 465, y, { width: 85, align: "right" });
+
+      y += 16;
+
+      doc
+        .moveTo(40, y)
+        .lineTo(555, y)
+        .stroke();
+
+      y += 8;
+    };
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(13)
+      .text("Invoice Items", 40, y);
+
+    y += 22;
+
+    drawTableHeader();
+
+    doc.font("Helvetica").fontSize(8);
+
+    if (!items.length) {
+      doc.text("No items found", 40, y);
+      y += 20;
+    }
+
+    items.forEach((item, index) => {
+      if (y > 720) {
+        doc.addPage();
+        y = 50;
+        drawTableHeader();
+        doc.font("Helvetica").fontSize(8);
+      }
+
+      const productText =
+        item.description ||
+        item.product_name ||
+        item.product_code ||
+        item.article_code ||
+        item.sku_code ||
+        "-";
+
+      const quantity = Number(item.quantity || item.qty || 1);
+      const netWeight = item.net_weight || 0;
+      const rate = item.rate || 0;
+      const making =
+        item.making_charge_value ||
+        item.making_charge_amount ||
+        item.making_charge_percent ||
+        0;
+      const total =
+        item.total_amount ||
+        item.line_total ||
+        item.value ||
+        0;
+
+      doc
+        .font("Helvetica")
+        .fontSize(8)
+        .text(index + 1, 40, y, { width: 25 })
+        .text(productText, 68, y, {
+          width: 115,
+          height: 28,
+          ellipsis: true,
+        })
+        .text(item.purity || "-", 185, y, { width: 45 })
+        .text(quantity.toFixed(0), 230, y, {
+          width: 35,
+          align: "right",
+        })
+        .text(formatWeight(netWeight), 270, y, {
+          width: 55,
+          align: "right",
+        })
+        .text(Number(rate || 0).toFixed(2), 330, y, {
+          width: 60,
+          align: "right",
+        })
+        .text(Number(making || 0).toFixed(2), 395, y, {
+          width: 65,
+          align: "right",
+        })
+        .text(Number(total || 0).toFixed(2), 465, y, {
+          width: 85,
+          align: "right",
+        });
+
+      y += 30;
+    });
+
+    if (y > 650) {
+      doc.addPage();
+      y = 60;
+    }
+
+    doc
+      .moveTo(40, y)
+      .lineTo(555, y)
+      .stroke();
+
+    y += 20;
+
+    // ================= SUMMARY =================
+    const totalAmount = Number(invoice.total_amount || 0);
+    const receivedAmount = Number(invoice.received_amount || 0);
+    const pendingAmount = Number(invoice.pending_amount || 0);
+
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(11)
+      .text("Summary", 360, y);
+
+    y += 18;
+
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .text("Total Amount:", 360, y, { width: 90 })
+      .text(formatMoney(totalAmount), 455, y, {
+        width: 95,
+        align: "right",
+      });
+
+    y += 16;
+
+    doc
+      .text("Received:", 360, y, { width: 90 })
+      .text(formatMoney(receivedAmount), 455, y, {
+        width: 95,
+        align: "right",
+      });
+
+    y += 16;
+
+    doc
+      .text("Pending:", 360, y, { width: 90 })
+      .text(formatMoney(pendingAmount), 455, y, {
+        width: 95,
+        align: "right",
+      });
+
+    y += 45;
+
+    // ================= FOOTER =================
+    doc
+      .font("Helvetica")
+      .fontSize(9)
+      .text("Thank you for your business.", 40, y, {
+        align: "center",
+        width: 515,
+      });
+
+    doc.end();
+  } catch (err) {
+    console.error("Download Invoice Error:", err);
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to download invoice",
+        error: err.message,
+      });
+    }
+
+    return res.end();
+  }
+};

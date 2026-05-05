@@ -487,51 +487,81 @@ export const getTodayAuditItems = async (req, res) => {
    - selected items => present/missing
    - non-selected stock items => pending
 ========================================================= */
-
- export const createDailyAudit = async (req, res) => {
+export const createDailyAudit = async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
     const user = req.user;
+
     const {
       audit_date,
       remark,
-      category,
       items = [],
       submit = false,
     } = req.body;
 
-    // if (!category) {
-    //   await t.rollback();
-    //   return res.status(400).json({
-    //     success: false,
-    //     message: "Category is required",
-    //   });
-    // }
+    if (!Array.isArray(items)) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Items must be an array",
+      });
+    }
 
-    // if (!Array.isArray(items)) {
-    //   await t.rollback();
-    //   return res.status(400).json({
-    //     success: false,
-    //     message: "Items must be an array",
-    //   });
-    // }
+    if (!items.length && !submit) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "At least one item is required",
+      });
+    }
 
     const scope = await getUserScope(user);
     const finalAuditDate = audit_date || getTodayDate();
 
-    const itemWhere = {
+    // ✅ Base item scope: category removed
+    const scopeItemWhere = {
       organization_id: scope.organization_id,
-      category,
     };
 
+    // ✅ Retail user sirf apne store ke items audit karega
     if (
       scope.organization_level === "retail" &&
       scope.store_code &&
       hasAttr(Item, "storeCode")
     ) {
-      itemWhere.storeCode = scope.store_code;
+      scopeItemWhere.storeCode = scope.store_code;
     }
+
+    const submittedMap = new Map();
+
+    for (const row of items) {
+      const itemId = safeNum(row.item_id, null);
+      if (itemId) {
+        submittedMap.set(Number(itemId), row);
+      }
+    }
+
+    const submittedItemIds = [...submittedMap.keys()];
+
+    // ✅ submit false hai to provided items required hain
+    if (!submittedItemIds.length && !submit) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Valid item_id is required",
+      });
+    }
+
+    // ✅ Sirf wahi items fetch honge jo body me aaye hain
+    const itemWhere = submit && !submittedItemIds.length
+      ? scopeItemWhere
+      : {
+          ...scopeItemWhere,
+          id: {
+            [Op.in]: submittedItemIds,
+          },
+        };
 
     const dbItems = await Item.findAll({
       where: itemWhere,
@@ -548,11 +578,16 @@ export const getTodayAuditItems = async (req, res) => {
       order: [["id", "DESC"]],
     });
 
-    if (!dbItems.length) {
+    if (submittedItemIds.length && dbItems.length !== submittedItemIds.length) {
+      const foundIds = new Set(dbItems.map((x) => Number(x.id)));
+      const invalidIds = submittedItemIds.filter((id) => !foundIds.has(Number(id)));
+
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "No stock items found for this category",
+        message: "Some items are invalid or not allowed for this store",
+        count: invalidIds.length,
+        data: invalidIds,
       });
     }
 
@@ -579,7 +614,7 @@ export const getTodayAuditItems = async (req, res) => {
 
     if (!auditHeader) {
       const totalItems = await Item.count({
-        where: { organization_id: scope.organization_id },
+        where: scopeItemWhere,
         transaction: t,
       });
 
@@ -621,27 +656,12 @@ export const getTodayAuditItems = async (req, res) => {
       );
     }
 
-    const submittedMap = new Map();
-
-    for (const row of items) {
-      const itemId = safeNum(row.item_id, null);
-      if (itemId) submittedMap.set(itemId, row);
-    }
-
     const reasonErrors = [];
 
     for (const dbItem of dbItems) {
       const submittedRow = submittedMap.get(Number(dbItem.id));
 
       if (!submittedRow) {
-        reasonErrors.push({
-          item_id: dbItem.id,
-          article_code: dbItem.article_code || null,
-          sku_code: dbItem.sku_code || null,
-          item_name: dbItem.item_name || null,
-          category: dbItem.category || null,
-          message: "Category item not selected. Reason is required.",
-        });
         continue;
       }
 
@@ -672,7 +692,7 @@ export const getTodayAuditItems = async (req, res) => {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "Reason required for category missing/pending items",
+        message: "Reason required for missing/pending items",
         count: reasonErrors.length,
         data: reasonErrors,
       });
@@ -687,6 +707,10 @@ export const getTodayAuditItems = async (req, res) => {
           : null;
 
       const submittedRow = submittedMap.get(Number(dbItem.id));
+
+      if (!submittedRow) {
+        continue;
+      }
 
       const systemQty = safeNum(stock?.available_qty);
       const systemWeight = safeNum(stock?.available_weight);
@@ -836,7 +860,7 @@ export const getTodayAuditItems = async (req, res) => {
             : "mark_pending",
         status: finalResult,
         reference_no: auditHeader.audit_no,
-        title: "Category audit item updated",
+        title: "Inventory audit item updated",
         audit_date: finalAuditDate,
         item_id: dbItem.id,
         article_code: dbItem.article_code || null,
@@ -874,7 +898,7 @@ export const getTodayAuditItems = async (req, res) => {
 
     if (submit) {
       const allOrgItems = await Item.findAll({
-        where: { organization_id: scope.organization_id },
+        where: scopeItemWhere,
         attributes: ["id", "article_code", "sku_code", "item_name", "category"],
         transaction: t,
       });
@@ -952,16 +976,15 @@ export const getTodayAuditItems = async (req, res) => {
       module: "inventory_audit",
       entity_type: "audit",
       entity_id: auditHeader.id,
-      action: submit ? "submit" : "category_submit",
+      action: submit ? "submit" : "audit_save",
       status: finalStatus,
       reference_no: auditHeader.audit_no,
       title: submit
         ? "Daily inventory audit submitted"
-        : "Inventory audit category submitted",
+        : "Inventory audit saved",
       audit_date: finalAuditDate,
       remarks: remark || null,
       meta: {
-        category,
         saved_items: savedCount,
         total_items: auditHeader.total_items,
         checked,
@@ -981,14 +1004,13 @@ export const getTodayAuditItems = async (req, res) => {
       success: true,
       message: submit
         ? "Daily audit submitted successfully"
-        : "Category audit saved successfully",
+        : "Audit saved successfully",
       data: {
         id: auditHeader.id,
         audit_no: auditHeader.audit_no,
         audit_date: auditHeader.audit_date,
         organization_id: auditHeader.organization_id,
         organization_level: auditHeader.organization_level,
-        category,
         saved_items: savedCount,
         total_items: auditHeader.total_items,
         checked_items: checked,

@@ -6,7 +6,7 @@ import {
   updateStockStatus,
   stockSummary,
   addStockIn,
-  getStockItemsByCategory,getDistrictInventory,getDistrictStockItemsByCategory,uploadStockInItems,getItemQR
+  getStockItemsByCategory,getDistrictInventory,getDistrictStockItemsByCategory
 } from "../controller/stock.controller.js";
 // import { uploadInventoryFile } from "../middlewares/uploadchallan.js";
 import { auth } from "../middlewares/authMiddleware.js"

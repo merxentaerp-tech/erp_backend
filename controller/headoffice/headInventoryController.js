@@ -130,13 +130,14 @@
 
 import sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
+
 export const getOverallInventoryDashboard = async (req, res) => {
   try {
 
     // ================= CARDS =================
     const cards = await sequelize.query(`
       SELECT 
-        COUNT(*) as total_stock_items,
+        (SELECT COUNT(*) FROM items) as total_stock_items,
 
         SUM(CASE 
           WHEN i."createdAt" < NOW() - INTERVAL '30 days' 
@@ -152,7 +153,7 @@ export const getOverallInventoryDashboard = async (req, res) => {
 
       FROM items i
       LEFT JOIN stocks s ON s.item_id = i.id
-    `, { type: sequelize.QueryTypes.SELECT });
+    `, { type: QueryTypes.SELECT });
 
 
     // ================= TABLE DATA =================
@@ -173,7 +174,7 @@ export const getOverallInventoryDashboard = async (req, res) => {
       LEFT JOIN stocks s ON s.item_id = i.id
 
       ORDER BY i."createdAt" DESC
-    `, { type: sequelize.QueryTypes.SELECT });
+    `, { type: QueryTypes.SELECT });
 
 
     return res.json({
@@ -194,6 +195,8 @@ export const getOverallInventoryDashboard = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
 export const getOverallCategoryItems = async (req, res) => {
   try {
     const { category } = req.query;
@@ -232,7 +235,7 @@ export const getOverallCategoryItems = async (req, res) => {
       ORDER BY i.item_name ASC
     `, {
       replacements: { category },
-      type: sequelize.QueryTypes.SELECT
+      type: QueryTypes.SELECT
     });
 
     return res.json({

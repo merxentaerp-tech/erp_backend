@@ -22,67 +22,83 @@ export const getStaffWithStats = async (req, res) => {
       limit = 10,
     } = req.query;
 
-    const offset = (page - 1) * limit;
+    const pageNum = Number(page);
+    const limitNum = Number(limit);
+    const offset = (pageNum - 1) * limitNum;
 
-    // ================= WHERE CLAUSE =================
     let whereClause = `WHERE 1=1`;
+    const replacements = {
+      limit: limitNum,
+      offset,
+    };
 
-    // 🔍 SEARCH
     if (search) {
       whereClause += `
         AND (
-          LOWER(name) LIKE LOWER('%${search}%')
-          OR LOWER(email) LIKE LOWER('%${search}%')
-          OR LOWER(user_code) LIKE LOWER('%${search}%')
+          LOWER(name) LIKE LOWER(:search)
+          OR LOWER(email) LIKE LOWER(:search)
+          OR LOWER(user_code) LIKE LOWER(:search)
+          OR LOWER(address) LIKE LOWER(:search)
         )
       `;
+      replacements.search = `%${search}%`;
     }
 
-    //  ROLE FILTER
     if (role) {
-      whereClause += ` AND role = '${role}'`;
+      whereClause += ` AND role = :role`;
+      replacements.role = role;
     }
 
-    //  STATUS FILTER
     if (status === "active") {
       whereClause += ` AND is_active = true`;
     } else if (status === "inactive") {
       whereClause += ` AND is_active = false`;
     }
 
-    // ================= STAFF LIST =================
-    const data = await sequelize.query(`
+    const data = await sequelize.query(
+      `
       SELECT 
         id,
         username,
         email,
+        address,
         phone_number,
         store_name,
         user_code,
         role,
         is_police_verified,
-         aadhaar_url,
+        aadhaar_url,
         pan_url,
-         police_doc_url,
+        police_doc_url,
         store_code,
         is_active,
         created_at
       FROM public.users
       ${whereClause}
       ORDER BY id DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `, { type: QueryTypes.SELECT });
+      LIMIT :limit OFFSET :offset
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-    // ================= PAGINATION =================
-    const countResult = await sequelize.query(`
+    const countResult = await sequelize.query(
+      `
       SELECT COUNT(*) FROM public.users
       ${whereClause}
-    `, { type: QueryTypes.SELECT });
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
     const total = parseInt(countResult[0].count);
 
-    // ================= STATS =================
-    const stats = await sequelize.query(`
+    const stats = await sequelize.query(
+      `
       SELECT 
         COUNT(*) AS total_staff,
         COUNT(*) FILTER (WHERE is_active = true) AS active,
@@ -90,21 +106,24 @@ export const getStaffWithStats = async (req, res) => {
         COUNT(DISTINCT role) AS departments
       FROM public.users
       ${whereClause}
-    `, { type: QueryTypes.SELECT });
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
-    // ================= RESPONSE =================
     res.json({
       success: true,
-      stats: stats[0],   // ❗ same structure
+      stats: stats[0],
       data,
       pagination: {
         total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / limit),
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
       },
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -349,6 +368,67 @@ const generateUserCode = async () => {
   return `USR/${year}/${String(nextNumber).padStart(3, "0")}`;
 };
 
+export const getOrganizationsByLevel = async (req, res) => {
+  try {
+    const { level } = req.query;
+
+    if (!level) {
+      return res.status(400).json({
+        success: false,
+        message: "level is required",
+      });
+    }
+
+    let organizationLevel = "";
+
+    if (level === "retail") organizationLevel = "Retail";
+    else if (level === "district") organizationLevel = "District";
+    else if (level === "head") organizationLevel = "Head";
+    else {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid level",
+      });
+    }
+
+    const data = await sequelize.query(
+      `
+      SELECT
+        id,
+        store_name,
+        store_code,
+        organization_level,
+        state,
+        district,
+        district_id,
+        address,
+        phone_number
+      FROM public.stores
+      WHERE organization_level = :organizationLevel
+      AND is_active = true
+      ORDER BY store_name ASC
+      `,
+      {
+        replacements: { organizationLevel },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      count: data.length,
+      data,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+};
+
+
+
 
 export const addEmployee = async (req, res) => {
   try {
@@ -538,9 +618,9 @@ export const addEmployee = async (req, res) => {
 };
 
 
-/**
- *  UPDATE EMPLOYEE
- */
+// /**
+//  *  UPDATE EMPLOYEE
+//  */
 export const updateEmployee = async (req, res) => {
   try {
     const { id } = req.params;
@@ -557,6 +637,7 @@ export const updateEmployee = async (req, res) => {
     const allowedFields = [
       "username",
       "phoneNumber",
+      "email",
       "address",
       "role",
       "isActive",
@@ -621,6 +702,7 @@ export const updateEmployee = async (req, res) => {
     });
   }
 };
+
 
 /**
  *  DELETE EMPLOYEE

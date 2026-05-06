@@ -1,6 +1,6 @@
 import sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
-import User from "../../models/User.js";
+import User from "../../model/user.js";
 import bcrypt from "bcrypt";
 import ExcelJS from "exceljs";
 import jwt from "jsonwebtoken";

@@ -637,7 +637,6 @@ export const updateEmployee = async (req, res) => {
     const allowedFields = [
       "username",
       "phoneNumber",
-      "email",
       "address",
       "role",
       "isActive",
@@ -702,7 +701,6 @@ export const updateEmployee = async (req, res) => {
     });
   }
 };
-
 
 /**
  *  DELETE EMPLOYEE

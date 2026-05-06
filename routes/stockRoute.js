@@ -6,9 +6,9 @@ import {
   updateStockStatus,
   stockSummary,
   addStockIn,
-  getStockItemsByCategory,getDistrictInventory,getDistrictStockItemsByCategory
+  getStockItemsByCategory,getDistrictInventory,getDistrictStockItemsByCategory,uploadStockInItems,getItemQR
 } from "../controller/stock.controller.js";
-// import { uploadInventoryFile } from "../middlewares/uploadchallan.js";
+import { uploadInventoryFile } from "../middlewares/uploadchallan.js";
 import { auth } from "../middlewares/authMiddleware.js"
 
 const router = express.Router();
@@ -24,13 +24,13 @@ router.post("/stock-in", auth, addStockIn);
 
 //this is for finding the by category according data 
 router.get("/category/:category", auth, getStockItemsByCategory);
-// router.post(
-//   "/inventory/stock-in/upload",
-//   auth,
-//   uploadInventoryFile.single("file"),
-//   uploadStockInItems
-// );
-// router.get("/items/:itemId/qr", auth, getItemQR);
+router.post(
+  "/inventory/stock-in/upload",
+  auth,
+  uploadInventoryFile.single("file"),
+  uploadStockInItems
+);
+router.get("/items/:itemId/qr", auth, getItemQR);
 
 router.get("/district/inventory/category/:category",auth, getDistrictStockItemsByCategory);
 

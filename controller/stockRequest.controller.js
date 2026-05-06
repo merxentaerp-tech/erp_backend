@@ -1,98 +1,255 @@
-import { Op } from "sequelize";
-import sequelize from "../../config/db.js";
-import User from "../../model/user.js"
-import StockRequest from "../../model/StockRequest.js";
-import StockRequestItem from "../../model/stockRequestItem.js";
-import StockTransfer from "../../model/stockTransfer.js";
-import StockTransferItem from "../../model/stockTransferItem.js";
-import Item from "../../model/item.js";
-import Task from "../../model/task.js";
-import SystemActivity from "../../model/systemActivity.js";
-import Store from "../../model/Store.js";
-import Stock from "../../model/stockrecord.js"
 import fs from "fs";
+import sequelize from "../config/db.js";
+import { Op, where, cast, col } from "sequelize";
 
-// number convert
+import Store from "../model/Store.js";
+import StockTransfer from "../model/stockTransfer.js";
+import StockTransferItem from "../model/stockTransferItem.js";
+import Stock from "../model/stockrecord.js";
+import StockMovement from "../model/stockmovement.js";
+import ActivityLog from "../model/activityLog.js";
+import SystemActivity from "../model/systemActivity.js";
+import Item from "../model/item.js";
+import Task from "../model/task.js";
+import StockRequest from "../model/StockRequest.js";
+import StockRequestItem from "../model/stockRequestItem.js";
+import District from "../model/District.js";
+import cloudinary from "../utils/cloudinary.js";
+import User from "../model/user.js";
+// import Store from "../model/Store.js";
+// import { uploadToCloudinary } from "../utils/cloudinaryUpload.js";
+const generateTransferNo = () => {
+  return `TRF-${Date.now()}`;
+};
+
+const generateRequestNo = () => {
+  return `REQ-${Date.now()}`;
+};
+
 const toNumber = (val) => {
   const num = Number(val);
-  return isNaN(num) ? 0 : num;
+  return Number.isFinite(num) ? num : 0;
 };
 
-// parse items
-const parseItemsFromBody = (body) => {
-  if (body.items) {
-    try {
-      return typeof body.items === "string"
-        ? JSON.parse(body.items)
-        : body.items;
-    } catch {
-      return [];
-    }
+const getOrCreateStock = async (organization_id, item_id, transaction) => {
+  let stock = await Stock.findOne({
+    where: { organization_id, item_id },
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+
+  if (!stock) {
+    stock = await Stock.create(
+      {
+        organization_id,
+        item_id,
+        available_qty: 0,
+        available_weight: 0,
+        reserved_qty: 0,
+        reserved_weight: 0,
+        transit_qty: 0,
+        transit_weight: 0,
+        damaged_qty: 0,
+        damaged_weight: 0,
+      },
+      { transaction }
+    );
   }
 
-  const items = [];
-  let i = 0;
-
-  while (body[`items[${i}][item_id]`]) {
-    items.push({
-      item_id: body[`items[${i}][item_id]`],
-      qty: body[`items[${i}][qty]`],
-      weight: body[`items[${i}][weight]`],
-      rate: body[`items[${i}][rate]`],
-    });
-    i++;
-  }
-
-  return items;
+  return stock;
 };
 
-// transfer no
-const generateTransferNo = () => {
-  return "TRF-" + Date.now();
+const createMovement = async ({
+  organization_id,
+  item_id,
+  movement_type,
+  reference_type,
+  reference_id,
+  qty = 0,
+  weight = 0,
+  stockBefore,
+  stockAfter,
+  remarks = null,
+  created_by = null,
+  transaction,
+}) => {
+  await StockMovement.create(
+    {
+      organization_id,
+      item_id,
+      movement_type,
+      reference_type,
+      reference_id,
+      qty,
+      weight,
+
+      opening_available_qty: toNumber(stockBefore.available_qty),
+      closing_available_qty: toNumber(stockAfter.available_qty),
+
+      opening_reserved_qty: toNumber(stockBefore.reserved_qty),
+      closing_reserved_qty: toNumber(stockAfter.reserved_qty),
+
+      opening_transit_qty: toNumber(stockBefore.transit_qty),
+      closing_transit_qty: toNumber(stockAfter.transit_qty),
+
+      opening_damaged_qty: toNumber(stockBefore.damaged_qty),
+      closing_damaged_qty: toNumber(stockAfter.damaged_qty),
+
+      opening_available_weight: toNumber(stockBefore.available_weight),
+      closing_available_weight: toNumber(stockAfter.available_weight),
+
+      opening_reserved_weight: toNumber(stockBefore.reserved_weight),
+      closing_reserved_weight: toNumber(stockAfter.reserved_weight),
+
+      opening_transit_weight: toNumber(stockBefore.transit_weight),
+      closing_transit_weight: toNumber(stockAfter.transit_weight),
+
+      opening_damaged_weight: toNumber(stockBefore.damaged_weight),
+      closing_damaged_weight: toNumber(stockAfter.damaged_weight),
+
+      remarks,
+      created_by,
+    },
+    { transaction }
+  );
 };
 
-// dummy upload (abhi basic)
-const uploadToCloudinary = async (filePath) => {
-  return {
-    secure_url: `http://localhost/uploads/${Date.now()}`,
-  };
+const createActivity = async ({
+  user_id,
+  action,
+  title,
+  description,
+  meta = {},
+  transaction,
+}) => {
+  await ActivityLog.create(
+    {
+      user_id,
+      action,
+      title,
+      description,
+      meta,
+      icon: "activity",
+      color: "blue",
+    },
+    { transaction }
+  );
 };
 
-// file delete
 const safeUnlink = (filePath) => {
   try {
     if (filePath && fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
-  } catch (e) {
-    console.log("unlink error:", e.message);
+  } catch (error) {
+    console.error("File delete error:", error.message);
   }
 };
 
-// activity dummy
-const createActivity = async () => {
-  return true;
-};
-const HEAD_ROLES = [
-  "super_admin",
-  "admin",
-  "head_admin",
-  "head_manager",
-  "super_stock_manager",
-];
+const uploadToCloudinary = async (
+  filePath,
+  folder,
+  resourceType = "image"
+) => {
+  return cloudinary.uploader.upload(filePath, {
+    folder,
+    resource_type: resourceType,
 
-const HEAD_LEVELS = ["head", "head_office"];
+    // ✅ Important fix
+    type: "upload",
+    access_mode: "public",
 
-const isHeadUser = (user) => {
-  const role = String(user?.role || "").toLowerCase();
-  const level = String(user?.organization_level || "").toLowerCase();
-
-  return HEAD_ROLES.includes(role) || HEAD_LEVELS.includes(level);
+    use_filename: true,
+    unique_filename: true,
+    overwrite: false,
+  });
 };
 
-export const getHeadReceivedStockRequests = async (req, res) => {
+const tryJsonParse = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+};
+
+const normalizeItemRow = (row = {}) => {
+  return {
+    item_id: toNumber(row.item_id ?? row.id ?? row.itemId),
+    qty: toNumber(row.qty ?? row.approved_qty ?? row.approve_qty ?? row.quantity),
+    weight: toNumber(row.weight ?? row.approved_weight ?? row.total_weight),
+    rate: toNumber(row.rate ?? row.item_rate ?? row.price),
+    remarks: row.remarks || row.note || null,
+  };
+};
+
+const parseItemsFromBody = (body) => {
+  // 1) direct array
+  if (Array.isArray(body.items)) {
+    return body.items.map(normalizeItemRow);
+  }
+
+  if (Array.isArray(body.approved_items)) {
+    return body.approved_items.map(normalizeItemRow);
+  }
+
+  // 2) JSON string in items / approved_items
+  if (typeof body.items === "string" && body.items.trim()) {
+    const parsed = tryJsonParse(body.items);
+    if (Array.isArray(parsed)) {
+      return parsed.map(normalizeItemRow);
+    }
+  }
+
+  if (typeof body.approved_items === "string" && body.approved_items.trim()) {
+    const parsed = tryJsonParse(body.approved_items);
+    if (Array.isArray(parsed)) {
+      return parsed.map(normalizeItemRow);
+    }
+  }
+
+  // 3) multipart style: items[0][item_id] OR items[0].item_id
+  const grouped = {};
+
+  for (const [key, value] of Object.entries(body)) {
+    let match = key.match(/^items\[(\d+)\]\[(\w+)\]$/);
+    if (!match) {
+      match = key.match(/^items\[(\d+)\]\.(\w+)$/);
+    }
+    if (!match) {
+      match = key.match(/^approved_items\[(\d+)\]\[(\w+)\]$/);
+    }
+    if (!match) {
+      match = key.match(/^approved_items\[(\d+)\]\.(\w+)$/);
+    }
+
+    if (match) {
+      const index = Number(match[1]);
+      const field = match[2];
+
+      if (!grouped[index]) {
+        grouped[index] = {};
+      }
+      grouped[index][field] = value;
+    }
+  }
+
+  const result = Object.keys(grouped)
+    .sort((a, b) => Number(a) - Number(b))
+    .map((idx) => normalizeItemRow(grouped[idx]))
+    .filter((row) => row.item_id);
+
+  if (result.length > 0) {
+    return result;
+  }
+
+  return [];
+};
+
+export const getAvailableStockForRequest = async (req, res) => {
   try {
     const user = req.user;
+    const { category, search, metal_type } = req.query;
 
     if (!user?.organization_id) {
       return res.status(401).json({
@@ -101,12 +258,474 @@ export const getHeadReceivedStockRequests = async (req, res) => {
       });
     }
 
-    if (!isHeadUser(user)) {
-      return res.status(403).json({
+    const orgId = Number(user.organization_id);
+
+    const itemWhere = {
+      organization_id: orgId,
+      current_status: "in_stock",
+    };
+
+    const stockWhere = {
+      organization_id: orgId,
+      available_qty: {
+        [Op.gt]: 0,
+      },
+    };
+
+    if (category) {
+      itemWhere.category = category;
+    }
+
+    if (metal_type) {
+      itemWhere.metal_type = metal_type;
+    }
+
+    if (search) {
+      itemWhere[Op.or] = [
+        { item_name: { [Op.iLike]: `%${search}%` } },
+        { article_code: { [Op.iLike]: `%${search}%` } },
+        { sku_code: { [Op.iLike]: `%${search}%` } },
+        { purity: { [Op.iLike]: `%${search}%` } },
+        { category: { [Op.iLike]: `%${search}%` } },
+      ];
+    }
+
+    const items = await Item.findAll({
+      attributes: [
+        "id",
+        "item_name",
+        "article_code",
+        "sku_code",
+        "metal_type",
+        "category",
+        "purity",
+        "unit",
+        "organization_id",
+      ],
+      where: itemWhere,
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          required: true,
+          where: stockWhere,
+          attributes: [
+            "id",
+            "item_id",
+            "organization_id",
+            "available_qty",
+            "available_weight",
+          ],
+        },
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    const data = items.map((item) => {
+      const stock =
+        Array.isArray(item.stocks) && item.stocks.length > 0
+          ? item.stocks[0]
+          : null;
+
+      const availableQty = Number(stock?.available_qty || 0);
+
+      let statusLabel = "medium";
+      if (availableQty <= 2) {
+        statusLabel = "critical";
+      } else if (availableQty <= 12) {
+        statusLabel = "medium";
+      } else {
+        statusLabel = "optimum";
+      }
+
+      return {
+        item_id: Number(item.id),
+        item_name: item.item_name || "",
+        article_code: item.article_code || "",
+        sku_code: item.sku_code || "",
+        category: item.category || "",
+        metal_type: item.metal_type || "",
+        purity: item.purity || "",
+        unit: item.unit || "",
+        available_qty: availableQty,
+        available_weight: Number(stock?.available_weight || 0),
+        status_label: statusLabel,
+        request_qty: 0,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Available stock fetched successfully",
+      count: data.length,
+      data,
+    });
+  } catch (error) {
+    console.error("getAvailableStockForRequest error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch available stock items",
+      error: error.message,
+    });
+  }
+};
+// helper
+
+
+
+export const createStockRequest = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const user = req.user;
+    const { store_id, items, priority, category, notes } = req.body;
+
+    if (!store_id || !Array.isArray(items) || items.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
         success: false,
-        message: "Only head user can access district stock requests",
+        message: "store_id and items are required",
       });
     }
+
+    const store = await Store.findOne({
+      where: { id: store_id },
+      transaction,
+    });
+
+    if (!store) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Store not found",
+      });
+    }
+
+    const district = await District.findOne({
+      where: { id: store.district_id },
+      transaction,
+    });
+
+    if (!district) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "District not found",
+      });
+    }
+
+    const validItems = items
+      .filter((i) => i.item_id && Number(i.request_qty) > 0)
+      .map((i) => ({
+        item_id: Number(i.item_id),
+        request_qty: Number(i.request_qty),
+        approved_qty: 0,
+        status: "pending",
+      }));
+
+    if (validItems.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "No valid items found",
+      });
+    }
+
+    const request_no = `REQ-${user.organization_id}-${Date.now()}`;
+
+    const districtName =
+      district.name || district.district || district.district_name || "Unknown";
+
+    const stockRequest = await StockRequest.create(
+      {
+        request_no,
+        from_organization_id: user.organization_id,
+        from_store_code: store.store_code,
+        from_store_name: store.store_name,
+        to_organization_id: district.id,
+        to_district_code: String(district.id),
+        to_district_name: districtName,
+        priority: priority || "medium",
+        category: category || null,
+        notes: notes || null,
+        status: "pending",
+        created_by: user.id,
+      },
+      { transaction }
+    );
+
+    const requestItemsPayload = validItems.map((item) => ({
+      request_id: stockRequest.id,
+      item_id: item.item_id,
+      request_qty: item.request_qty,
+      approved_qty: item.approved_qty,
+      status: item.status,
+    }));
+
+    await StockRequestItem.bulkCreate(requestItemsPayload, { transaction });
+
+    // ================= TASK (FOR RECEIVER - DISTRICT) =================
+    await Task.create(
+      {
+        title: "Stock request approval required",
+        description: `${store.store_name} submitted stock request ${stockRequest.request_no}`,
+        priority: priority || "medium",
+        status: "pending",
+        task_type: "stock_request_approval",
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+
+        // 👉 Receiver scope
+        district_code: String(district.id),
+        store_code: null,
+        store_name: null,
+
+        assigned_to: null,
+        created_by: user.id,
+      },
+      { transaction }
+    );
+
+    // ================= ACTIVITY LOG (FOR REQUESTER) =================
+    await ActivityLog.create(
+      {
+        organization_id: user.organization_id,
+        user_id: user.id,
+        action: "stock_request_created",
+        module_name: "stock_request",
+
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+
+        title: "Stock request created",
+        description: `You created stock request ${stockRequest.request_no} for ${districtName}`,
+
+        meta: {
+          total_items: requestItemsPayload.length,
+          store_name: store.store_name,
+          district_name: districtName,
+        },
+
+        icon: "request",
+        color: "blue",
+      },
+      { transaction }
+    );
+
+    // ================= SYSTEM ACTIVITY (GLOBAL / ADMIN VIEW) =================
+    await SystemActivity.create(
+      {
+        title: "New stock request submitted",
+        description: `${store.store_name} submitted request ${stockRequest.request_no} to district ${districtName}`,
+        activity_type: "stock_request_created",
+        module_name: "stock_request",
+        reference_id: stockRequest.id,
+        reference_no: stockRequest.request_no,
+        district_code: String(district.id),
+        store_code: store.store_code || null,
+        store_name: store.store_name || null,
+        created_by: user.id,
+        created_at: new Date(),
+      },
+      { transaction }
+    );
+
+    await transaction.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "Stock request created successfully",
+      data: {
+        request_id: stockRequest.id,
+        request_no: stockRequest.request_no,
+        total_items: requestItemsPayload.length,
+      },
+    });
+  } catch (error) {
+    await transaction.rollback();
+    console.error("createStockRequest error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+// ==========================================
+// STORE -> MY REQUESTS 
+// ==========================================
+// ==========================================
+const TRANSFER_ACTIVE_STATUSES = [
+  "approved",
+  "dispatched",
+  "in_transit",
+  "received",
+];
+
+const APPROVED_REQUEST_STATUSES = [
+  "approved",
+  "partially_approved",
+  "completed",
+];
+
+const LOW_STOCK_THRESHOLD = 5;
+
+const calculateStockRequestSummary = (requests = []) => {
+  let totalRequests = requests.length;
+  let approvedRequests = 0;
+  let transitGoods = 0;
+  let lowStockItems = 0;
+
+  for (const reqRow of requests) {
+    const row = reqRow.toJSON ? reqRow.toJSON() : reqRow;
+
+    const requestStatus = String(row.status || "").toLowerCase();
+    const transferStatus = String(row.transfer?.status || "").toLowerCase();
+
+    if (APPROVED_REQUEST_STATUSES.includes(requestStatus)) {
+      approvedRequests += 1;
+    }
+
+    const requestItems = Array.isArray(row.request_items)
+      ? row.request_items
+      : [];
+
+    for (const itemRow of requestItems) {
+      const qty = Number(
+        itemRow.approved_qty ||
+          itemRow.request_qty ||
+          itemRow.qty ||
+          itemRow.quantity ||
+          0
+      );
+
+      if (row.transfer && TRANSFER_ACTIVE_STATUSES.includes(transferStatus)) {
+        transitGoods += qty;
+      }
+
+      if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
+        lowStockItems += 1;
+      }
+    }
+  }
+
+  return {
+    total_requests: totalRequests,
+    approved_requests: approvedRequests,
+    low_stock_items: lowStockItems,
+    transit_goods: transitGoods,
+  };
+};
+
+const addTransferDirection = (rows = [], user) => {
+  return rows.map((row) => {
+    const item = row.toJSON ? row.toJSON() : row;
+
+    const transferStatus = String(item.transfer?.status || "").toLowerCase();
+
+    const isSender =
+      Number(item.from_organization_id) === Number(user.organization_id);
+
+    const isReceiver =
+      Number(item.to_organization_id) === Number(user.organization_id);
+
+    let movement_type = "unknown";
+
+    if (isSender && transferStatus === "in_transit") {
+      movement_type = "in_transit_send";
+    } else if (isReceiver && transferStatus === "in_transit") {
+      movement_type = "in_transit_receive";
+    } else if (isSender) {
+      movement_type = "send";
+    } else if (isReceiver) {
+      movement_type = "receive";
+    }
+
+    return {
+      ...item,
+      movement_type,
+      is_sent: isSender,
+      is_received: isReceiver,
+    };
+  });
+};
+
+export const getMyStockRequests = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const whereCondition = {
+      created_by: user.id, // ✅ only logged-in user created requests
+    };
+
+    const requests = await StockRequest.findAll({
+      where: whereCondition,
+      include: [
+        {
+          model: StockRequestItem,
+          as: "request_items",
+          include: [
+            {
+              model: Item,
+              as: "item",
+              attributes: [
+                "id",
+                "item_name",
+                "article_code",
+                "sku_code",
+                "category",
+                "metal_type",
+                "purity",
+                "unit",
+                "gross_weight",
+                "net_weight",
+              ],
+              required: false,
+            },
+          ],
+        },
+        {
+          model: StockTransfer,
+          as: "transfer",
+          required: false,
+          attributes: [
+            "id",
+            "request_id",
+            "transfer_no",
+            "status",
+            "dispatch_date",
+            "receive_date",
+            "created_at",
+          ],
+        },
+      ],
+      order: [["created_at", "DESC"]],
+    });
+
+    const finalData = addTransferDirection(requests, user);
+    const summary = calculateStockRequestSummary(finalData);
+
+    return res.status(200).json({
+      success: true,
+      summary,
+      count: finalData.length,
+      data: finalData,
+    });
+  } catch (error) {
+    console.error("getMyStockRequests error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch my stock requests",
+      error: error.message,
+    });
+  }
+};
+
+export const getReceivedStockRequests = async (req, res) => {
+  try {
+    const user = req.user;
 
     const requests = await StockRequest.findAll({
       where: {
@@ -154,93 +773,296 @@ export const getHeadReceivedStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const finalData = requests.map((row) => {
-      const item = row.toJSON ? row.toJSON() : row;
-
+    const finalData = addTransferDirection(requests, user).map((row) => {
       return {
-        ...item,
+        ...row,
         request_type: "received",
       };
     });
 
-    let totalRequests = finalData.length;
-    let approvedRequests = 0;
-    let transitGoods = 0;
-    let lowStockItems = 0;
-
-    const LOW_STOCK_THRESHOLD = 5;
-
-    for (const reqRow of finalData) {
-      const requestStatus = String(reqRow.status || "").toLowerCase();
-      const transferStatus = String(reqRow.transfer?.status || "").toLowerCase();
-
-      if (
-        ["approved", "partially_approved", "completed"].includes(requestStatus)
-      ) {
-        approvedRequests += 1;
-      }
-
-      const requestItems = Array.isArray(reqRow.request_items)
-        ? reqRow.request_items
-        : [];
-
-      for (const itemRow of requestItems) {
-        const qty = Number(
-          itemRow.request_qty || itemRow.qty || itemRow.quantity || 0
-        );
-
-        if (
-          reqRow.transfer &&
-          ["approved", "dispatched", "in_transit"].includes(transferStatus)
-        ) {
-          transitGoods += qty;
-        }
-
-        if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
-          lowStockItems += 1;
-        }
-      }
-    }
+    const summary = calculateStockRequestSummary(finalData);
 
     const lowStockAlert = {
-      show_alert: lowStockItems > 0,
+      show_alert: summary.low_stock_items > 0,
       message:
-        lowStockItems > 0
-          ? `${lowStockItems} low-quantity requested item(s) found.`
+        summary.low_stock_items > 0
+          ? `${summary.low_stock_items} low-quantity requested item(s) found.`
           : "No low stock items.",
       request_button_text: "Review Requests",
     };
 
     return res.status(200).json({
       success: true,
-      summary: {
-        total_requests: totalRequests,
-        approved_requests: approvedRequests,
-        low_stock_items: lowStockItems,
-        transit_goods: transitGoods,
-      },
+      summary,
       low_stock_alert: lowStockAlert,
       count: finalData.length,
       data: finalData,
     });
   } catch (error) {
-    console.error("getHeadReceivedStockRequests error:", error);
+    console.error("getReceivedStockRequests error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch head received stock requests",
+      message: "Failed to fetch received stock requests",
+      error: error.message,
+    });
+  }
+};
+// ==========================================
+// GET SINGLE REQUEST
+// ==========================================
+export const getStockRequestById = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const user = req.user;
+
+    const request = await StockRequest.findByPk(requestId, {
+      include: [
+        {
+          model: StockRequestItem,
+          as: "request_items",
+          include: [
+            {
+              model: Item,
+              as: "item",
+              attributes: [
+                "id",
+                "item_name",
+                "article_code",
+                "sku_code",
+                "category",
+                "metal_type",
+                "purity",
+                "unit",
+                "gross_weight",
+                "net_weight",
+              ],
+              required: false,
+            },
+          ],
+        },
+        {
+          model: StockTransfer,
+          as: "transfer",
+          include: [
+            {
+              model: StockTransferItem,
+              as: "transfer_items",
+            },
+          ],
+        },
+      ],
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Stock request not found",
+      });
+    }
+
+    const allowed =
+      Number(request.from_organization_id) === Number(user.organization_id) ||
+      Number(request.to_organization_id) === Number(user.organization_id);
+
+    if (!allowed) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view this request",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: request,
+    });
+  } catch (error) {
+    console.error("getStockRequestById error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch stock request details",
       error: error.message,
     });
   }
 };
 
+
+// ==========================================
+// STORE -> CANCEL PENDING REQUEST
+// ==========================================
+export const cancelStockRequest = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { requestId } = req.params;
+    const user = req.user;
+
+    const request = await StockRequest.findByPk(requestId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!request) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Stock request not found",
+      });
+    }
+
+    if (Number(request.from_organization_id) !== Number(user.organization_id)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to cancel this request",
+      });
+    }
+
+    if (request.status !== "pending") {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Only pending request can be cancelled",
+      });
+    }
+
+    await request.update(
+      {
+        status: "cancelled",
+      },
+      { transaction }
+    );
+
+    await createActivity({
+      user_id: user.id,
+      action: "stock_request_cancelled",
+      title: "Stock request cancelled",
+      description: `Stock request ${request.request_no} cancelled`,
+      meta: {
+        request_id: request.id,
+        request_no: request.request_no,
+      },
+      transaction,
+    });
+
+    await transaction.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Stock request cancelled successfully",
+    });
+  } catch (error) {
+    await transaction.rollback();
+    return res.status(500).json({
+      success: false,
+      message: "Failed to cancel stock request",
+      error: error.message,
+    });
+  }
+};
+
+
+
+// ==========================================
+// PARENT ORG -> REJECT REQUEST
+// ==========================================
+export const rejectStockRequest = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { requestId } = req.params;
+    const { remarks } = req.body;
+    const user = req.user;
+
+    const request = await StockRequest.findByPk(requestId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!request) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Stock request not found",
+      });
+    }
+
+    if (Number(request.to_organization_id) !== Number(user.organization_id)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to reject this request",
+      });
+    }
+
+    if (request.status !== "pending") {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Only pending request can be rejected",
+      });
+    }
+
+    await request.update(
+      {
+        status: "rejected",
+        remarks: remarks || request.remarks,
+      },
+      { transaction }
+    );
+
+    await createActivity({
+      user_id: user.id,
+      action: "stock_request_rejected",
+      title: "Stock request rejected",
+      description: `Stock request ${request.request_no} rejected`,
+      meta: {
+        request_id: request.id,
+        request_no: request.request_no,
+      },
+      transaction,
+    });
+
+    await transaction.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Stock request rejected successfully",
+    });
+  } catch (error) {
+    await transaction.rollback();
+    return res.status(500).json({
+      success: false,
+      message: "Failed to reject stock request",
+      error: error.message,
+    });
+  }
+};
+
+const canApproveDispatch = (user, allowedLevels = []) => {
+  const userLevel = String(user?.organization_level || "").toLowerCase();
+  return allowedLevels.includes(userLevel);
+};
+
 export const approveAndDispatchHeadRequest = async (req, res) => {
+  req.allowedApproveLevels = ["head"];
+  return approveAndDispatchRequest(req, res);
+};
+
+
+
+
+
+
+
+//this is 
+export const approveAndDispatchRequestfromretail = async (req, res) => {
   const transaction = await sequelize.transaction();
   const uploadedLocalPaths = [];
 
   try {
     const { requestId } = req.params;
-
     const {
       remarks,
       driver_name,
@@ -257,28 +1079,15 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
     const user = req.user;
     const parsedItems = parseItemsFromBody(req.body);
 
-    if (!user?.organization_id) {
-      await transaction.rollback();
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized user",
-      });
-    }
-
-    const role = String(user.role || "").toLowerCase();
-    const level = String(user.organization_level || "").toLowerCase();
-
-    const isHeadUser =
-      ["super_admin", "admin", "head_admin", "head_manager"].includes(role) ||
-      ["head", "head_office"].includes(level);
-
-    if (!isHeadUser) {
-      await transaction.rollback();
-      return res.status(403).json({
-        success: false,
-        message: "Only head user can approve and dispatch this request",
-      });
-    }
+    console.log("approveAndDispatchRequest req.body keys:", Object.keys(req.body || {}));
+    console.log("approveAndDispatchRequest raw items:", req.body?.items);
+    console.log("approveAndDispatchRequest parsedItems:", parsedItems);
+    console.log("approveAndDispatchRequest files:", {
+      driver_photo: req.files?.driver_photo?.length || 0,
+      dispatch_images: req.files?.dispatch_images?.length || 0,
+      dispatch_video: req.files?.dispatch_video?.length || 0,
+      e_way_bill: req.files?.e_way_bill?.length || 0,
+    });
 
     if (!Array.isArray(parsedItems) || parsedItems.length === 0) {
       await transaction.rollback();
@@ -297,9 +1106,7 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
       });
     }
 
-    const approvedRows = parsedItems.filter(
-      (row) => Number(row.qty || 0) > 0
-    );
+    const approvedRows = parsedItems.filter((row) => Number(row.qty || 0) > 0);
 
     if (approvedRows.length === 0) {
       await transaction.rollback();
@@ -328,6 +1135,7 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
     const driverPhotoFile = req.files?.driver_photo?.[0] || null;
     const dispatchImageFiles = req.files?.dispatch_images || [];
     const dispatchVideoFile = req.files?.dispatch_video?.[0] || null;
+    const eWayBillFile = req.files?.e_way_bill?.[0] || null;
 
     if (dispatchImageFiles.length > 3) {
       await transaction.rollback();
@@ -343,9 +1151,8 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
       if (file?.path) uploadedLocalPaths.push(file.path);
     }
 
-    if (dispatchVideoFile?.path) {
-      uploadedLocalPaths.push(dispatchVideoFile.path);
-    }
+    if (dispatchVideoFile?.path) uploadedLocalPaths.push(dispatchVideoFile.path);
+    if (eWayBillFile?.path) uploadedLocalPaths.push(eWayBillFile.path);
 
     const request = await StockRequest.findByPk(requestId, {
       transaction,
@@ -357,6 +1164,25 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Stock request not found",
+      });
+    }
+
+    const requestItems = await StockRequestItem.findAll({
+      where: { request_id: request.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    // ✅ Only change: common API = retail + district, head API wrapper = head
+    const allowedLevels = req.allowedApproveLevels || ["retail", "district"];
+
+    if (!canApproveDispatch(user, allowedLevels)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        message: allowedLevels.includes("head")
+          ? "Only head can approve this request"
+          : "Only retail or district can approve this request",
       });
     }
 
@@ -389,12 +1215,6 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
         message: "Transfer already created for this request",
       });
     }
-
-    const requestItems = await StockRequestItem.findAll({
-      where: { request_id: request.id },
-      transaction,
-      lock: transaction.LOCK.UPDATE,
-    });
 
     const requestItemMap = new Map(
       requestItems.map((x) => [Number(x.item_id), x])
@@ -436,6 +1256,7 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
     let driver_photo_url = null;
     let dispatch_image_urls = [];
     let dispatch_video_url = null;
+    let e_way_bill_url = null;
 
     if (driverPhotoFile?.path) {
       const uploadedDriverPhoto = await uploadToCloudinary(
@@ -443,7 +1264,6 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
         "stock-transfer/driver-photo",
         "image"
       );
-
       driver_photo_url = uploadedDriverPhoto.secure_url;
     }
 
@@ -454,7 +1274,6 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
           "stock-transfer/dispatch-images",
           "image"
         );
-
         dispatch_image_urls.push(uploadedImage.secure_url);
       }
     }
@@ -465,39 +1284,47 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
         "stock-transfer/dispatch-video",
         "video"
       );
-
       dispatch_video_url = uploadedVideo.secure_url;
+    }
+
+    if (eWayBillFile?.path) {
+      const isPdf =
+        eWayBillFile.mimetype === "application/pdf" ||
+        eWayBillFile.originalname?.toLowerCase().endsWith(".pdf");
+
+      const uploadedEWayBill = await uploadToCloudinary(
+        eWayBillFile.path,
+        "stock-transfer/e-way-bills",
+        isPdf ? "raw" : "image"
+      );
+
+      e_way_bill_url = uploadedEWayBill.secure_url;
     }
 
     const transfer = await StockTransfer.create(
       {
         transfer_no: generateTransferNo(),
         request_id: request.id,
-
         from_organization_id: user.organization_id,
         to_organization_id: request.from_organization_id,
-
         transfer_date: new Date(),
         dispatch_date: new Date(),
         status: "in_transit",
-
         approved_by: user.id,
         dispatched_by: user.id,
         created_by: user.id,
-
         remarks: remarks || null,
         driver_name: driver_name || null,
         driver_phone: driver_phone || null,
         vehicle_number: vehicle_number || null,
         tracking_number: tracking_number || null,
-
         driver_photo_url: driver_photo_url || null,
         dispatch_image_url:
           dispatch_image_urls.length > 0
             ? JSON.stringify(dispatch_image_urls)
             : null,
         dispatch_video_url: dispatch_video_url || null,
-
+        e_way_bill_url: e_way_bill_url || null,
         pickup_address: pickup_address || null,
         delivery_address: delivery_address || null,
         expected_delivery_date: expected_delivery_date || null,
@@ -534,13 +1361,43 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
           },
           { transaction }
         );
-
         continue;
       }
 
       approvedItemsCount += 1;
       totalWeight += weight;
       estimatedValue += weight * rate;
+
+      const fromStock = await getOrCreateStock(
+        user.organization_id,
+        item_id,
+        transaction
+      );
+
+      const availableQty = toNumber(fromStock.available_qty);
+      const availableWeight = toNumber(fromStock.available_weight);
+      const reservedQty = toNumber(fromStock.reserved_qty);
+      const reservedWeight = toNumber(fromStock.reserved_weight);
+      const transitQty = toNumber(fromStock.transit_qty);
+      const transitWeight = toNumber(fromStock.transit_weight);
+      const damagedQty = toNumber(fromStock.damaged_qty);
+      const damagedWeight = toNumber(fromStock.damaged_weight);
+
+      if (availableQty < qty) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient available qty for item ${item_id}`,
+        });
+      }
+
+      if (weight > 0 && availableWeight < weight) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient available weight for item ${item_id}`,
+        });
+      }
 
       await StockTransferItem.create(
         {
@@ -562,6 +1419,597 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
         },
         { transaction }
       );
+
+      const newAvailableQty = availableQty - qty;
+      const newAvailableWeight = availableWeight - weight;
+      const newTransitQty = transitQty + qty;
+      const newTransitWeight = transitWeight + weight;
+
+      await fromStock.update(
+        {
+          available_qty: newAvailableQty,
+          available_weight: newAvailableWeight,
+          transit_qty: newTransitQty,
+          transit_weight: newTransitWeight,
+        },
+        { transaction }
+      );
+
+      await createMovement({
+        organization_id: user.organization_id,
+        item_id,
+        movement_type: "dispatch",
+        reference_type: "stock_transfer",
+        reference_id: transfer.id,
+        qty,
+        weight,
+        stockBefore: {
+          available_qty: availableQty,
+          reserved_qty: reservedQty,
+          transit_qty: transitQty,
+          damaged_qty: damagedQty,
+          available_weight: availableWeight,
+          reserved_weight: reservedWeight,
+          transit_weight: transitWeight,
+          damaged_weight: damagedWeight,
+        },
+        stockAfter: {
+          available_qty: newAvailableQty,
+          reserved_qty: reservedQty,
+          transit_qty: newTransitQty,
+          damaged_qty: damagedQty,
+          available_weight: newAvailableWeight,
+          reserved_weight: reservedWeight,
+          transit_weight: newTransitWeight,
+          damaged_weight: damagedWeight,
+        },
+        remarks: `Dispatched via ${transfer.transfer_no}`,
+        created_by: user.id,
+        transaction,
+      });
+    }
+
+    let finalStatus = "approved";
+
+    if (approvedItemsCount === 0) {
+      finalStatus = "rejected";
+    } else if (totalApproved < totalRequested) {
+      finalStatus = "partially_approved";
+    }
+
+    await request.update(
+      {
+        status: finalStatus,
+        approved_by: user.id,
+        approved_at: new Date(),
+      },
+      { transaction }
+    );
+
+    await Task.update(
+      { status: finalStatus },
+      {
+        where: {
+          reference_id: request.id,
+          task_type: {
+            [Op.in]: [
+              "stock_request_approval",
+              "district_to_head_stock_request",
+              "district_to_retail_stock_request",
+              "head_to_district_stock_request",
+              "head_to_retail_stock_request",
+              "retail_to_district_stock_request",
+            ],
+          },
+        },
+        transaction,
+      }
+    );
+
+    await SystemActivity.create(
+      {
+        title:
+          finalStatus === "approved"
+            ? "Stock request approved and dispatched"
+            : finalStatus === "partially_approved"
+            ? "Stock request partially approved and dispatched"
+            : "Stock request rejected",
+        description:
+          finalStatus === "rejected"
+            ? `Request ${request.request_no} was rejected by receiving organization`
+            : `Request ${request.request_no} processed via ${transfer.transfer_no}`,
+        activity_type: "stock_request_dispatch",
+        module_name: "stock_transfer",
+        reference_id: transfer.id,
+        reference_no: transfer.transfer_no,
+        district_code: request.to_district_code || null,
+        store_code: request.from_store_code || null,
+        store_name: request.from_store_name || null,
+        created_by: user.id,
+        created_at: new Date(),
+      },
+      { transaction }
+    );
+
+    await createActivity({
+      user_id: user.id,
+      action: "stock_request_dispatch",
+      title:
+        finalStatus === "approved"
+          ? "Stock request approved and dispatched"
+          : finalStatus === "partially_approved"
+          ? "Stock request partially approved and dispatched"
+          : "Stock request rejected",
+      description:
+        finalStatus === "rejected"
+          ? `Request ${request.request_no} rejected`
+          : `Request ${request.request_no} dispatched via ${transfer.transfer_no}`,
+      meta: {
+        request_id: request.id,
+        request_no: request.request_no,
+        transfer_id: transfer.id,
+        transfer_no: transfer.transfer_no,
+        final_status: finalStatus,
+        driver_photo_url,
+        dispatch_image_urls,
+        dispatch_video_url,
+        e_way_bill_url,
+      },
+      transaction,
+    });
+
+    await transaction.commit();
+
+    for (const filePath of uploadedLocalPaths) {
+      safeUnlink(filePath);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message:
+        finalStatus === "rejected"
+          ? "Request rejected successfully"
+          : "Request approved and stock dispatched successfully",
+      data: {
+        transfer: {
+          ...transfer.toJSON(),
+          dispatch_image_url: dispatch_image_urls,
+          e_way_bill_url,
+        },
+        uploaded_files: {
+          driver_photo_url,
+          dispatch_image_urls,
+          dispatch_video_url,
+          e_way_bill_url,
+        },
+        summary: {
+          request_id: request.id,
+          request_no: request.request_no,
+          total_requested: totalRequested,
+          total_approved: totalApproved,
+          total_weight: totalWeight,
+          estimated_value: estimatedValue,
+          final_status: finalStatus,
+        },
+      },
+    });
+  } catch (error) {
+    await transaction.rollback();
+
+    for (const filePath of uploadedLocalPaths) {
+      safeUnlink(filePath);
+    }
+
+    console.error("approveAndDispatchRequest error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to approve and dispatch request",
+      error: error.message,
+    });
+  }
+};
+
+// ==========================================
+// PARENT ORG -> APPROVE & DISPATCH for district
+// ==========================================
+export const approveAndDispatchRequest = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  const uploadedLocalPaths = [];
+
+  try {
+    const { requestId } = req.params;
+    const {
+      remarks,
+      driver_name,
+      driver_phone,
+      vehicle_number,
+      tracking_number,
+      pickup_address,
+      delivery_address,
+      expected_delivery_date,
+      expected_delivery_time,
+      additional_notes,
+    } = req.body;
+
+    const user = req.user;
+    const parsedItems = parseItemsFromBody(req.body);
+
+    console.log("approveAndDispatchRequest req.body keys:", Object.keys(req.body || {}));
+    console.log("approveAndDispatchRequest raw items:", req.body?.items);
+    console.log("approveAndDispatchRequest parsedItems:", parsedItems);
+    console.log("approveAndDispatchRequest files:", {
+      driver_photo: req.files?.driver_photo?.length || 0,
+      dispatch_images: req.files?.dispatch_images?.length || 0,
+      dispatch_video: req.files?.dispatch_video?.length || 0,
+      e_way_bill: req.files?.e_way_bill?.length || 0,
+    });
+
+    if (!Array.isArray(parsedItems) || parsedItems.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message:
+          "Approved items are required. Send items as JSON string or items[0][item_id], items[0][qty] format.",
+      });
+    }
+
+    if (!driver_name || !driver_phone || !vehicle_number) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Driver name, driver phone, and vehicle number are required",
+      });
+    }
+
+    const approvedRows = parsedItems.filter((row) => Number(row.qty || 0) > 0);
+
+    if (approvedRows.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "At least one item must have qty greater than 0 for approval",
+      });
+    }
+
+    if (!pickup_address || !delivery_address) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Pickup and delivery address are required",
+      });
+    }
+
+    if (!expected_delivery_date || !expected_delivery_time) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Expected delivery date and time are required",
+      });
+    }
+
+    const driverPhotoFile = req.files?.driver_photo?.[0] || null;
+    const dispatchImageFiles = req.files?.dispatch_images || [];
+    const dispatchVideoFile = req.files?.dispatch_video?.[0] || null;
+    const eWayBillFile = req.files?.e_way_bill?.[0] || null;
+
+    if (dispatchImageFiles.length > 3) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Maximum 3 dispatch images allowed",
+      });
+    }
+
+    if (driverPhotoFile?.path) uploadedLocalPaths.push(driverPhotoFile.path);
+
+    for (const file of dispatchImageFiles) {
+      if (file?.path) uploadedLocalPaths.push(file.path);
+    }
+
+    if (dispatchVideoFile?.path) uploadedLocalPaths.push(dispatchVideoFile.path);
+    if (eWayBillFile?.path) uploadedLocalPaths.push(eWayBillFile.path);
+
+    const request = await StockRequest.findByPk(requestId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!request) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Stock request not found",
+      });
+    }
+
+    const requestItems = await StockRequestItem.findAll({
+      where: { request_id: request.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (Number(request.to_organization_id) !== Number(user.organization_id)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to approve this request",
+      });
+    }
+
+    if (request.status !== "pending") {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Only pending request can be approved",
+      });
+    }
+
+    const existingTransfer = await StockTransfer.findOne({
+      where: { request_id: request.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (existingTransfer) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Transfer already created for this request",
+      });
+    }
+
+    const requestItemMap = new Map(
+      requestItems.map((x) => [Number(x.item_id), x])
+    );
+
+    for (const row of parsedItems) {
+      const item_id = toNumber(row.item_id);
+      const qty = toNumber(row.qty);
+
+      if (!item_id || qty < 0) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Each item must have valid item_id and qty",
+        });
+      }
+
+      const requestItem = requestItemMap.get(item_id);
+
+      if (!requestItem) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Requested item not found for item_id ${item_id}`,
+        });
+      }
+
+      const requestedQty = toNumber(requestItem.request_qty);
+
+      if (qty > requestedQty) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Approved qty cannot exceed requested qty for item ${item_id}`,
+        });
+      }
+    }
+
+    let driver_photo_url = null;
+    let dispatch_image_urls = [];
+    let dispatch_video_url = null;
+    let e_way_bill_url = null;
+
+    if (driverPhotoFile?.path) {
+      const uploadedDriverPhoto = await uploadToCloudinary(
+        driverPhotoFile.path,
+        "stock-transfer/driver-photo",
+        "image"
+      );
+      driver_photo_url = uploadedDriverPhoto.secure_url;
+    }
+
+    if (dispatchImageFiles.length > 0) {
+      for (const file of dispatchImageFiles) {
+        const uploadedImage = await uploadToCloudinary(
+          file.path,
+          "stock-transfer/dispatch-images",
+          "image"
+        );
+        dispatch_image_urls.push(uploadedImage.secure_url);
+      }
+    }
+
+    if (dispatchVideoFile?.path) {
+      const uploadedVideo = await uploadToCloudinary(
+        dispatchVideoFile.path,
+        "stock-transfer/dispatch-video",
+        "video"
+      );
+      dispatch_video_url = uploadedVideo.secure_url;
+    }
+
+    if (eWayBillFile?.path) {
+      const isPdf =
+        eWayBillFile.mimetype === "application/pdf" ||
+        eWayBillFile.originalname?.toLowerCase().endsWith(".pdf");
+
+      const uploadedEWayBill = await uploadToCloudinary(
+        eWayBillFile.path,
+        "stock-transfer/e-way-bills",
+        isPdf ? "raw" : "image"
+      );
+
+      e_way_bill_url = uploadedEWayBill.secure_url;
+    }
+
+    const transfer = await StockTransfer.create(
+      {
+        transfer_no: generateTransferNo(),
+        request_id: request.id,
+        from_organization_id: user.organization_id,
+        to_organization_id: request.from_organization_id,
+        transfer_date: new Date(),
+        dispatch_date: new Date(),
+        status: "in_transit",
+        approved_by: user.id,
+        dispatched_by: user.id,
+        created_by: user.id,
+        remarks: remarks || null,
+        driver_name: driver_name || null,
+        driver_phone: driver_phone || null,
+        vehicle_number: vehicle_number || null,
+        tracking_number: tracking_number || null,
+        driver_photo_url: driver_photo_url || null,
+        dispatch_image_url:
+          dispatch_image_urls.length > 0
+            ? JSON.stringify(dispatch_image_urls)
+            : null,
+        dispatch_video_url: dispatch_video_url || null,
+        e_way_bill_url: e_way_bill_url || null,
+        pickup_address: pickup_address || null,
+        delivery_address: delivery_address || null,
+        expected_delivery_date: expected_delivery_date || null,
+        expected_delivery_time: expected_delivery_time || null,
+        additional_notes: additional_notes || null,
+      },
+      { transaction }
+    );
+
+    let totalRequested = 0;
+    let totalApproved = 0;
+    let totalWeight = 0;
+    let estimatedValue = 0;
+    let approvedItemsCount = 0;
+
+    for (const row of parsedItems) {
+      const item_id = toNumber(row.item_id);
+      const qty = toNumber(row.qty);
+      const weight = toNumber(row.weight);
+      const rate = toNumber(row.rate);
+
+      const requestItem = requestItemMap.get(item_id);
+      const requestedQty = toNumber(requestItem.request_qty);
+
+      totalRequested += requestedQty;
+      totalApproved += qty;
+
+      if (qty === 0) {
+        await requestItem.update(
+          {
+            approved_qty: 0,
+            approved_weight: 0,
+            status: "rejected",
+          },
+          { transaction }
+        );
+        continue;
+      }
+
+      approvedItemsCount += 1;
+      totalWeight += weight;
+      estimatedValue += weight * rate;
+
+      const fromStock = await getOrCreateStock(
+        user.organization_id,
+        item_id,
+        transaction
+      );
+
+      const availableQty = toNumber(fromStock.available_qty);
+      const availableWeight = toNumber(fromStock.available_weight);
+      const reservedQty = toNumber(fromStock.reserved_qty);
+      const reservedWeight = toNumber(fromStock.reserved_weight);
+      const transitQty = toNumber(fromStock.transit_qty);
+      const transitWeight = toNumber(fromStock.transit_weight);
+      const damagedQty = toNumber(fromStock.damaged_qty);
+      const damagedWeight = toNumber(fromStock.damaged_weight);
+
+      if (availableQty < qty) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient available qty for item ${item_id}`,
+        });
+      }
+
+      if (weight > 0 && availableWeight < weight) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient available weight for item ${item_id}`,
+        });
+      }
+
+      await StockTransferItem.create(
+        {
+          transfer_id: transfer.id,
+          item_id,
+          qty,
+          weight,
+          rate,
+          remarks: row.remarks || null,
+        },
+        { transaction }
+      );
+
+      await requestItem.update(
+        {
+          approved_qty: qty,
+          approved_weight: weight,
+          status: qty < requestedQty ? "partially_approved" : "approved",
+        },
+        { transaction }
+      );
+
+      const newAvailableQty = availableQty - qty;
+      const newAvailableWeight = availableWeight - weight;
+      const newTransitQty = transitQty + qty;
+      const newTransitWeight = transitWeight + weight;
+
+      await fromStock.update(
+        {
+          available_qty: newAvailableQty,
+          available_weight: newAvailableWeight,
+          transit_qty: newTransitQty,
+          transit_weight: newTransitWeight,
+        },
+        { transaction }
+      );
+
+      await createMovement({
+        organization_id: user.organization_id,
+        item_id,
+        movement_type: "dispatch",
+        reference_type: "stock_transfer",
+        reference_id: transfer.id,
+        qty,
+        weight,
+        stockBefore: {
+          available_qty: availableQty,
+          reserved_qty: reservedQty,
+          transit_qty: transitQty,
+          damaged_qty: damagedQty,
+          available_weight: availableWeight,
+          reserved_weight: reservedWeight,
+          transit_weight: transitWeight,
+          damaged_weight: damagedWeight,
+        },
+        stockAfter: {
+          available_qty: newAvailableQty,
+          reserved_qty: reservedQty,
+          transit_qty: newTransitQty,
+          damaged_qty: damagedQty,
+          available_weight: newAvailableWeight,
+          reserved_weight: reservedWeight,
+          transit_weight: newTransitWeight,
+          damaged_weight: damagedWeight,
+        },
+        remarks: `Dispatched via ${transfer.transfer_no}`,
+        created_by: user.id,
+        transaction,
+      });
     }
 
     let finalStatus = "approved";
@@ -596,15 +2044,15 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
       {
         title:
           finalStatus === "approved"
-            ? "Head stock request approved and dispatched"
+            ? "Stock request approved and dispatched"
             : finalStatus === "partially_approved"
-            ? "Head stock request partially approved and dispatched"
-            : "Head stock request rejected",
+            ? "Stock request partially approved and dispatched"
+            : "Stock request rejected",
         description:
           finalStatus === "rejected"
-            ? `Request ${request.request_no} was rejected by head`
+            ? `Request ${request.request_no} was rejected by receiving organization`
             : `Request ${request.request_no} processed via ${transfer.transfer_no}`,
-        activity_type: "head_stock_request_dispatch",
+        activity_type: "stock_request_dispatch",
         module_name: "stock_transfer",
         reference_id: transfer.id,
         reference_no: transfer.transfer_no,
@@ -619,13 +2067,13 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
 
     await createActivity({
       user_id: user.id,
-      action: "head_stock_request_dispatch",
+      action: "stock_request_dispatch",
       title:
         finalStatus === "approved"
-          ? "Head stock request approved and dispatched"
+          ? "Stock request approved and dispatched"
           : finalStatus === "partially_approved"
-          ? "Head stock request partially approved and dispatched"
-          : "Head stock request rejected",
+          ? "Stock request partially approved and dispatched"
+          : "Stock request rejected",
       description:
         finalStatus === "rejected"
           ? `Request ${request.request_no} rejected`
@@ -639,6 +2087,7 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
         driver_photo_url,
         dispatch_image_urls,
         dispatch_video_url,
+        e_way_bill_url,
       },
       transaction,
     });
@@ -659,11 +2108,13 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
         transfer: {
           ...transfer.toJSON(),
           dispatch_image_url: dispatch_image_urls,
+          e_way_bill_url,
         },
         uploaded_files: {
           driver_photo_url,
           dispatch_image_urls,
           dispatch_video_url,
+          e_way_bill_url,
         },
         summary: {
           request_id: request.id,
@@ -683,7 +2134,7 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
       safeUnlink(filePath);
     }
 
-    console.error("approveAndDispatchHeadRequest error:", error);
+    console.error("approveAndDispatchRequest error:", error);
 
     return res.status(500).json({
       success: false,
@@ -695,16 +2146,1072 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
 
 
 
-export const createHeadStockRequest = async (req, res) => {
+
+// ==========================================
+// STORE -> RECEIVE TRANSFER
+// ==========================================
+export const receiveTransfer = async (req, res) => {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { transferId } = req.params;
+    const { remarks } = req.body;
+    const user = req.user;
+
+    const transfer = await StockTransfer.findByPk(transferId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!transfer) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Transfer not found",
+      });
+    }
+
+    if (Number(transfer.to_organization_id) !== Number(user.organization_id)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to receive this transfer",
+      });
+    }
+
+    if (transfer.status !== "in_transit") {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Only in_transit transfer can be received",
+      });
+    }
+
+    const transferItems = await StockTransferItem.findAll({
+      where: { transfer_id: transfer.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    for (const trItem of transferItems) {
+      const item_id = Number(trItem.item_id);
+      const qty = toNumber(trItem.qty);
+      const weight = toNumber(trItem.weight);
+
+      const sourceStock = await getOrCreateStock(
+        transfer.from_organization_id,
+        item_id,
+        transaction
+      );
+
+      const sourceBefore = {
+        available_qty: sourceStock.available_qty,
+        reserved_qty: sourceStock.reserved_qty,
+        transit_qty: sourceStock.transit_qty,
+        damaged_qty: sourceStock.damaged_qty,
+        available_weight: sourceStock.available_weight,
+        reserved_weight: sourceStock.reserved_weight,
+        transit_weight: sourceStock.transit_weight,
+        damaged_weight: sourceStock.damaged_weight,
+      };
+
+      await sourceStock.update(
+        {
+          transit_qty: Math.max(0, toNumber(sourceStock.transit_qty) - qty),
+          transit_weight: Math.max(
+            0,
+            toNumber(sourceStock.transit_weight) - weight
+          ),
+        },
+        { transaction }
+      );
+
+      const sourceAfter = {
+        available_qty: sourceStock.available_qty,
+        reserved_qty: sourceStock.reserved_qty,
+        transit_qty: sourceStock.transit_qty,
+        damaged_qty: sourceStock.damaged_qty,
+        available_weight: sourceStock.available_weight,
+        reserved_weight: sourceStock.reserved_weight,
+        transit_weight: sourceStock.transit_weight,
+        damaged_weight: sourceStock.damaged_weight,
+      };
+
+      await createMovement({
+        organization_id: transfer.from_organization_id,
+        item_id,
+        movement_type: "dispatch",
+        reference_type: "stock_transfer_transit_clear",
+        reference_id: transfer.id,
+        qty: 0,
+        weight: 0,
+        stockBefore: sourceBefore,
+        stockAfter: sourceAfter,
+        remarks: `Transit cleared after receive for ${transfer.transfer_no}`,
+        created_by: user.id,
+        transaction,
+      });
+
+      const destinationStock = await getOrCreateStock(
+        transfer.to_organization_id,
+        item_id,
+        transaction
+      );
+
+      const destinationBefore = {
+        available_qty: destinationStock.available_qty,
+        reserved_qty: destinationStock.reserved_qty,
+        transit_qty: destinationStock.transit_qty,
+        damaged_qty: destinationStock.damaged_qty,
+        available_weight: destinationStock.available_weight,
+        reserved_weight: destinationStock.reserved_weight,
+        transit_weight: destinationStock.transit_weight,
+        damaged_weight: destinationStock.damaged_weight,
+      };
+
+      await destinationStock.update(
+        {
+          available_qty: toNumber(destinationStock.available_qty) + qty,
+          available_weight: toNumber(destinationStock.available_weight) + weight,
+        },
+        { transaction }
+      );
+
+      const destinationAfter = {
+        available_qty: destinationStock.available_qty,
+        reserved_qty: destinationStock.reserved_qty,
+        transit_qty: destinationStock.transit_qty,
+        damaged_qty: destinationStock.damaged_qty,
+        available_weight: destinationStock.available_weight,
+        reserved_weight: destinationStock.reserved_weight,
+        transit_weight: destinationStock.transit_weight,
+        damaged_weight: destinationStock.damaged_weight,
+      };
+
+      await createMovement({
+        organization_id: transfer.to_organization_id,
+        item_id,
+        movement_type: "receive",
+        reference_type: "stock_transfer",
+        reference_id: transfer.id,
+        qty,
+        weight,
+        stockBefore: destinationBefore,
+        stockAfter: destinationAfter,
+        remarks: `Received via ${transfer.transfer_no}`,
+        created_by: user.id,
+        transaction,
+      });
+    }
+
+    await transfer.update(
+      {
+        receive_date: new Date(),
+        status: "received",
+        received_by: user.id,
+        remarks: remarks || transfer.remarks,
+      },
+      { transaction }
+    );
+
+    if (transfer.request_id) {
+      const request = await StockRequest.findByPk(transfer.request_id, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      if (request) {
+        await request.update(
+          {
+            status: "completed",
+          },
+          { transaction }
+        );
+      }
+    }
+
+    // ================= SYSTEM ACTIVITY =================
+    await SystemActivity.create(
+      {
+        title: "Stock transfer received",
+        description: `Transfer ${transfer.transfer_no} received successfully`,
+        activity_type: "stock_transfer_received",
+        module_name: "stock_transfer",
+        reference_id: transfer.id,
+        reference_no: transfer.transfer_no,
+        district_code: user.district_code || null,
+        store_code: user.store_code || null,
+        store_name: user.store_name || null,
+        created_by: user.id,
+        created_at: new Date(),
+      },
+      { transaction }
+    );
+
+    // ================= ACTIVITY LOG =================
+    await ActivityLog.create(
+      {
+        organization_id: user.organization_id || null,
+        user_id: user.id,
+        action: "stock_transfer_received",
+        module_name: "stock_transfer",
+        reference_id: transfer.id,
+        reference_no: transfer.transfer_no,
+        title: "Stock transfer received",
+        description: `Transfer ${transfer.transfer_no} received successfully`,
+        meta: {
+          transfer_id: transfer.id,
+          transfer_no: transfer.transfer_no,
+          from_organization_id: transfer.from_organization_id,
+          to_organization_id: transfer.to_organization_id,
+          status: "received",
+          remarks: remarks || null,
+        },
+        icon: "activity",
+        color: "green",
+      },
+      { transaction }
+    );
+
+    await transaction.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Stock received successfully",
+      data: transfer,
+    });
+  } catch (error) {
+    await transaction.rollback();
+    return res.status(500).json({
+      success: false,
+      message: "Failed to receive transfer",
+      error: error.message,
+    });
+  }
+};
+
+
+
+const pickStoreName = (store) => {
+  if (!store) return null;
+
+  return (
+    store.store_name ||
+    store.storeName ||
+    store.organization_name ||
+    store.organizationName ||
+    store.district_name ||
+    store.districtName ||
+    store.name ||
+    store.store_code ||
+    store.storeCode ||
+    null
+  );
+};
+
+const pickUserName = (user) => {
+  if (!user) return null;
+
+  return (
+    user.username ||
+    user.name ||
+    user.full_name ||
+    user.fullName ||
+    user.email ||
+    null
+  );
+};
+
+const buildTransferResponse = (transfers, storeMap, userMap) => {
+  return transfers.map((t) => {
+    const plain = typeof t.toJSON === "function" ? t.toJSON() : t;
+
+    return {
+      id: plain.id,
+      transfer_no: plain.transfer_no,
+      tracking_number: plain.tracking_number || plain.transfer_no,
+      request_id: plain.request_id,
+
+      from_organization_id: plain.from_organization_id,
+      from_organization_name:
+        pickStoreName(storeMap.get(Number(plain.from_organization_id))) || null,
+
+      to_organization_id: plain.to_organization_id,
+      to_organization_name:
+        pickStoreName(storeMap.get(Number(plain.to_organization_id))) || null,
+
+      transfer_date: plain.transfer_date,
+      dispatch_date: plain.dispatch_date,
+      receive_date: plain.receive_date,
+      expected_delivery_date: plain.expected_delivery_date || null,
+      expected_delivery_time: plain.expected_delivery_time || null,
+
+      status: plain.status,
+      remarks: plain.remarks,
+
+      approved_by: plain.approved_by,
+      approved_by_name:
+        pickUserName(userMap.get(Number(plain.approved_by))) || null,
+
+      dispatched_by: plain.dispatched_by,
+      dispatched_by_name:
+        pickUserName(userMap.get(Number(plain.dispatched_by))) || null,
+
+      received_by: plain.received_by,
+      received_by_name:
+        pickUserName(userMap.get(Number(plain.received_by))) || null,
+
+      created_by: plain.created_by,
+      created_by_name:
+        pickUserName(userMap.get(Number(plain.created_by))) || null,
+
+      driver_details: {
+        driver_name: plain.driver_name || null,
+        driver_phone: plain.driver_phone || null,
+        vehicle_number: plain.vehicle_number || null,
+        tracking_number: plain.tracking_number || null,
+        driver_photo_url: plain.driver_photo_url || null,
+      },
+
+      media: {
+        dispatch_image_url: plain.dispatch_image_url || null,
+        dispatch_video_url: plain.dispatch_video_url || null,
+        receive_image_url: plain.receive_image_url || null,
+      },
+
+      created_at: plain.created_at,
+      updated_at: plain.updated_at,
+
+      transfer_items: plain.transfer_items || [],
+    };
+  });
+};
+
+const buildTransferSummary = (transfers = []) => {
+  let inTransit = 0;
+  let shipments = 0;
+  let goodsReceipt = 0;
+
+  for (const row of transfers) {
+    const status = String(row.status || "").toLowerCase();
+
+    if (["approved", "dispatched", "in_transit"].includes(status)) {
+      inTransit += 1;
+    }
+
+    if (["approved", "dispatched", "in_transit", "received"].includes(status)) {
+      shipments += 1;
+    }
+
+    if (status === "received") {
+      goodsReceipt += 1;
+    }
+  }
+
+  return {
+    in_transit: inTransit,
+    shipments,
+    goods_receipt: goodsReceipt,
+  };
+};
+
+const loadTransferMeta = async (transfers = []) => {
+  const orgIds = [
+    ...new Set(
+      transfers
+        .flatMap((t) => [
+          Number(t.from_organization_id || 0),
+          Number(t.to_organization_id || 0),
+        ])
+        .filter(Boolean)
+    ),
+  ];
+
+  const userIds = [
+    ...new Set(
+      transfers
+        .flatMap((t) => [
+          Number(t.created_by || 0),
+          Number(t.approved_by || 0),
+          Number(t.dispatched_by || 0),
+          Number(t.received_by || 0),
+        ])
+        .filter(Boolean)
+    ),
+  ];
+
+  const stores = orgIds.length
+    ? await Store.findAll({
+        where: { id: { [Op.in]: orgIds } },
+      })
+    : [];
+
+  const users = userIds.length
+    ? await User.findAll({
+        where: { id: { [Op.in]: userIds } },
+        attributes: ["id", "username", "email"],
+      })
+    : [];
+
+  return {
+    storeMap: new Map(stores.map((s) => [Number(s.id), s])),
+    userMap: new Map(users.map((u) => [Number(u.id), u])),
+  };
+};
+
+// ==========================================
+// INCOMING TRANSFERS
+// ==========================================
+const TRANSFER_CARD_STATUSES = [
+  "approved",
+  "dispatched",
+  "in_transit",
+  "received",
+];
+const getOverallTransferWhereCondition = (user) => {
+  return {
+    status: {
+      [Op.in]: TRANSFER_CARD_STATUSES,
+    },
+    [Op.or]: [
+      { from_organization_id: user.organization_id },
+      { to_organization_id: user.organization_id },
+    ],
+  };
+};
+
+// const addTransferDirection = (rows = [], user) => {
+//   return rows.map((row) => {
+//     const item = row.toJSON ? row.toJSON() : row;
+
+//     const isOutgoing =
+//       Number(item.from_organization_id) === Number(user.organization_id);
+
+//     const isIncoming =
+//       Number(item.to_organization_id) === Number(user.organization_id);
+
+//     let transfer_direction = "unknown";
+
+//     if (isOutgoing && isIncoming) {
+//       transfer_direction = "self_transfer";
+//     } else if (isOutgoing) {
+//       transfer_direction = "outgoing";
+//     } else if (isIncoming) {
+//       transfer_direction = "incoming";
+//     }
+
+//     return {
+//       ...item,
+//       transfer_direction,
+//       is_outgoing: isOutgoing,
+//       is_incoming: isIncoming,
+//     };
+//   });
+// };
+// ==========================================
+// INCOMING TRANSFERS
+// ==========================================
+const getIncomingTransferWhereCondition = (user) => ({
+  to_organization_id: user.organization_id,
+  status: {
+    [Op.in]: TRANSFER_CARD_STATUSES,
+  },
+});
+
+const getOutgoingTransferWhereCondition = (user) => ({
+  from_organization_id: user.organization_id,
+  status: {
+    [Op.in]: TRANSFER_CARD_STATUSES,
+  },
+});
+
+export const getIncomingTransfers = async (req, res) => {
+  try {
+    const user = req.user;
+
+    if (!user?.organization_id) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const [transfers, overallTransfers] = await Promise.all([
+      StockTransfer.findAll({
+        where: getIncomingTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+
+      StockTransfer.findAll({
+        where: getOverallTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+    ]);
+
+    const { storeMap, userMap } = await loadTransferMeta(transfers);
+
+    const responseData = buildTransferResponse(transfers, storeMap, userMap);
+    const data = addTransferDirection(responseData, user);
+
+    // ✅ cards overall data se banenge
+    const summary = buildTransferSummary(overallTransfers);
+
+    return res.status(200).json({
+      success: true,
+      summary,
+      count: overallTransfers.length,
+      data,
+    });
+  } catch (error) {
+    console.error("getIncomingTransfers error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch incoming transfers",
+      error: error.message,
+    });
+  }
+};
+
+// ==========================================
+// OUTGOING TRANSFERS
+// ==========================================
+export const getOutgoingTransfers = async (req, res) => {
+  try {
+    const user = req.user;
+
+    if (!user?.organization_id) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const [transfers, overallTransfers] = await Promise.all([
+      StockTransfer.findAll({
+        where: getOutgoingTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+
+      StockTransfer.findAll({
+        where: getOverallTransferWhereCondition(user),
+        include: [
+          {
+            model: StockTransferItem,
+            as: "transfer_items",
+          },
+        ],
+        order: [["created_at", "DESC"]],
+      }),
+    ]);
+
+    const { storeMap, userMap } = await loadTransferMeta(transfers);
+
+    const responseData = buildTransferResponse(transfers, storeMap, userMap);
+    const data = addTransferDirection(responseData, user);
+
+    // ✅ cards overall data se banenge
+    const summary = buildTransferSummary(overallTransfers);
+
+    return res.status(200).json({
+      success: true,
+      summary,
+      count: overallTransfers.length,
+      data,
+    });
+  } catch (error) {
+    console.error("getOutgoingTransfers error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch outgoing transfers",
+      error: error.message,
+    });
+  }
+};
+// ==========================================
+// SINGLE TRANSFER DETAILS
+// ==========================================
+export const getTransferDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user;
+
+    const transfer = await StockTransfer.findByPk(id, {
+      include: [
+        {
+          model: StockTransferItem,
+          as: "transfer_items",
+          include: [
+            {
+              model: Item,
+              as: "item",
+              attributes: [
+                "id",
+                "item_name",
+                "article_code",
+                "category",
+                "sale_rate",
+                "gross_weight",
+                "net_weight",
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: "Transfer not found",
+      });
+    }
+
+    const plainTransfer = transfer.get({ plain: true });
+
+    if (
+      Number(user.organization_id) !== Number(plainTransfer.from_organization_id) &&
+      Number(user.organization_id) !== Number(plainTransfer.to_organization_id) &&
+      String(user.role || "").toLowerCase() !== "super_admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view this transfer",
+      });
+    }
+
+    const stores = await Store.findAll({
+      where: {
+        id: {
+          [Op.in]: [
+            Number(plainTransfer.from_organization_id),
+            Number(plainTransfer.to_organization_id),
+          ],
+        },
+      },
+    });
+
+    const storeMap = new Map(stores.map((s) => [Number(s.id), s]));
+
+    const userIds = [
+      Number(plainTransfer.created_by || 0),
+      Number(plainTransfer.approved_by || 0),
+      Number(plainTransfer.dispatched_by || 0),
+      Number(plainTransfer.received_by || 0),
+    ].filter(Boolean);
+
+    const users = userIds.length
+      ? await User.findAll({
+          where: {
+            id: { [Op.in]: userIds },
+          },
+          attributes: ["id", "username", "email"],
+        })
+      : [];
+
+    const userMap = new Map(users.map((u) => [Number(u.id), u]));
+
+    const data = {
+      id: plainTransfer.id,
+      transfer_no: plainTransfer.transfer_no,
+      tracking_number: plainTransfer.tracking_number || plainTransfer.transfer_no,
+
+      status: plainTransfer.status,
+      remarks: plainTransfer.remarks,
+
+      from_organization_id: plainTransfer.from_organization_id,
+      from_organization_name: pickStoreName(
+        storeMap.get(Number(plainTransfer.from_organization_id))
+      ),
+
+      to_organization_id: plainTransfer.to_organization_id,
+      to_organization_name: pickStoreName(
+        storeMap.get(Number(plainTransfer.to_organization_id))
+      ),
+
+      transfer_date: plainTransfer.transfer_date,
+      dispatch_date: plainTransfer.dispatch_date,
+      receive_date: plainTransfer.receive_date,
+
+      expected_delivery_date: plainTransfer.expected_delivery_date || null,
+      expected_delivery_time: plainTransfer.expected_delivery_time || null,
+
+      // ✅ easy direct access for frontend
+      e_way_bill_url: plainTransfer.e_way_bill_url || null,
+
+      driver_details: {
+        driver_name: plainTransfer.driver_name || null,
+        driver_phone: plainTransfer.driver_phone || null,
+        vehicle_number: plainTransfer.vehicle_number || null,
+        tracking_number: plainTransfer.tracking_number || null,
+        driver_photo_url: plainTransfer.driver_photo_url || null,
+      },
+
+      media: {
+        dispatch_image_url: plainTransfer.dispatch_image_url || null,
+        dispatch_video_url: plainTransfer.dispatch_video_url || null,
+        receive_image_url: plainTransfer.receive_image_url || null,
+
+        // ✅ added e-way bill in media
+        e_way_bill_url: plainTransfer.e_way_bill_url || null,
+      },
+
+      created_by: {
+        id: plainTransfer.created_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.created_by))),
+      },
+
+      approved_by: {
+        id: plainTransfer.approved_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.approved_by))),
+      },
+
+      dispatched_by: {
+        id: plainTransfer.dispatched_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.dispatched_by))),
+      },
+
+      received_by: {
+        id: plainTransfer.received_by,
+        name: pickUserName(userMap.get(Number(plainTransfer.received_by))),
+      },
+
+      products: (plainTransfer.transfer_items || []).map((row) => ({
+        id: row.id,
+        item_id: row.item_id,
+        qty: Number(row.qty || 0),
+        weight: Number(row.weight || 0),
+        remarks: row.remarks || null,
+
+        item_name: row.item?.item_name || null,
+        article_code: row.item?.article_code || null,
+        category: row.item?.category || null,
+        rate: Number(row.item?.sale_rate || 0),
+        gross_weight: Number(row.item?.gross_weight || 0),
+        net_weight: Number(row.item?.net_weight || 0),
+      })),
+    };
+
+    return res.status(200).json({
+      success: true,
+      message: "Transfer details fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("getTransferDetails error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch transfer details",
+      error: error.message,
+    });
+  }
+};
+
+
+export const getEWayBillByTransferId = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || isNaN(Number(id))) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid transfer id is required",
+      });
+    }
+
+    const user = req.user;
+
+    const transfer = await StockTransfer.findOne({
+      where: { id: Number(id) },
+    });
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: `Transfer not found for id ${id}`,
+      });
+    }
+
+    if (
+      Number(user.organization_id) !== Number(transfer.from_organization_id) &&
+      Number(user.organization_id) !== Number(transfer.to_organization_id) &&
+      String(user.role || "").toLowerCase() !== "super_admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view this e-way bill",
+      });
+    }
+
+    if (!transfer.e_way_bill_url) {
+      return res.status(404).json({
+        success: false,
+        message: "E-way bill not uploaded",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "E-way bill fetched successfully",
+      data: {
+        transfer_id: transfer.id,
+        transfer_no: transfer.transfer_no,
+        e_way_bill_url: transfer.e_way_bill_url,
+      },
+    });
+  } catch (error) {
+    console.error("getEWayBillByTransferId error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch e-way bill",
+      error: error.message,
+    });
+  }
+};
+
+
+
+
+export const estimateDispatchRequestValue = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const user = req.user;
+    const parsedItems = parseItemsFromBody(req.body);
+
+    if (!Array.isArray(parsedItems) || parsedItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Items are required",
+      });
+    }
+
+    const request = await StockRequest.findByPk(requestId);
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Stock request not found",
+      });
+    }
+
+    if (Number(request.to_organization_id) !== Number(user.organization_id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to estimate this request",
+      });
+    }
+
+    const requestItems = await StockRequestItem.findAll({
+      where: { request_id: request.id },
+      raw: true,
+    });
+
+    const requestItemMap = new Map(
+      requestItems.map((x) => [Number(x.item_id), x])
+    );
+
+    let totalRequested = 0;
+    let totalSelectedQty = 0;
+    let totalWeight = 0;
+    let estimatedValue = 0;
+
+    const items = [];
+
+    for (const row of parsedItems) {
+      const itemId = toNumber(row.item_id);
+      const qty = toNumber(row.qty);
+
+      if (!itemId || qty < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Each item must have valid item_id and qty",
+        });
+      }
+
+      const requestItem = requestItemMap.get(itemId);
+
+      if (!requestItem) {
+        return res.status(400).json({
+          success: false,
+          message: `Requested item not found for item_id ${itemId}`,
+        });
+      }
+
+      const requestedQty = toNumber(requestItem.request_qty);
+
+      if (qty > requestedQty) {
+        return res.status(400).json({
+          success: false,
+          message: `Qty cannot exceed requested qty for item ${itemId}`,
+        });
+      }
+
+      const [itemData] = await sequelize.query(
+        `
+        SELECT 
+          i.id,
+          i.item_name,
+          i.article_code,
+          i.sku_code,
+          i.category,
+          i.metal_type,
+          i.purity,
+          i.unit,
+          COALESCE(i.gross_weight, 0) AS gross_weight,
+          COALESCE(i.net_weight, i.gross_weight, 0) AS net_weight,
+          COALESCE(i.net_weight, i.gross_weight, 0) AS per_item_weight,
+          COALESCE(i.sale_rate, i.purchase_rate, 0) AS rate
+        FROM items i
+        WHERE i.id = :itemId
+        LIMIT 1
+        `,
+        {
+          replacements: { itemId },
+          type: QueryTypes.SELECT,
+        }
+      );
+
+      if (!itemData) {
+        return res.status(404).json({
+          success: false,
+          message: `Item not found for item_id ${itemId}`,
+        });
+      }
+
+      const [stock] = await sequelize.query(
+        `
+        SELECT 
+          COALESCE(available_qty, 0) AS available_qty,
+          COALESCE(available_weight, 0) AS available_weight
+        FROM stocks
+        WHERE organization_id = :organizationId
+          AND item_id = :itemId
+        LIMIT 1
+        `,
+        {
+          replacements: {
+            organizationId: user.organization_id,
+            itemId,
+          },
+          type: QueryTypes.SELECT,
+        }
+      );
+
+      const availableQty = toNumber(stock?.available_qty);
+      const availableWeight = toNumber(stock?.available_weight);
+
+      const perItemWeight = toNumber(itemData.per_item_weight);
+      const rate = toNumber(itemData.rate);
+
+      const totalItemWeight = qty * perItemWeight;
+      const itemEstimatedValue = totalItemWeight * rate;
+
+      const isAvailable =
+        availableQty >= qty &&
+        (totalItemWeight <= 0 || availableWeight >= totalItemWeight);
+
+      totalRequested += requestedQty;
+      totalSelectedQty += qty;
+      totalWeight += totalItemWeight;
+      estimatedValue += itemEstimatedValue;
+
+      items.push({
+        item_id: itemId,
+        item_name: itemData.item_name,
+        article_code: itemData.article_code,
+        sku_code: itemData.sku_code,
+        category: itemData.category,
+        metal_type: itemData.metal_type,
+        purity: itemData.purity,
+        unit: itemData.unit,
+
+        requested_qty: requestedQty,
+        selected_qty: qty,
+
+        available_qty: availableQty,
+        available_weight: availableWeight,
+
+        gross_weight: toNumber(itemData.gross_weight),
+        net_weight: toNumber(itemData.net_weight),
+        per_item_weight: perItemWeight,
+        total_weight: Number(totalItemWeight.toFixed(3)),
+
+        rate,
+        estimated_value: Number(itemEstimatedValue.toFixed(2)),
+
+        is_available: isAvailable,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Dispatch estimate calculated successfully",
+      data: {
+        request_id: request.id,
+        request_no: request.request_no,
+        total_requested: totalRequested,
+        total_selected_qty: totalSelectedQty,
+        total_weight: Number(totalWeight.toFixed(3)),
+        estimated_value: Number(estimatedValue.toFixed(2)),
+        items,
+      },
+    });
+  } catch (error) {
+    console.error("estimateDispatchRequestValue error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to calculate dispatch estimate",
+      error: error.message,
+    });
+  }
+};
+
+const orgLevelTextLike = (level) =>
+  where(cast(col("organization_level"), "TEXT"), {
+    [Op.iLike]: `%${level}%`,
+  });
+
+
+
+
+
+
+
+
+
+
+
+
+// district create request 
+export const createDistrictStockRequest = async (req, res) => {
   const transaction = await sequelize.transaction();
 
   try {
     const user = req.user;
 
     const {
-      target_type,       // "district" OR "retail"
-      to_store_id,       // receiver store id
-      to_store_code,     // receiver store code
+      target_type, // "head" OR "retail"
+      to_store_id,
+      to_store_code,
       items,
       priority,
       category,
@@ -713,29 +3220,29 @@ export const createHeadStockRequest = async (req, res) => {
 
     const userLevel = String(user.organization_level || "").toLowerCase();
 
-    if (!["head", "head_office"].includes(userLevel)) {
+    if (userLevel !== "district") {
       await transaction.rollback();
       return res.status(403).json({
         success: false,
-        message: "Only head office can create this stock request",
+        message: "Only district can create this stock request",
       });
     }
 
     const receiverType = String(target_type || "").toLowerCase();
 
-    if (!["district", "retail"].includes(receiverType)) {
+    if (!["head", "retail"].includes(receiverType)) {
       await transaction.rollback();
       return res.status(400).json({
         success: false,
-        message: "target_type must be district or retail",
+        message: "target_type must be head or retail",
       });
     }
 
-    if (!to_store_id || !to_store_code) {
+    if (!to_store_code) {
       await transaction.rollback();
       return res.status(400).json({
         success: false,
-        message: "to_store_id and to_store_code are required",
+        message: "to_store_code is required",
       });
     }
 
@@ -747,28 +3254,75 @@ export const createHeadStockRequest = async (req, res) => {
       });
     }
 
-    const headStore = await Store.findOne({
+    let districtStore = await Store.findOne({
       where: {
-        id: user.organization_id,
+        store_code: String(user.store_code || "").trim(),
+        is_active: true,
+        [Op.and]: [orgLevelTextLike("district")],
       },
       transaction,
     });
 
-    if (!headStore) {
-      await transaction.rollback();
-      return res.status(404).json({
-        success: false,
-        message: "Head office store not found",
+    if (!districtStore && user.district_code) {
+      districtStore = await Store.findOne({
+        where: {
+          store_code: String(user.district_code).trim(),
+          is_active: true,
+          [Op.and]: [orgLevelTextLike("district")],
+        },
+        transaction,
       });
     }
 
-    const receiverStore = await Store.findOne({
-      where: {
-        id: Number(to_store_id),
+    if (!districtStore && user.organization_id) {
+      districtStore = await Store.findOne({
+        where: {
+          id: Number(user.organization_id),
+          is_active: true,
+          [Op.and]: [orgLevelTextLike("district")],
+        },
+        transaction,
+      });
+    }
+
+    if (!districtStore) {
+      await transaction.rollback();
+      return res.status(404).json({
+        success: false,
+        message:
+          "District store not found. Token organization_id/store_code is not mapped to a District store",
+        debug: {
+          token_organization_id: user.organization_id,
+          token_store_code: user.store_code,
+          token_district_code: user.district_code || null,
+        },
+      });
+    }
+
+    let receiverWhere;
+
+    if (receiverType === "head") {
+      receiverWhere = {
         store_code: String(to_store_code).trim(),
-       organization_level: receiverType === "district" ? "District" : "Retail",
         is_active: true,
-      },
+        [Op.and]: [orgLevelTextLike("head")],
+      };
+    } else {
+      // ✅ retail ka existing flow same rakha hai
+      receiverWhere = {
+        store_code: String(to_store_code).trim(),
+        organization_level: "Retail",
+        is_active: true,
+        district_id: districtStore.id,
+      };
+    }
+
+    if (to_store_id) {
+      receiverWhere.id = Number(to_store_id);
+    }
+
+    const receiverStore = await Store.findOne({
+      where: receiverWhere,
       transaction,
     });
 
@@ -776,7 +3330,16 @@ export const createHeadStockRequest = async (req, res) => {
       await transaction.rollback();
       return res.status(404).json({
         success: false,
-        message: "Invalid store_id or store_code mismatch",
+        message:
+          receiverType === "head"
+            ? "Head store not found"
+            : "Retail store not found under this district",
+        debug: {
+          district_id: districtStore.id,
+          district_store_code: districtStore.store_code,
+          to_store_id: to_store_id || null,
+          to_store_code,
+        },
       });
     }
 
@@ -829,7 +3392,7 @@ export const createHeadStockRequest = async (req, res) => {
         return null;
       })
       .filter(Boolean);
-
+    if(target_type=="retail"){
     if (unavailableItems.length > 0) {
       await transaction.rollback();
       return res.status(400).json({
@@ -838,25 +3401,30 @@ export const createHeadStockRequest = async (req, res) => {
         unavailable_items: unavailableItems,
       });
     }
-
-    const request_no = `REQ-HEAD-${user.organization_id}-${Date.now()}`;
+  }
+    const request_no = `REQ-DIST-${districtStore.id}-${Date.now()}`;
 
     const stockRequest = await StockRequest.create(
       {
         request_no,
 
-        from_organization_id: user.organization_id,
-        from_store_code: headStore.store_code,
-        from_store_name: headStore.store_name,
+        from_organization_id: districtStore.id,
+        from_store_code: districtStore.store_code,
+        from_store_name: districtStore.store_name,
 
         to_organization_id: receiverStore.id,
         to_store_code: receiverStore.store_code,
         to_store_name: receiverStore.store_name,
 
-        to_district_code:
-          receiverType === "district" ? receiverStore.store_code : null,
-        to_district_name:
-          receiverType === "district" ? receiverStore.store_name : null,
+       to_district_code:
+  receiverType === "retail"
+    ? districtStore.store_code
+    : receiverStore.store_code,
+
+to_district_name:
+  receiverType === "retail"
+    ? districtStore.store_name
+    : receiverStore.store_name,
 
         priority: priority || "medium",
         category: category || null,
@@ -871,8 +3439,8 @@ export const createHeadStockRequest = async (req, res) => {
       request_id: stockRequest.id,
       item_id: item.item_id,
       request_qty: item.request_qty,
-      approved_qty: item.approved_qty,
-      status: item.status,
+      approved_qty: 0,
+      status: "pending",
     }));
 
     await StockRequestItem.bulkCreate(requestItemsPayload, { transaction });
@@ -880,18 +3448,18 @@ export const createHeadStockRequest = async (req, res) => {
     await Task.create(
       {
         title: "Stock request approval required",
-        description: `${headStore.store_name} submitted stock request ${stockRequest.request_no} to ${receiverStore.store_name}`,
+        description: `${districtStore.store_name} submitted stock request ${stockRequest.request_no} to ${receiverStore.store_name}`,
         priority: priority || "medium",
         status: "pending",
         task_type:
-          receiverType === "district"
-            ? "head_to_district_stock_request"
-            : "head_to_retail_stock_request",
+          receiverType === "head"
+            ? "district_to_head_stock_request"
+            : "district_to_retail_stock_request",
+
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
 
-        district_code:
-          receiverType === "district" ? receiverStore.store_code : null,
+        district_code: districtStore.store_code,
         store_code: receiverStore.store_code,
         store_name: receiverStore.store_name,
 
@@ -903,26 +3471,22 @@ export const createHeadStockRequest = async (req, res) => {
 
     await ActivityLog.create(
       {
-        organization_id: user.organization_id,
+        organization_id: districtStore.id,
         user_id: user.id,
         action: "stock_request_created",
         module_name: "stock_request",
-
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
-
         title: "Stock request created",
         description: `You created stock request ${stockRequest.request_no} for ${receiverStore.store_name}`,
-
         meta: {
           total_items: requestItemsPayload.length,
-          from_store_name: headStore.store_name,
-          from_store_code: headStore.store_code,
+          from_store_name: districtStore.store_name,
+          from_store_code: districtStore.store_code,
           to_store_name: receiverStore.store_name,
           to_store_code: receiverStore.store_code,
           target_type: receiverType,
         },
-
         icon: "request",
         color: "blue",
       },
@@ -931,16 +3495,15 @@ export const createHeadStockRequest = async (req, res) => {
 
     await SystemActivity.create(
       {
-        title: "New head office stock request submitted",
-        description: `${headStore.store_name} submitted request ${stockRequest.request_no} to ${receiverStore.store_name}`,
+        title: "New district stock request submitted",
+        description: `${districtStore.store_name} submitted request ${stockRequest.request_no} to ${receiverStore.store_name}`,
         activity_type: "stock_request_created",
         module_name: "stock_request",
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
-        district_code:
-          receiverType === "district" ? receiverStore.store_code : null,
-        store_code: receiverStore.store_code || null,
-        store_name: receiverStore.store_name || null,
+        district_code: districtStore.store_code,
+        store_code: receiverStore.store_code,
+        store_name: receiverStore.store_name,
         created_by: user.id,
         created_at: new Date(),
       },
@@ -960,7 +3523,7 @@ export const createHeadStockRequest = async (req, res) => {
     });
   } catch (error) {
     await transaction.rollback();
-    console.error("createHeadStockRequest error:", error);
+    console.error("createDistrictStockRequest error:", error);
 
     return res.status(500).json({
       success: false,
@@ -969,504 +3532,359 @@ export const createHeadStockRequest = async (req, res) => {
     });
   }
 };
-
-
-
-
-
-
-
-// ==========================================
-// HEAD / SUPER ADMIN - ALL TRANSFERS
-// ==========================================
-export const getHeadAllTransfers = async (req, res) => {
+export const getHeadStore = async (req, res) => {
   try {
-    const user = req.user;
-
-    if (!user?.organization_id) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized user",
-      });
-    }
-
-    const role = String(user.role || "").toLowerCase();
-    const level = String(user.organization_level || "").toLowerCase();
-
-    const isHeadUser =
-      role === "super_admin" ||
-      role === "admin" ||
-      level === "head" ||
-      level === "head_office";
-
-    if (!isHeadUser) {
-      return res.status(403).json({
-        success: false,
-        message: "Only head office users can access all transfers",
-      });
-    }
-
-    const transfers = await StockTransfer.findAll({
-      include: [
-        {
-          model: StockTransferItem,
-          as: "transfer_items",
-          required: false,
-        },
-      ],
-      order: [["created_at", "DESC"]],
+    const data = await Store.findOne({
+      where: {
+        organization_level: "Head",
+        is_active: true,
+      },
+      attributes: ["id", "store_name", "store_code"],
     });
 
-    const data = transfers.map((tr) => {
-      const t = tr.toJSON();
-
-      return {
-        ...t,
-        direction: "all",
-        direction_label: "All Transfer",
-        transfer_items: t.transfer_items || [],
-      };
-    });
-
-    const summary = {
-      total: transfers.length,
-      draft: transfers.filter((t) => t.status === "draft").length,
-      approved: transfers.filter((t) => t.status === "approved").length,
-      dispatched: transfers.filter((t) => t.status === "dispatched").length,
-      in_transit: transfers.filter((t) => t.status === "in_transit").length,
-      received: transfers.filter((t) => t.status === "received").length,
-      cancelled: transfers.filter((t) => t.status === "cancelled").length,
-    };
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: "Head store not found",
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      summary,
-      count: transfers.length,
       data,
     });
-  } catch (error) {
-    console.error("getHeadAllTransfers error:", error);
-
+  } catch (err) {
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch head all transfers",
-      error: error.message,
+      error: err.message,
     });
   }
 };
 
-export const getAvailableStoresForHeadRequest = async (req, res) => {
+export const getRetailStoresUnderDistrict = async (req, res) => {
   try {
     const user = req.user;
 
-    const {
-      target_type = "district", // district OR retail
-      items,
-    } = req.body;
-
-    const userLevel = String(user.organization_level || "").toLowerCase();
-
-    if (!["head", "head_office"].includes(userLevel)) {
+    if (!user?.organization_id || user.organization_level !== "district") {
       return res.status(403).json({
         success: false,
-        message: "Only head office can access this API",
+        message: "Only district user allowed",
       });
     }
 
-    const receiverType = String(target_type || "").toLowerCase();
-
-    if (!["district", "retail"].includes(receiverType)) {
-      return res.status(400).json({
-        success: false,
-        message: "target_type must be district or retail",
-      });
-    }
-
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "items are required",
-      });
-    }
-
-    const validItems = items
-      .filter((i) => i.item_id && Number(i.request_qty) > 0)
-      .map((i) => ({
-        item_id: Number(i.item_id),
-        request_qty: Number(i.request_qty),
-      }));
-
-    if (validItems.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid items found",
-      });
-    }
-
-    const itemIds = validItems.map((i) => i.item_id);
-
-    const stores = await Store.findAll({
+    const data = await Store.findAll({
       where: {
-        organization_level:
-          receiverType === "district"
-            ? { [Op.in]: ["District", "district", "DISTRICT"] }
-            : { [Op.in]: ["Retail", "retail", "RETAIL"] },
+        organization_level: "Retail",
+        district_id: user.organization_id, // 🔥 important
         is_active: true,
       },
       attributes: [
         "id",
         "store_name",
         "store_code",
-        "organization_level",
-        "state",
-        "district",
         "district_id",
-        "address",
-        "phone_number",
       ],
       order: [["store_name", "ASC"]],
     });
 
-    if (!stores.length) {
-      return res.status(200).json({
-        success: true,
-        count: 0,
-        data: [],
-      });
-    }
-
-    const storeIds = stores.map((s) => s.id);
-
-    const stocks = await Stock.findAll({
-      where: {
-        organization_id: { [Op.in]: storeIds },
-        item_id: { [Op.in]: itemIds },
-      },
-      attributes: ["organization_id", "item_id", "available_qty"],
-    });
-
-    const stockMap = new Map();
-
-    for (const stock of stocks) {
-      const key = `${stock.organization_id}_${stock.item_id}`;
-      stockMap.set(key, Number(stock.available_qty || 0));
-    }
-
-    const data = stores.map((store) => {
-      let matchedItems = 0;
-      let missingItems = 0;
-
-      const stock_details = validItems.map((item) => {
-        const key = `${store.id}_${item.item_id}`;
-        const availableQty = stockMap.get(key) || 0;
-        const isAvailable = availableQty >= item.request_qty;
-
-        if (isAvailable) matchedItems++;
-        else missingItems++;
-
-        return {
-          item_id: item.item_id,
-          requested_qty: item.request_qty,
-          available_qty: availableQty,
-          is_available: isAvailable,
-        };
-      });
-
-      return {
-        store_id: store.id,
-        store_name: store.store_name,
-        store_code: store.store_code,
-        organization_level: store.organization_level,
-        state: store.state,
-        district: store.district,
-        district_id: store.district_id,
-        address: store.address,
-        phone_number: store.phone_number,
-
-        total_requested_items: validItems.length,
-        matched_items: matchedItems,
-        missing_items: missingItems,
-        can_fulfill_full_request: missingItems === 0,
-
-        stock_details,
-      };
-    });
-
-    const sortedData = data.sort((a, b) => {
-      if (b.can_fulfill_full_request !== a.can_fulfill_full_request) {
-        return b.can_fulfill_full_request - a.can_fulfill_full_request;
-      }
-
-      return b.matched_items - a.matched_items;
-    });
-
     return res.status(200).json({
       success: true,
-      count: sortedData.length,
-      data: sortedData,
+      count: data.length,
+      data,
     });
-  } catch (error) {
-    console.error("getAvailableStoresForHeadRequest error:", error);
-
+  } catch (err) {
     return res.status(500).json({
       success: false,
-      message: "Server error",
-      error: error.message,
+      error: err.message,
     });
   }
 };
 
 
 
-const HEAD_ACCESS_ROLES = [
-  "super_admin",
-  "admin",
-  "head",
-  "head_office",
-  "head_admin",
-  "stock_manager",
-  "super_stock_manager",
-  "inventory_manager",
-  "super_inventory_manager",
-];
-
-const normalizeRole = (role = "") =>
-  String(role).trim().toLowerCase().replaceAll("-", "_");
-
-const canViewAnyTransfer = (user) => {
-  const role = normalizeRole(user?.role);
-  const level = normalizeRole(user?.organization_level);
-
-  return (
-    HEAD_ACCESS_ROLES.includes(role) ||
-    level === "head" ||
-    level === "head_office" ||
-    user?.branches?.includes?.("ALL")
-  );
+const makeForwardRequestNo = (headOrgId, districtOrgId) => {
+  return `REQ-FWD-${headOrgId}-${districtOrgId}-${Date.now()}`;
 };
 
-const pickStoreName = (store) => {
-  if (!store) return null;
-  return (
-    store.store_name ||
-    store.name ||
-    store.organization_name ||
-    store.branch_name ||
-    null
-  );
-};
+export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
+  const t = await sequelize.transaction();
 
-const pickUserName = (user) => {
-  if (!user) return null;
-  return user.username || user.name || user.email || null;
-};
-
-export const getAnyTransferDetailsForHead = async (req, res) => {
   try {
-    const { id } = req.params;
     const user = req.user;
+    const { requestId } = req.params;
+    const { district_organization_id, notes } = req.body;
 
-    if (!user?.id) {
+    if (!user?.organization_id) {
+      await t.rollback();
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const transfer = await StockTransfer.findByPk(id, {
+    if (!isHeadUser(user)) {
+      await t.rollback();
+      return res.status(403).json({
+        success: false,
+        message: "Only head office can assign request to district",
+      });
+    }
+
+    if (!district_organization_id) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "district_organization_id is required",
+      });
+    }
+
+    const originalRequest = await StockRequest.findOne({
+      where: {
+        id: requestId,
+        to_organization_id: user.organization_id,
+      },
       include: [
         {
-          model: StockTransferItem,
-          as: "transfer_items",
+          model: StockRequestItem,
+          as: "request_items",
           include: [
             {
               model: Item,
               as: "item",
-              attributes: [
-                "id",
-                "item_name",
-                "article_code",
-                "sku_code",
-                "category",
-                "metal_type",
-                "purity",
-                "sale_rate",
-                "gross_weight",
-                "net_weight",
-              ],
+              required: false,
             },
           ],
         },
       ],
+      transaction: t,
+      lock: t.LOCK.UPDATE,
     });
 
-    if (!transfer) {
+    if (!originalRequest) {
+      await t.rollback();
       return res.status(404).json({
         success: false,
-        message: "Transfer not found",
+        message: "Original request not found for this head office",
       });
     }
 
-    const plainTransfer = transfer.get({ plain: true });
-
-    const isHeadUser = canViewAnyTransfer(user);
-
-    const isOwnTransfer =
-      Number(user.organization_id) ===
-        Number(plainTransfer.from_organization_id) ||
-      Number(user.organization_id) ===
-        Number(plainTransfer.to_organization_id);
-
-    // ✅ Head can view any transfer
-    // ✅ Normal district/retail can view only own incoming/outgoing transfer
-    if (!isHeadUser && !isOwnTransfer) {
-      return res.status(403).json({
+    if (originalRequest.request_source === "forwarded") {
+      await t.rollback();
+      return res.status(400).json({
         success: false,
-        message: "You are not allowed to view this transfer",
+        message: "Forwarded request cannot be forwarded again",
       });
     }
 
-    const organizationIds = [
-      Number(plainTransfer.from_organization_id),
-      Number(plainTransfer.to_organization_id),
-    ].filter(Boolean);
+    if (!originalRequest.request_items || originalRequest.request_items.length === 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Original request has no items",
+      });
+    }
 
-    const stores = organizationIds.length
-      ? await Store.findAll({
-          where: {
-            id: {
-              [Op.in]: organizationIds,
-            },
-          },
-        })
-      : [];
-
-    const storeMap = new Map(stores.map((s) => [Number(s.id), s]));
-
-    const userIds = [
-      Number(plainTransfer.created_by || 0),
-      Number(plainTransfer.approved_by || 0),
-      Number(plainTransfer.dispatched_by || 0),
-      Number(plainTransfer.received_by || 0),
-    ].filter(Boolean);
-
-    const users = userIds.length
-      ? await User.findAll({
-          where: {
-            id: {
-              [Op.in]: userIds,
-            },
-          },
-          attributes: ["id", "username", "email"],
-        })
-      : [];
-
-    const userMap = new Map(users.map((u) => [Number(u.id), u]));
-
-    const fromStore = storeMap.get(Number(plainTransfer.from_organization_id));
-    const toStore = storeMap.get(Number(plainTransfer.to_organization_id));
-
-    const data = {
-      id: plainTransfer.id,
-      transfer_no: plainTransfer.transfer_no,
-      request_id: plainTransfer.request_id || null,
-      tracking_number:
-        plainTransfer.tracking_number || plainTransfer.transfer_no,
-
-      status: plainTransfer.status,
-      remarks: plainTransfer.remarks,
-
-      from_organization_id: plainTransfer.from_organization_id,
-      from_organization_name: pickStoreName(fromStore),
-      from_store_code: fromStore?.store_code || null,
-
-      to_organization_id: plainTransfer.to_organization_id,
-      to_organization_name: pickStoreName(toStore),
-      to_store_code: toStore?.store_code || null,
-
-      transfer_date: plainTransfer.transfer_date,
-      dispatch_date: plainTransfer.dispatch_date,
-      receive_date: plainTransfer.receive_date,
-
-      expected_delivery_date: plainTransfer.expected_delivery_date || null,
-      expected_delivery_time: plainTransfer.expected_delivery_time || null,
-
-      pickup_address: plainTransfer.pickup_address || null,
-      delivery_address: plainTransfer.delivery_address || null,
-
-      e_way_bill_url: plainTransfer.e_way_bill_url || null,
-
-      driver_details: {
-        driver_name: plainTransfer.driver_name || null,
-        driver_phone: plainTransfer.driver_phone || null,
-        vehicle_number: plainTransfer.vehicle_number || null,
-        tracking_number: plainTransfer.tracking_number || null,
-        driver_photo_url: plainTransfer.driver_photo_url || null,
+    const selectedDistrict = await Store.findOne({
+      where: {
+        id: district_organization_id,
+        organization_level: {
+          [Op.in]: ["district", "District", "DISTRICT"],
+        },
+        is_active: true,
       },
+      transaction: t,
+    });
 
-      live_tracking: {
-        is_tracking_active: plainTransfer.is_tracking_active || false,
-        last_latitude: plainTransfer.last_latitude || null,
-        last_longitude: plainTransfer.last_longitude || null,
-        last_tracked_at: plainTransfer.last_tracked_at || null,
+    if (!selectedDistrict) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Selected district not found or inactive",
+      });
+    }
+
+    const requesterStore = await Store.findOne({
+      where: {
+        id: originalRequest.from_organization_id,
       },
+      transaction: t,
+    });
 
-      media: {
-        dispatch_image_url: plainTransfer.dispatch_image_url || null,
-        dispatch_video_url: plainTransfer.dispatch_video_url || null,
-        receive_image_url: plainTransfer.receive_image_url || null,
-        e_way_bill_url: plainTransfer.e_way_bill_url || null,
+    if (!requesterStore) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Original requester store not found",
+      });
+    }
+
+    const alreadyForwarded = await StockRequest.findOne({
+      where: {
+        parent_request_id: originalRequest.id,
+        to_organization_id: selectedDistrict.id,
+        request_source: "forwarded",
       },
+      transaction: t,
+    });
 
-      created_by: {
-        id: plainTransfer.created_by || null,
-        name: pickUserName(userMap.get(Number(plainTransfer.created_by))),
+    if (alreadyForwarded) {
+      await t.rollback();
+      return res.status(409).json({
+        success: false,
+        message: "This request is already assigned to selected district",
+        data: {
+          forwarded_request_id: alreadyForwarded.id,
+          forwarded_request_no: alreadyForwarded.request_no,
+        },
+      });
+    }
+
+    const forwardedRequest = await StockRequest.create(
+      {
+        request_no: makeForwardRequestNo(user.organization_id, selectedDistrict.id),
+
+        // Head → District B
+        from_organization_id: user.organization_id,
+        from_store_code: user.store_code || null,
+        from_store_name: user.store_name || "Head Office",
+
+        to_organization_id: selectedDistrict.id,
+        to_store_code: selectedDistrict.store_code,
+        to_store_name: selectedDistrict.store_name,
+
+        // important link
+        parent_request_id: originalRequest.id,
+        request_source: "forwarded",
+
+        forwarded_by: user.id,
+        forwarded_at: new Date(),
+        forward_note: notes || null,
+
+        // District B को actual delivery District A करनी है
+        final_to_organization_id: requesterStore.id,
+        final_to_store_code: requesterStore.store_code,
+        final_to_store_name: requesterStore.store_name,
+        final_to_address: requesterStore.address || null,
+        final_to_city: requesterStore.city || null,
+        final_to_state: requesterStore.state || null,
+        final_to_pincode: requesterStore.pincode || null,
+        final_to_latitude: requesterStore.latitude || null,
+        final_to_longitude: requesterStore.longitude || null,
+
+        priority: originalRequest.priority || "medium",
+        category: originalRequest.category || null,
+        notes:
+          notes ||
+          `Assigned by Head. Deliver directly to ${requesterStore.store_name}.`,
+
+        status: "pending",
+        created_by: user.id,
       },
+      { transaction: t }
+    );
 
-      approved_by: {
-        id: plainTransfer.approved_by || null,
-        name: pickUserName(userMap.get(Number(plainTransfer.approved_by))),
+    const childItems = originalRequest.request_items.map((item) => ({
+      request_id: forwardedRequest.id,
+      item_id: item.item_id,
+      request_qty: item.request_qty,
+      request_weight: item.request_weight,
+      approved_qty: null,
+      approved_weight: null,
+      rate: item.rate || null,
+      remarks: item.remarks || null,
+    }));
+
+    await StockRequestItem.bulkCreate(childItems, { transaction: t });
+
+    originalRequest.status = "forwarded";
+    originalRequest.forwarded_by = user.id;
+    originalRequest.forwarded_at = new Date();
+    originalRequest.forward_note = notes || null;
+    await originalRequest.save({ transaction: t });
+
+    await ActivityLog.create(
+      {
+        organization_id: user.organization_id,
+        user_id: user.id,
+        action: "STOCK_REQUEST_ASSIGNED_DIRECT_DELIVERY",
+        module_name: "stock_request",
+        reference_id: forwardedRequest.id,
+        reference_no: forwardedRequest.request_no,
+        title: "Stock request assigned to district",
+        description: `${originalRequest.request_no} assigned to ${selectedDistrict.store_name} for direct delivery to ${requesterStore.store_name}`,
+        meta: {
+          original_request_id: originalRequest.id,
+          original_request_no: originalRequest.request_no,
+          forwarded_request_id: forwardedRequest.id,
+          forwarded_request_no: forwardedRequest.request_no,
+          assigned_to_organization_id: selectedDistrict.id,
+          final_to_organization_id: requesterStore.id,
+        },
+        icon: "transfer",
+        color: "blue",
       },
+      { transaction: t }
+    );
 
-      dispatched_by: {
-        id: plainTransfer.dispatched_by || null,
-        name: pickUserName(userMap.get(Number(plainTransfer.dispatched_by))),
+    await SystemActivity.create(
+      {
+        title: "Stock request assigned for direct delivery",
+        description: `Head assigned ${originalRequest.request_no} to ${selectedDistrict.store_name}. Delivery to ${requesterStore.store_name}.`,
+        activity_type: "stock_request_assigned_direct_delivery",
+        module_name: "stock_request",
+        reference_id: forwardedRequest.id,
+        reference_no: forwardedRequest.request_no,
+        state_code: selectedDistrict.state_code || null,
+        district_code: selectedDistrict.district_code || null,
+        store_code: selectedDistrict.store_code || null,
+        created_by: user.id,
+        metadata: {
+          original_request_id: originalRequest.id,
+          forwarded_request_id: forwardedRequest.id,
+          final_delivery_store_name: requesterStore.store_name,
+        },
       },
+      { transaction: t }
+    );
 
-      received_by: {
-        id: plainTransfer.received_by || null,
-        name: pickUserName(userMap.get(Number(plainTransfer.received_by))),
-      },
+    await t.commit();
 
-      products: (plainTransfer.transfer_items || []).map((row) => ({
-        id: row.id,
-        item_id: row.item_id,
-        qty: Number(row.qty || 0),
-        weight: Number(row.weight || 0),
-        remarks: row.remarks || null,
-
-        item_name: row.item?.item_name || null,
-        article_code: row.item?.article_code || null,
-        sku_code: row.item?.sku_code || null,
-        category: row.item?.category || null,
-        metal_type: row.item?.metal_type || null,
-        purity: row.item?.purity || null,
-        rate: Number(row.item?.sale_rate || 0),
-        gross_weight: Number(row.item?.gross_weight || 0),
-        net_weight: Number(row.item?.net_weight || 0),
-      })),
-    };
-
-    return res.status(200).json({
+    return res.status(201).json({
       success: true,
-      message: "Transfer details fetched successfully",
-      data,
+      message: "Request assigned to district for direct delivery successfully",
+      data: {
+        original_request: {
+          id: originalRequest.id,
+          request_no: originalRequest.request_no,
+          status: originalRequest.status,
+        },
+        forwarded_request: {
+          id: forwardedRequest.id,
+          request_no: forwardedRequest.request_no,
+          parent_request_id: forwardedRequest.parent_request_id,
+          request_source: forwardedRequest.request_source,
+          from_organization_id: forwardedRequest.from_organization_id,
+          from_store_code: forwardedRequest.from_store_code,
+          from_store_name: forwardedRequest.from_store_name,
+          to_organization_id: forwardedRequest.to_organization_id,
+          to_store_code: forwardedRequest.to_store_code,
+          to_store_name: forwardedRequest.to_store_name,
+          final_to_organization_id: forwardedRequest.final_to_organization_id,
+          final_to_store_code: forwardedRequest.final_to_store_code,
+          final_to_store_name: forwardedRequest.final_to_store_name,
+          final_to_address: forwardedRequest.final_to_address,
+          status: forwardedRequest.status,
+        },
+      },
     });
   } catch (error) {
-    console.error("getAnyTransferDetailsForHead error:", error);
+    await t.rollback();
+
+    console.error("forwardRequestToDistrictDirectDelivery error:", error);
+
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch transfer details",
+      message: "Failed to assign request to district",
       error: error.message,
     });
   }

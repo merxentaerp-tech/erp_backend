@@ -1,11 +1,20 @@
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
+import QRCode from "qrcode";
+// import QRCode from "qrcode";
+import path from "path";
+import { pathToFileURL } from "url";
+import crypto from "crypto";
 import Item from "../model/item.js";
 import Stock from "../model/stockrecord.js";
 import StockMovement from "../model/stockmovement.js";
+// import StockMovement from "../models/StockMovement.js";
+import ActivityLog from "../model/activityLog.js";
+import SystemActivity from "../model/systemActivity.js";
 import Store from "../model/Store.js";
 import { createActivityLog } from "../service/activity.service.js";
-
+// import {generateItemQR} from "../service/qrgen.js"
+import XLSX from "xlsx";
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -18,6 +27,44 @@ const pickAttr = (model, attrs = []) => {
   return null;
 };
 
+const QR_SECRET = process.env.QR_SECRET || "change-this-secret";
+
+const signQRPayload = (payload) => {
+  return crypto
+    .createHmac("sha256", QR_SECRET)
+    .update(JSON.stringify(payload))
+    .digest("hex");
+};
+
+const generateItemQR = async (item) => {
+  const qrCode = item.sku_code || item.article_code;
+
+  if (!qrCode) {
+    throw new Error("QR value missing");
+  }
+
+  const payload = {
+    type: "ITEM",
+    item_id: item.id,
+    code: qrCode,
+    organization_id: item.organization_id,
+  };
+
+  const qrValue = JSON.stringify({
+    payload,
+    signature: signQRPayload(payload),
+  });
+
+  const qrCodeUrl = await QRCode.toDataURL(qrValue, {
+    width: 300,
+    margin: 2,
+  });
+
+  return {
+    qr_code_value: qrValue,
+    qr_code_url: qrCodeUrl,
+  };
+};
 const getCreatedKey = (model) =>
   pickAttr(model, ["created_at", "createdAt"]) || "id";
 
@@ -1113,34 +1160,188 @@ export const addStockIn = async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
-    const { item_id, qty = 1, weight = 0, remarks } = req.body;
+    const {
+      item_id,
+      item_name,
+      item_code,
+
+      // ✅ REQUIRED IN ITEM MODEL
+      metal_type,
+      category,
+
+      qty = 1,
+      purchase_price = 0,
+      selling_price = 0,
+      making_charge = 0,
+      purity,
+      net_weight = 0,
+      stone_weight = 0,
+      remarks,
+    } = req.body;
+
     const user = req.user;
 
-    const itemWhere = { id: item_id };
-
-    if (user?.role !== "super_admin") {
-      itemWhere.organization_id = user?.organization_id;
-    }
-
-    const item = await Item.findOne({
-      where: itemWhere,
-      transaction: t,
-    });
-
-    if (!item) {
+    if (!user?.organization_id) {
       await t.rollback();
-      return res.status(404).json({
+      return res.status(401).json({
         success: false,
-        message: "Item not found",
+        message: "Unauthorized user",
       });
     }
 
+    let item;
+
+    const incomingQty = Number(qty || 0);
+    const incomingWeight = Number(net_weight || 0);
+
+    if (incomingQty <= 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Quantity must be greater than 0",
+      });
+    }
+
+    if (incomingWeight < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Net weight cannot be negative",
+      });
+    }
+
+    // 🔥 CASE 1: Existing item
+    if (item_id) {
+      item = await Item.findOne({
+        where: {
+          id: item_id,
+          ...(user?.role !== "super_admin" && {
+            organization_id: user.organization_id,
+          }),
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!item) {
+        await t.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Item not found",
+        });
+      }
+
+      // ✅ Existing item me QR missing ho to generate kar do
+      if (!item.qr_code_value || !item.qr_code_url) {
+        const qr = await generateItemQR(item);
+
+        if (!qr?.qr_code_value || !qr?.qr_code_url) {
+          throw new Error("QR generation failed");
+        }
+
+        await item.update(
+          {
+            qr_code_value: qr.qr_code_value,
+            qr_code_url: qr.qr_code_url,
+          },
+          { transaction: t }
+        );
+      }
+    }
+
+    // 🔥 CASE 2: New item create UI form se
+    else {
+      if (!item_name) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Item name is required",
+        });
+      }
+
+      if (!metal_type) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Metal type is required",
+        });
+      }
+
+      if (!category) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Category is required",
+        });
+      }
+
+      if (!purity) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Purity is required",
+        });
+      }
+
+      const article_code =
+        item_code || `ART-${user.store_code}-${Date.now()}`;
+
+      const sku_code = `SKU-${user.store_code}-${Date.now()}`;
+
+      item = await Item.create(
+        {
+          item_name,
+          article_code,
+          sku_code,
+
+          metal_type,
+          category,
+
+          purchase_rate: purchase_price,
+          sale_rate: selling_price,
+          making_charge,
+          purity,
+
+          net_weight,
+          gross_weight: net_weight,
+          stone_weight,
+
+          current_status: "in_stock",
+
+          organization_id: user.organization_id,
+
+          // Agar model me store_code hai to below line ko:
+          // store_code: user.store_code,
+          // kar dena.
+          storeCode: user.store_code,
+        },
+        { transaction: t }
+      );
+
+      // 🔥 QR generate mandatory
+      const qr = await generateItemQR(item);
+
+      if (!qr?.qr_code_value || !qr?.qr_code_url) {
+        throw new Error("QR generation failed");
+      }
+
+      await item.update(
+        {
+          qr_code_value: qr.qr_code_value,
+          qr_code_url: qr.qr_code_url,
+        },
+        { transaction: t }
+      );
+    }
+
+    // 🔥 STOCK HANDLE
     let stock = await Stock.findOne({
       where: {
         item_id: item.id,
         organization_id: item.organization_id,
       },
       transaction: t,
+      lock: t.LOCK.UPDATE,
     });
 
     if (!stock) {
@@ -1150,39 +1351,40 @@ export const addStockIn = async (req, res) => {
           item_id: item.id,
           available_qty: 0,
           available_weight: 0,
-          reserved_qty: 0,
-          reserved_weight: 0,
-          transit_qty: 0,
-          transit_weight: 0,
-          damaged_qty: 0,
-          damaged_weight: 0,
-          dead_qty: 0,
-          dead_weight: 0,
         },
         { transaction: t }
       );
     }
 
-    const incomingQty = Number(qty || 0);
-    const incomingWeight = Number(weight || item.gross_weight || 0);
+    const previousAvailableQty = Number(stock.available_qty || 0);
+    const previousAvailableWeight = Number(stock.available_weight || 0);
 
     await stock.update(
       {
-        available_qty: Number(stock.available_qty) + incomingQty,
-        available_weight: Number(stock.available_weight) + incomingWeight,
+        available_qty: previousAvailableQty + incomingQty,
+        available_weight: previousAvailableWeight + incomingWeight,
       },
       { transaction: t }
     );
 
     const previousStatus = item.current_status;
 
-    await item.update({ current_status: "in_stock" }, { transaction: t });
+    await item.update(
+      {
+        current_status: "in_stock",
+      },
+      { transaction: t }
+    );
 
-    const movement = await StockMovement.create(
+    // 🔥 STOCK MOVEMENT
+    await StockMovement.create(
       {
         item_id: item.id,
         organization_id: item.organization_id,
-        movement_type: "stock_in",
+
+        // ✅ DB constraint ke according allowed value
+        movement_type: "purchase",
+
         qty: incomingQty,
         weight: incomingWeight,
         previous_status: previousStatus,
@@ -1194,23 +1396,74 @@ export const addStockIn = async (req, res) => {
       { transaction: t }
     );
 
-    await createActivityLog({
+    // 🔥 RECENT ACTIVITY + LOGS
+    const activityTitle = item_id
+      ? "Stock inward completed"
+      : "New item added to stock";
+
+    const activityDescription = item_id
+      ? `${item.item_name} stock increased by ${incomingQty} qty at ${
+          user?.store_code || "store"
+        }`
+      : `${item.item_name} added with ${incomingQty} qty at ${
+          user?.store_code || "store"
+        }`;
+
+    const activityMeta = {
+      item_id: item.id,
+      item_name: item.item_name,
+      article_code: item.article_code,
+      sku_code: item.sku_code,
+      metal_type: item.metal_type,
+      category: item.category,
+      qty: incomingQty,
+      weight: incomingWeight,
+      previous_available_qty: previousAvailableQty,
+      new_available_qty: previousAvailableQty + incomingQty,
+      previous_available_weight: previousAvailableWeight,
+      new_available_weight: previousAvailableWeight + incomingWeight,
+      purchase_price,
+      selling_price,
+      making_charge,
+      purity: item.purity,
       organization_id: item.organization_id,
-      user_id: user?.id || null,
-      module: "stock",
-      action: "stock_in",
-      entity_type: "item",
-      entity_id: item.id,
-      title: "Stock added",
-      description: `${item.item_name} added into stock`,
-      metadata: {
-        item_id: item.id,
-        article_code: item.article_code,
-        movement_id: movement.id,
-        qty: incomingQty,
-        weight: incomingWeight,
+      store_code: user?.store_code || item.store_code || item.storeCode || null,
+      movement_type: "purchase",
+      reference_type: "manual_stock_in",
+      qr_generated: Boolean(item.qr_code_value && item.qr_code_url),
+    };
+
+    await ActivityLog.create(
+      {
+        organization_id: item.organization_id,
+        user_id: user?.id || null,
+        action: item_id ? "STOCK_IN" : "ITEM_CREATED_STOCK_IN",
+        module_name: "inventory",
+        reference_id: item.id,
+        reference_no: item.article_code,
+        title: activityTitle,
+        description: activityDescription,
+        meta: activityMeta,
+        icon: "package-plus",
+        color: "green",
       },
-    });
+      { transaction: t }
+    );
+
+    await SystemActivity.create(
+      {
+        title: activityTitle,
+        description: activityDescription,
+        activity_type: item_id ? "stock_in" : "item_created",
+        module_name: "inventory",
+        reference_id: item.id,
+        reference_no: item.article_code,
+        state_code: user?.state_code || null,
+        district_code: user?.district_code || null,
+        store_code: user?.store_code || item.store_code || item.storeCode || null,
+      },
+      { transaction: t }
+    );
 
     await t.commit();
 
@@ -1224,11 +1477,992 @@ export const addStockIn = async (req, res) => {
     });
   } catch (error) {
     await t.rollback();
-    console.error("addStockIn error:", error);
 
     return res.status(500).json({
       success: false,
       message: "Failed to add stock inward",
+      error: error.message,
+    });
+  }
+};const clean = (value) => {
+  if (value === undefined || value === null) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+};
+
+const toNumber = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === "") return fallback;
+
+  const cleaned = String(value)
+    .replace(/₹/g, "")
+    .replace(/,/g, "")
+    .replace(/[^\d.-]/g, "")
+    .trim();
+
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const normalizeUnit = (unit) => {
+  const u = clean(unit).toLowerCase();
+
+  if (["g", "gm", "gms", "gram", "grams"].includes(u)) return "g";
+  if (["kg", "kilogram", "kilograms"].includes(u)) return "kg";
+  if (["mg", "milligram", "milligrams"].includes(u)) return "mg";
+  if (["piece", "pieces", "pcs", "pc", "nos"].includes(u)) return "pcs";
+  if (["pair", "pairs"].includes(u)) return "pair";
+  if (["set", "sets"].includes(u)) return "set";
+
+  return u || "pcs";
+};
+
+const normalizeMetalType = (itemName) => {
+  const text = clean(itemName).toLowerCase();
+
+  if (text.includes("silver")) return "Silver";
+  return "Gold";
+};
+
+const generateCode = (storeCode, prefix, i) => {
+  return `${prefix}-${storeCode}-${Date.now()}-${i}`;
+};
+
+const isPdfFile = (file) => {
+  const fileName = file.originalname.toLowerCase();
+
+  return file.mimetype === "application/pdf" || fileName.endsWith(".pdf");
+};
+
+const isExcelFile = (file) => {
+  const fileName = file.originalname.toLowerCase();
+
+  return (
+    file.mimetype ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    file.mimetype === "application/vnd.ms-excel" ||
+    fileName.endsWith(".xlsx") ||
+    fileName.endsWith(".xls")
+  );
+};
+
+/* =========================================================
+   PDF PARSER - DELIVERY CHALLAN ITEM TABLE ONLY
+========================================================= */
+
+const PDF_STANDARD_FONT_PATH = pathToFileURL(
+  path.join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts")
+).href + "/";
+
+const cleanPdf = (value = "") =>
+  String(value)
+    .replace(/\s+/g, " ")
+    .replace(/₹/g, "")
+    .trim();
+
+const pdfNum = (value) => {
+  if (value === undefined || value === null || value === "") return 0;
+
+  const num = Number(
+    String(value)
+      .replace(/₹/g, "")
+      .replace(/,/g, "")
+      .replace(/[^\d.-]/g, "")
+      .trim()
+  );
+
+  return Number.isFinite(num) ? num : 0;
+};
+
+const getPdfCategory = (itemName = "") => {
+  const value = cleanPdf(itemName);
+  if (!value.includes("/")) return "General";
+
+  return cleanPdf(value.split("/").pop()) || "General";
+};
+
+const isValidProductCode = (value = "") => {
+  return /^[A-Z]{2,}(?:-[A-Z0-9]+){3,}-\d{3,}$/i.test(cleanPdf(value));
+};
+
+const isValidHsn = (value = "") => {
+  return /^\d{6,10}$/.test(cleanPdf(value));
+};
+
+const isValidPurity = (value = "") => {
+  return /^(18|20|22|24)\s*(kt|k)?\s*\/?\s*\d{3}$/i.test(cleanPdf(value));
+};
+const isValidHuid = (value = "") => {
+  return /^HUID[A-Z0-9]+$/i.test(cleanPdf(value));
+};
+
+const groupByY = (items, tolerance = 2.5) => {
+  const lines = [];
+
+  for (const item of items) {
+    const text = cleanPdf(item.str);
+    if (!text) continue;
+
+    const x = item.transform[4];
+    const y = item.transform[5];
+
+    let line = lines.find((l) => Math.abs(l.y - y) <= tolerance);
+
+    if (!line) {
+      line = { y, items: [] };
+      lines.push(line);
+    }
+
+    line.items.push({ x, y, text });
+  }
+
+  return lines
+    .sort((a, b) => b.y - a.y)
+    .map((line) => ({
+      y: line.y,
+      items: line.items.sort((a, b) => a.x - b.x),
+      text: line.items
+        .sort((a, b) => a.x - b.x)
+        .map((i) => i.text)
+        .join(" "),
+    }));
+};
+
+const getCellText = (line, minX, maxX) => {
+  return cleanPdf(
+    line.items
+      .filter((i) => i.x >= minX && i.x < maxX)
+      .map((i) => i.text)
+      .join(" ")
+  );
+};
+
+const parsePdfRows = async (buffer) => {
+  try {
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
+    const pdf = await pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      standardFontDataUrl: PDF_STANDARD_FONT_PATH,
+      disableWorker: true,
+      disableFontFace: true,
+    }).promise;
+
+    const rows = [];
+
+    for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+      const page = await pdf.getPage(pageNo);
+      const textContent = await page.getTextContent();
+
+      const lines = groupByY(textContent.items, 3);
+
+      for (const line of lines) {
+        const item_name = getCellText(line, 65, 136);
+        const product_code = getCellText(line, 136, 205);
+        const qty = getCellText(line, 228, 250);
+        const hsn_code = getCellText(line, 255, 288);
+        const purity = getCellText(line, 288, 318);
+        const net_weight = getCellText(line, 365, 390);
+        const rate = getCellText(line, 400, 425);
+        const making_charge = getCellText(line, 435, 458);
+        const huid_code = getCellText(line, 458, 505);
+        const base_value = getCellText(line, 525, 560);
+
+        if (!isValidProductCode(product_code)) continue;
+        if (!isValidHsn(hsn_code)) continue;
+        if (!isValidPurity(purity)) continue;
+
+        rows.push({
+          source_row_no: rows.length + 1,
+
+          item_name,
+          product_code,
+
+          qty: pdfNum(qty) || 1,
+          hsn_code,
+          purity,
+
+          net_weight: pdfNum(net_weight),
+          gross_weight: pdfNum(net_weight),
+
+          rate: pdfNum(rate),
+          making_charge: pdfNum(making_charge),
+
+          huid_code: isValidHuid(huid_code) ? huid_code : "",
+          amount: pdfNum(base_value),
+          base_value: pdfNum(base_value),
+
+          unit: "g",
+          metal_type: normalizeMetalType(item_name),
+          category: getPdfCategory(item_name),
+        });
+      }
+    }
+
+    const uniqueRows = [];
+    const seenProductCodes = new Set();
+
+    for (const row of rows) {
+      if (!row.product_code) continue;
+      if (seenProductCodes.has(row.product_code)) continue;
+
+      seenProductCodes.add(row.product_code);
+
+      uniqueRows.push({
+        ...row,
+        source_row_no: uniqueRows.length + 1,
+      });
+    }
+
+    console.log("PDF PARSED ROWS:", uniqueRows);
+
+    if (!uniqueRows.length) {
+      return {
+        success: false,
+        message: "No valid item rows found in PDF challan",
+        rows: [],
+      };
+    }
+
+    return {
+      success: true,
+      rows: uniqueRows,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: `PDF parse failed: ${err.message}`,
+      rows: [],
+    };
+  }
+};
+
+/* =========================================================
+   EXCEL PARSER
+========================================================= */
+
+const parseExcelRows = (buffer) => {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+
+  if (!sheetName) {
+    return {
+      success: false,
+      message: "No sheet found in uploaded file",
+      rows: [],
+    };
+  }
+
+  const sheet = workbook.Sheets[sheetName];
+
+  const rawRows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: "",
+    raw: false,
+  });
+
+  let headerIndex = rawRows.findIndex((row) => {
+    const rowText = row.map(clean).join(" ").toLowerCase();
+
+    return (
+      rowText.includes("material description") &&
+      rowText.includes("product code") &&
+      rowText.includes("hsn")
+    );
+  });
+
+  if (headerIndex === -1) {
+    headerIndex = rawRows.findIndex((row) =>
+      row.some((cell) => clean(cell).toUpperCase() === "PARTICULAR")
+    );
+  }
+
+  if (headerIndex === -1) {
+    return {
+      success: false,
+      message: "Invalid challan format",
+      rows: [],
+    };
+  }
+
+  const headerRow = rawRows[headerIndex].map((cell) =>
+    clean(cell).toLowerCase()
+  );
+
+  const findCol = (...names) => {
+    return headerRow.findIndex((header) =>
+      names.some((name) => header.includes(name))
+    );
+  };
+
+  const hasDeliveryChallanHeader = headerRow.some((header) =>
+    header.includes("material description")
+  );
+
+  /**
+   * Old PARTICULAR format
+   */
+  if (!hasDeliveryChallanHeader) {
+    const dataRows = rawRows.slice(headerIndex + 1);
+
+    const rows = dataRows
+      .map((row, index) => {
+        const item_name = clean(row[1]);
+        if (!item_name) return null;
+
+        const unit = normalizeUnit(row[3]);
+        const qty = toNumber(row[4]);
+
+        return {
+          source_row_no: headerIndex + index + 2,
+
+          item_name,
+          product_code: "",
+
+          hsn_code: clean(row[2]),
+          unit,
+          qty,
+
+          rate: toNumber(row[5]),
+          amount: toNumber(row[6]),
+          base_value: toNumber(row[6]),
+
+          purity: "NA",
+          net_weight: unit === "g" ? qty : 0,
+          gross_weight: unit === "g" ? qty : 0,
+
+          making_charge: 0,
+          huid_code: "",
+
+          metal_type: normalizeMetalType(item_name),
+          category: "General",
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      success: true,
+      rows,
+    };
+  }
+
+  /**
+   * Delivery Challan format
+   */
+  const colItem = findCol("material description", "description", "particular");
+  const colProduct = findCol("product code", "sku", "article");
+  const colQty = findCol("qty", "quantity");
+  const colHsn = findCol("hsn");
+  const colPurity = findCol("purity", "karat");
+  const colNetWeight = findCol("net weight", "weight");
+  const colRate = findCol("rate");
+  const colMaking = findCol("making");
+  const colHuid = findCol("huid");
+  const colBaseValue = findCol("base value", "amount", "value");
+
+  const requiredCols = [
+    { name: "Material Description", index: colItem },
+    { name: "Product Code", index: colProduct },
+    { name: "Qty", index: colQty },
+    { name: "HSN Code", index: colHsn },
+    { name: "Purity/Karat", index: colPurity },
+    { name: "Net Weight", index: colNetWeight },
+  ];
+
+  const missingCol = requiredCols.find((col) => col.index === -1);
+
+  if (missingCol) {
+    return {
+      success: false,
+      message: `${missingCol.name} column missing in Excel challan`,
+      rows: [],
+    };
+  }
+
+  const dataRows = rawRows.slice(headerIndex + 1);
+
+  const rows = dataRows
+    .map((row, index) => {
+      const item_name = clean(row[colItem]);
+      const product_code = clean(row[colProduct]);
+
+      if (!item_name && !product_code) return null;
+
+      const netWeight = toNumber(row[colNetWeight]);
+
+      return {
+        source_row_no: headerIndex + index + 2,
+
+        item_name,
+        product_code,
+
+        qty: toNumber(row[colQty]) || 1,
+        hsn_code: clean(row[colHsn]),
+        purity: clean(row[colPurity]) || "NA",
+
+        net_weight: netWeight,
+        gross_weight: netWeight,
+
+        rate: colRate !== -1 ? toNumber(row[colRate]) : 0,
+        making_charge: colMaking !== -1 ? toNumber(row[colMaking]) : 0,
+        huid_code: colHuid !== -1 ? clean(row[colHuid]) : "",
+        amount: colBaseValue !== -1 ? toNumber(row[colBaseValue]) : 0,
+        base_value: colBaseValue !== -1 ? toNumber(row[colBaseValue]) : 0,
+
+        unit: "g",
+        metal_type: normalizeMetalType(item_name),
+        category: getPdfCategory(item_name),
+      };
+    })
+    .filter(Boolean);
+
+  if (!rows.length) {
+    return {
+      success: false,
+      message: "No item rows found in Excel challan",
+      rows: [],
+    };
+  }
+
+  return {
+    success: true,
+    rows,
+  };
+};
+
+/* =========================================================
+   MAIN CONTROLLER
+========================================================= */
+
+export const uploadStockInItems = async (req, res) => {
+  const t = await sequelize.transaction();
+
+  try {
+    if (!req.file) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "File is required",
+      });
+    }
+
+    const user = req.user || {};
+
+    const organization_id = user.organization_id;
+    const store_code = user.store_code;
+    const store_name = user.store_name || user.storeName || null;
+    const state_code = user.state_code || null;
+    const district_code = user.district_code || null;
+    const user_id = user.id || null;
+
+    if (!organization_id || !store_code) {
+      await t.rollback();
+      return res.status(401).json({
+        success: false,
+        message: "organization_id or store_code missing in login token",
+      });
+    }
+
+    let parsedResult;
+
+    console.log("UPLOAD FILE DEBUG:", {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+    });
+
+    if (isPdfFile(req.file)) {
+      console.log("PDF parser running...");
+      parsedResult = await parsePdfRows(req.file.buffer);
+    } else if (isExcelFile(req.file)) {
+      console.log("Excel parser running...");
+      parsedResult = parseExcelRows(req.file.buffer);
+    } else {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Only PDF, XLSX and XLS files are allowed",
+      });
+    }
+
+    if (!parsedResult.success) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: parsedResult.message,
+      });
+    }
+
+    const dataRows = parsedResult.rows || [];
+
+    if (!dataRows.length) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "No valid stock rows found in uploaded file",
+      });
+    }
+
+    const uploaded = [];
+    const skipped = [];
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i];
+      const rowNo = row.source_row_no || i + 1;
+
+      const item_name = clean(row.item_name);
+      const product_code = clean(row.product_code);
+      const hsn_code = clean(row.hsn_code);
+      const unit = normalizeUnit(row.unit || "g");
+
+      const qty = toNumber(row.qty);
+      const rate = toNumber(row.rate);
+      const amount = toNumber(row.amount || row.base_value);
+
+      const purity = clean(row.purity) || "NA";
+      const net_weight = toNumber(row.net_weight);
+      const gross_weight = toNumber(row.gross_weight || row.net_weight);
+      const making_charge = toNumber(row.making_charge);
+      const huid_code = clean(row.huid_code);
+
+      const metal_type = normalizeMetalType(row.metal_type || item_name);
+      const category = clean(row.category) || "General";
+
+      if (!item_name && !product_code) {
+        continue;
+      }
+
+      if (!item_name) {
+        skipped.push({
+          row: rowNo,
+          item_name: item_name || product_code,
+          reason: "Material Description required",
+        });
+        continue;
+      }
+
+      if (!product_code) {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "Product Code required",
+        });
+        continue;
+      }
+
+      if (!["g", "kg", "mg", "pcs", "pair", "set"].includes(unit)) {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "Invalid UoM",
+        });
+        continue;
+      }
+
+      if (qty <= 0) {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "Qty required",
+        });
+        continue;
+      }
+
+      if (!hsn_code) {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "HSN Code required",
+        });
+        continue;
+      }
+
+      if (!purity || purity === "NA") {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "Purity/Karat required",
+        });
+        continue;
+      }
+
+      const finalGrossWeight = gross_weight || net_weight || 0;
+      const finalNetWeight = net_weight || finalGrossWeight;
+
+      if (unit === "g" && finalNetWeight <= 0) {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "Net Weight required",
+        });
+        continue;
+      }
+
+      const article_code = product_code;
+      const sku_code = generateCode(store_code, "SKU", i + 1);
+
+      const existingItem = await Item.findOne({
+        where: {
+          [Op.or]: [{ article_code }, { sku_code: product_code }],
+        },
+        transaction: t,
+      });
+
+      if (existingItem) {
+        skipped.push({
+          row: rowNo,
+          item_name,
+          reason: "Duplicate product code",
+        });
+        continue;
+      }
+
+      const item = await Item.create(
+        {
+          article_code,
+          sku_code,
+
+          item_name,
+          metal_type,
+          category,
+          details: "Uploaded from delivery challan",
+          purity,
+
+          gross_weight: finalGrossWeight,
+          net_weight: finalNetWeight,
+          stone_weight: 0,
+          stone_amount: 0,
+          making_charge,
+
+          purchase_rate: rate,
+          sale_rate: rate,
+          hsn_code,
+          unit,
+          huid_code,
+
+          current_status: "in_stock",
+
+          store_id: organization_id,
+          storeCode: store_code,
+          storeName: store_name,
+          organization_id,
+
+          is_active: true,
+          isItemAudit: false,
+          itemAuditAt: null,
+          is_item_audit: false,
+          item_audit_at: null,
+          last_audit_status: null,
+          last_audit_reason: null,
+        },
+        { transaction: t }
+      );
+
+      /*
+        IMPORTANT:
+        qr_code_value me ab JSON payload nahi save hoga.
+        qr_code_value = sku_code
+        qr_code_url = QR image data/base64/url
+      */
+      let qr = {
+        qr_code_value: sku_code,
+        qr_code_url: null,
+      };
+
+      try {
+        qr = await generateItemQR({
+          ...item.toJSON(),
+          qr_code_value: sku_code,
+          sku_code,
+          article_code,
+          product_code,
+        });
+
+        await item.update(
+          {
+            qr_code_value: sku_code,
+            qr_code_url: qr.qr_code_url,
+          },
+          { transaction: t }
+        );
+
+        qr.qr_code_value = sku_code;
+      } catch (qrErr) {
+        console.error("QR generation failed:", qrErr.message);
+
+        await item.update(
+          {
+            qr_code_value: sku_code,
+            qr_code_url: null,
+          },
+          { transaction: t }
+        );
+
+        qr = {
+          qr_code_value: sku_code,
+          qr_code_url: null,
+        };
+      }
+
+      const available_qty = qty;
+      const available_weight = unit === "g" ? finalNetWeight : 0;
+
+      await Stock.create(
+        {
+          item_id: item.id,
+          organization_id,
+          store_code,
+
+          available_qty,
+          available_weight,
+
+          reserved_qty: 0,
+          reserved_weight: 0,
+          transit_qty: 0,
+          transit_weight: 0,
+          damaged_qty: 0,
+          damaged_weight: 0,
+        },
+        { transaction: t }
+      );
+
+      await StockMovement.create(
+        {
+          item_id: item.id,
+          organization_id,
+          store_code,
+
+          // DB check constraint ke according lowercase rakha hai
+          movement_type: "purchase",
+
+          qty: available_qty,
+          weight: available_weight,
+
+          reference_type: "stock_upload",
+          reference_id: item.id,
+          reference_no: article_code,
+
+          remarks: "Stock added via delivery challan upload",
+          created_by: user_id,
+        },
+        { transaction: t }
+      );
+
+      await ActivityLog.create(
+        {
+          organization_id,
+          user_id,
+
+          action: "stock_upload",
+          module_name: "inventory",
+
+          reference_id: item.id,
+          reference_no: article_code,
+
+          title: "Stock added via upload",
+          description: `${item_name} (${qty} ${unit}) added to inventory`,
+
+          meta: {
+            file_name: req.file.originalname,
+            file_type: req.file.mimetype,
+
+            item_id: item.id,
+            article_code,
+            sku_code,
+            product_code,
+
+            item_name,
+            hsn_code,
+            qty,
+            unit,
+            rate,
+            amount,
+            purity,
+            net_weight: finalNetWeight,
+            gross_weight: finalGrossWeight,
+            making_charge,
+            huid_code,
+
+            store_code,
+            store_name,
+            organization_id,
+          },
+
+          icon: "activity",
+          color: "blue",
+        },
+        { transaction: t }
+      );
+
+      await SystemActivity.create(
+        {
+          title: "Stock Uploaded",
+          description: `${item_name} added to ${store_code}`,
+
+          activity_type: "stock_upload",
+          module_name: "inventory",
+
+          reference_id: item.id,
+          reference_no: article_code,
+
+          state_code,
+          district_code,
+          store_code,
+          store_name,
+
+          created_by: user_id,
+        },
+        { transaction: t }
+      );
+
+      uploaded.push({
+        row: rowNo,
+        item_id: item.id,
+
+        item_name,
+        product_code,
+        qty,
+        unit,
+
+        hsn_code,
+        purity,
+        net_weight: finalNetWeight,
+        gross_weight: finalGrossWeight,
+
+        rate,
+        making_charge,
+        huid_code,
+        base_value: amount,
+
+        article_code,
+        sku_code,
+
+        store_code,
+        store_name,
+        organization_id,
+
+        qr_code_value: sku_code,
+        qr_code_url: qr.qr_code_url,
+      });
+    }
+
+    await t.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "Stock-in uploaded successfully",
+      total_rows: dataRows.length,
+      uploaded_count: uploaded.length,
+      skipped_count: skipped.length,
+      uploaded,
+      skipped,
+    });
+  } catch (err) {
+    await t.rollback();
+
+    console.error("Upload failed:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Upload failed",
+      error: err.message,
+    });
+  }
+};
+
+
+export const getItemQR = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const user = req.user;
+
+    const where = { id: itemId };
+
+    if (user?.role !== "super_admin") {
+      where.organization_id = user.organization_id;
+    }
+
+    const item = await Item.findOne({
+      where,
+      attributes: [
+        "id",
+        "item_name",
+        "article_code",
+        "sku_code",
+        "qr_code_value",
+        "qr_code_url",
+      ],
+    });
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Item not found",
+      });
+    }
+
+    if (!item.qr_code_url) {
+      return res.status(404).json({
+        success: false,
+        message: "QR not generated for this item",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "QR fetched successfully",
+      data: {
+        item_id: item.id,
+        item_name: item.item_name,
+        article_code: item.article_code,
+        sku_code: item.sku_code,
+        qr_code_value: item.qr_code_value,
+        qr_code_url: item.qr_code_url,
+      },
+    });
+  } catch (error) {
+    console.error("getItemQR error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch item QR",
+      error: error.message,
+    });
+  }
+};
+
+export const getMyStoreItemQRs = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const where = {};
+
+    if (user?.role !== "super_admin") {
+      where.organization_id = user.organization_id;
+    }
+
+    const items = await Item.findAll({
+      where,
+      attributes: [
+        "id",
+        "item_name",
+        "article_code",
+        "sku_code",
+        "qr_code_value",
+        "qr_code_url",
+        "current_status",
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "QR list fetched successfully",
+      count: items.length,
+      data: items,
+    });
+  } catch (error) {
+    console.error("getMyStoreItemQRs error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch QR list",
       error: error.message,
     });
   }

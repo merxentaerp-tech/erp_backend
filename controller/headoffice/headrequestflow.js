@@ -1,6 +1,6 @@
 import { Op } from "sequelize";
 import sequelize from "../../config/db.js";
-
+import User from "../../model/user.js"
 import StockRequest from "../../model/StockRequest.js";
 import StockRequestItem from "../../model/stockRequestItem.js";
 import StockTransfer from "../../model/stockTransfer.js";
@@ -8,6 +8,8 @@ import StockTransferItem from "../../model/stockTransferItem.js";
 import Item from "../../model/item.js";
 import Task from "../../model/task.js";
 import SystemActivity from "../../model/systemActivity.js";
+import Store from "../../model/Store.js";
+import Stock from "../../model/stockrecord.js"
 import fs from "fs";
 
 // number convert
@@ -700,8 +702,9 @@ export const createHeadStockRequest = async (req, res) => {
     const user = req.user;
 
     const {
-      target_type, // "district" OR "retail"
-      to_store_id, // district ya retail store id
+      target_type,       // "district" OR "retail"
+      to_store_id,       // receiver store id
+      to_store_code,     // receiver store code
       items,
       priority,
       category,
@@ -718,10 +721,9 @@ export const createHeadStockRequest = async (req, res) => {
       });
     }
 
-    if (
-      !target_type ||
-      !["district", "retail"].includes(String(target_type).toLowerCase())
-    ) {
+    const receiverType = String(target_type || "").toLowerCase();
+
+    if (!["district", "retail"].includes(receiverType)) {
       await transaction.rollback();
       return res.status(400).json({
         success: false,
@@ -729,11 +731,11 @@ export const createHeadStockRequest = async (req, res) => {
       });
     }
 
-    if (!to_store_id) {
+    if (!to_store_id || !to_store_code) {
       await transaction.rollback();
       return res.status(400).json({
         success: false,
-        message: "to_store_id is required",
+        message: "to_store_id and to_store_code are required",
       });
     }
 
@@ -760,15 +762,11 @@ export const createHeadStockRequest = async (req, res) => {
       });
     }
 
-    const receiverType = String(target_type).toLowerCase();
-
     const receiverStore = await Store.findOne({
       where: {
-        id: to_store_id,
-        organization_level:
-          receiverType === "district"
-            ? { [Op.in]: ["district", "DISTRICT"] }
-            : { [Op.in]: ["retail", "RETAIL"] },
+        id: Number(to_store_id),
+        store_code: String(to_store_code).trim(),
+       organization_level: receiverType === "district" ? "District" : "Retail",
         is_active: true,
       },
       transaction,
@@ -778,10 +776,7 @@ export const createHeadStockRequest = async (req, res) => {
       await transaction.rollback();
       return res.status(404).json({
         success: false,
-        message:
-          receiverType === "district"
-            ? "District store not found"
-            : "Retail store not found",
+        message: "Invalid store_id or store_code mismatch",
       });
     }
 
@@ -799,6 +794,48 @@ export const createHeadStockRequest = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "No valid items found",
+      });
+    }
+
+    const itemIds = validItems.map((i) => i.item_id);
+
+    const receiverStocks = await Stock.findAll({
+      where: {
+        organization_id: receiverStore.id,
+        item_id: { [Op.in]: itemIds },
+      },
+      attributes: ["item_id", "available_qty"],
+      transaction,
+    });
+
+    const stockMap = new Map();
+
+    receiverStocks.forEach((stock) => {
+      stockMap.set(Number(stock.item_id), Number(stock.available_qty || 0));
+    });
+
+    const unavailableItems = validItems
+      .map((item) => {
+        const availableQty = stockMap.get(item.item_id) || 0;
+
+        if (availableQty < item.request_qty) {
+          return {
+            item_id: item.item_id,
+            requested_qty: item.request_qty,
+            available_qty: availableQty,
+          };
+        }
+
+        return null;
+      })
+      .filter(Boolean);
+
+    if (unavailableItems.length > 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Selected store does not have enough stock for requested items",
+        unavailable_items: unavailableItems,
       });
     }
 
@@ -880,7 +917,9 @@ export const createHeadStockRequest = async (req, res) => {
         meta: {
           total_items: requestItemsPayload.length,
           from_store_name: headStore.store_name,
+          from_store_code: headStore.store_code,
           to_store_name: receiverStore.store_name,
+          to_store_code: receiverStore.store_code,
           target_type: receiverType,
         },
 
@@ -930,7 +969,6 @@ export const createHeadStockRequest = async (req, res) => {
     });
   }
 };
-
 
 
 
@@ -1012,6 +1050,423 @@ export const getHeadAllTransfers = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch head all transfers",
+      error: error.message,
+    });
+  }
+};
+
+export const getAvailableStoresForHeadRequest = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const {
+      target_type = "district", // district OR retail
+      items,
+    } = req.body;
+
+    const userLevel = String(user.organization_level || "").toLowerCase();
+
+    if (!["head", "head_office"].includes(userLevel)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only head office can access this API",
+      });
+    }
+
+    const receiverType = String(target_type || "").toLowerCase();
+
+    if (!["district", "retail"].includes(receiverType)) {
+      return res.status(400).json({
+        success: false,
+        message: "target_type must be district or retail",
+      });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "items are required",
+      });
+    }
+
+    const validItems = items
+      .filter((i) => i.item_id && Number(i.request_qty) > 0)
+      .map((i) => ({
+        item_id: Number(i.item_id),
+        request_qty: Number(i.request_qty),
+      }));
+
+    if (validItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid items found",
+      });
+    }
+
+    const itemIds = validItems.map((i) => i.item_id);
+
+    const stores = await Store.findAll({
+      where: {
+        organization_level:
+          receiverType === "district"
+            ? { [Op.in]: ["District", "district", "DISTRICT"] }
+            : { [Op.in]: ["Retail", "retail", "RETAIL"] },
+        is_active: true,
+      },
+      attributes: [
+        "id",
+        "store_name",
+        "store_code",
+        "organization_level",
+        "state",
+        "district",
+        "district_id",
+        "address",
+        "phone_number",
+      ],
+      order: [["store_name", "ASC"]],
+    });
+
+    if (!stores.length) {
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        data: [],
+      });
+    }
+
+    const storeIds = stores.map((s) => s.id);
+
+    const stocks = await Stock.findAll({
+      where: {
+        organization_id: { [Op.in]: storeIds },
+        item_id: { [Op.in]: itemIds },
+      },
+      attributes: ["organization_id", "item_id", "available_qty"],
+    });
+
+    const stockMap = new Map();
+
+    for (const stock of stocks) {
+      const key = `${stock.organization_id}_${stock.item_id}`;
+      stockMap.set(key, Number(stock.available_qty || 0));
+    }
+
+    const data = stores.map((store) => {
+      let matchedItems = 0;
+      let missingItems = 0;
+
+      const stock_details = validItems.map((item) => {
+        const key = `${store.id}_${item.item_id}`;
+        const availableQty = stockMap.get(key) || 0;
+        const isAvailable = availableQty >= item.request_qty;
+
+        if (isAvailable) matchedItems++;
+        else missingItems++;
+
+        return {
+          item_id: item.item_id,
+          requested_qty: item.request_qty,
+          available_qty: availableQty,
+          is_available: isAvailable,
+        };
+      });
+
+      return {
+        store_id: store.id,
+        store_name: store.store_name,
+        store_code: store.store_code,
+        organization_level: store.organization_level,
+        state: store.state,
+        district: store.district,
+        district_id: store.district_id,
+        address: store.address,
+        phone_number: store.phone_number,
+
+        total_requested_items: validItems.length,
+        matched_items: matchedItems,
+        missing_items: missingItems,
+        can_fulfill_full_request: missingItems === 0,
+
+        stock_details,
+      };
+    });
+
+    const sortedData = data.sort((a, b) => {
+      if (b.can_fulfill_full_request !== a.can_fulfill_full_request) {
+        return b.can_fulfill_full_request - a.can_fulfill_full_request;
+      }
+
+      return b.matched_items - a.matched_items;
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: sortedData.length,
+      data: sortedData,
+    });
+  } catch (error) {
+    console.error("getAvailableStoresForHeadRequest error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+
+const HEAD_ACCESS_ROLES = [
+  "super_admin",
+  "admin",
+  "head",
+  "head_office",
+  "head_admin",
+  "stock_manager",
+  "super_stock_manager",
+  "inventory_manager",
+  "super_inventory_manager",
+];
+
+const normalizeRole = (role = "") =>
+  String(role).trim().toLowerCase().replaceAll("-", "_");
+
+const canViewAnyTransfer = (user) => {
+  const role = normalizeRole(user?.role);
+  const level = normalizeRole(user?.organization_level);
+
+  return (
+    HEAD_ACCESS_ROLES.includes(role) ||
+    level === "head" ||
+    level === "head_office" ||
+    user?.branches?.includes?.("ALL")
+  );
+};
+
+const pickStoreName = (store) => {
+  if (!store) return null;
+  return (
+    store.store_name ||
+    store.name ||
+    store.organization_name ||
+    store.branch_name ||
+    null
+  );
+};
+
+const pickUserName = (user) => {
+  if (!user) return null;
+  return user.username || user.name || user.email || null;
+};
+
+export const getAnyTransferDetailsForHead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.user;
+
+    if (!user?.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const transfer = await StockTransfer.findByPk(id, {
+      include: [
+        {
+          model: StockTransferItem,
+          as: "transfer_items",
+          include: [
+            {
+              model: Item,
+              as: "item",
+              attributes: [
+                "id",
+                "item_name",
+                "article_code",
+                "sku_code",
+                "category",
+                "metal_type",
+                "purity",
+                "sale_rate",
+                "gross_weight",
+                "net_weight",
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: "Transfer not found",
+      });
+    }
+
+    const plainTransfer = transfer.get({ plain: true });
+
+    const isHeadUser = canViewAnyTransfer(user);
+
+    const isOwnTransfer =
+      Number(user.organization_id) ===
+        Number(plainTransfer.from_organization_id) ||
+      Number(user.organization_id) ===
+        Number(plainTransfer.to_organization_id);
+
+    // ✅ Head can view any transfer
+    // ✅ Normal district/retail can view only own incoming/outgoing transfer
+    if (!isHeadUser && !isOwnTransfer) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not allowed to view this transfer",
+      });
+    }
+
+    const organizationIds = [
+      Number(plainTransfer.from_organization_id),
+      Number(plainTransfer.to_organization_id),
+    ].filter(Boolean);
+
+    const stores = organizationIds.length
+      ? await Store.findAll({
+          where: {
+            id: {
+              [Op.in]: organizationIds,
+            },
+          },
+        })
+      : [];
+
+    const storeMap = new Map(stores.map((s) => [Number(s.id), s]));
+
+    const userIds = [
+      Number(plainTransfer.created_by || 0),
+      Number(plainTransfer.approved_by || 0),
+      Number(plainTransfer.dispatched_by || 0),
+      Number(plainTransfer.received_by || 0),
+    ].filter(Boolean);
+
+    const users = userIds.length
+      ? await User.findAll({
+          where: {
+            id: {
+              [Op.in]: userIds,
+            },
+          },
+          attributes: ["id", "username", "email"],
+        })
+      : [];
+
+    const userMap = new Map(users.map((u) => [Number(u.id), u]));
+
+    const fromStore = storeMap.get(Number(plainTransfer.from_organization_id));
+    const toStore = storeMap.get(Number(plainTransfer.to_organization_id));
+
+    const data = {
+      id: plainTransfer.id,
+      transfer_no: plainTransfer.transfer_no,
+      request_id: plainTransfer.request_id || null,
+      tracking_number:
+        plainTransfer.tracking_number || plainTransfer.transfer_no,
+
+      status: plainTransfer.status,
+      remarks: plainTransfer.remarks,
+
+      from_organization_id: plainTransfer.from_organization_id,
+      from_organization_name: pickStoreName(fromStore),
+      from_store_code: fromStore?.store_code || null,
+
+      to_organization_id: plainTransfer.to_organization_id,
+      to_organization_name: pickStoreName(toStore),
+      to_store_code: toStore?.store_code || null,
+
+      transfer_date: plainTransfer.transfer_date,
+      dispatch_date: plainTransfer.dispatch_date,
+      receive_date: plainTransfer.receive_date,
+
+      expected_delivery_date: plainTransfer.expected_delivery_date || null,
+      expected_delivery_time: plainTransfer.expected_delivery_time || null,
+
+      pickup_address: plainTransfer.pickup_address || null,
+      delivery_address: plainTransfer.delivery_address || null,
+
+      e_way_bill_url: plainTransfer.e_way_bill_url || null,
+
+      driver_details: {
+        driver_name: plainTransfer.driver_name || null,
+        driver_phone: plainTransfer.driver_phone || null,
+        vehicle_number: plainTransfer.vehicle_number || null,
+        tracking_number: plainTransfer.tracking_number || null,
+        driver_photo_url: plainTransfer.driver_photo_url || null,
+      },
+
+      live_tracking: {
+        is_tracking_active: plainTransfer.is_tracking_active || false,
+        last_latitude: plainTransfer.last_latitude || null,
+        last_longitude: plainTransfer.last_longitude || null,
+        last_tracked_at: plainTransfer.last_tracked_at || null,
+      },
+
+      media: {
+        dispatch_image_url: plainTransfer.dispatch_image_url || null,
+        dispatch_video_url: plainTransfer.dispatch_video_url || null,
+        receive_image_url: plainTransfer.receive_image_url || null,
+        e_way_bill_url: plainTransfer.e_way_bill_url || null,
+      },
+
+      created_by: {
+        id: plainTransfer.created_by || null,
+        name: pickUserName(userMap.get(Number(plainTransfer.created_by))),
+      },
+
+      approved_by: {
+        id: plainTransfer.approved_by || null,
+        name: pickUserName(userMap.get(Number(plainTransfer.approved_by))),
+      },
+
+      dispatched_by: {
+        id: plainTransfer.dispatched_by || null,
+        name: pickUserName(userMap.get(Number(plainTransfer.dispatched_by))),
+      },
+
+      received_by: {
+        id: plainTransfer.received_by || null,
+        name: pickUserName(userMap.get(Number(plainTransfer.received_by))),
+      },
+
+      products: (plainTransfer.transfer_items || []).map((row) => ({
+        id: row.id,
+        item_id: row.item_id,
+        qty: Number(row.qty || 0),
+        weight: Number(row.weight || 0),
+        remarks: row.remarks || null,
+
+        item_name: row.item?.item_name || null,
+        article_code: row.item?.article_code || null,
+        sku_code: row.item?.sku_code || null,
+        category: row.item?.category || null,
+        metal_type: row.item?.metal_type || null,
+        purity: row.item?.purity || null,
+        rate: Number(row.item?.sale_rate || 0),
+        gross_weight: Number(row.item?.gross_weight || 0),
+        net_weight: Number(row.item?.net_weight || 0),
+      })),
+    };
+
+    return res.status(200).json({
+      success: true,
+      message: "Transfer details fetched successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("getAnyTransferDetailsForHead error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch transfer details",
       error: error.message,
     });
   }

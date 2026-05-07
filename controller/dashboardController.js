@@ -239,24 +239,60 @@ export const getDashboardSummary = async (req, res) => {
     // =====================================================
     // STOCK CARDS - RETAIL STORE DATA ONLY
     // =====================================================
-    const stockSummary = await sequelize.query(
-      `
-      SELECT
-        COALESCE(SUM(s.available_qty), 0) AS total_available_qty,
-        COALESCE(SUM(s.dead_qty), 0) AS total_dead_qty,
-        COALESCE(SUM(s.transit_qty), 0) AS total_transit_qty,
-        COUNT(CASE WHEN COALESCE(s.dead_qty,0) > 0 THEN 1 END)::int AS dead_stock_items,
-        COUNT(CASE WHEN COALESCE(s.transit_qty,0) > 0 THEN 1 END)::int AS transit_goods
-      FROM stocks s
-      INNER JOIN items i ON i.id = s.item_id
-      WHERE 1=1
-      ${stockItemWhere}
-      `,
-      {
-        replacements,
-        type: QueryTypes.SELECT,
-      }
-    );
+   const stockSummary = await sequelize.query(
+  `
+  SELECT
+    COALESCE(SUM(s.available_qty), 0) AS total_available_qty,
+
+    COALESCE(SUM(s.transit_qty), 0) AS total_transit_qty,
+
+    COUNT(
+      DISTINCT CASE
+        WHEN
+          s.available_qty > 0
+
+          AND i."createdAt"
+          < NOW() - INTERVAL '30 days'
+
+          AND NOT EXISTS (
+
+            SELECT 1
+
+            FROM invoice_items ii
+
+            JOIN invoices inv
+            ON inv.id = ii.invoice_id
+
+            WHERE ii.item_id = i.id
+
+            AND inv."createdAt"
+            > NOW() - INTERVAL '30 days'
+          )
+
+        THEN i.id
+      END
+    )::int AS dead_stock_items,
+
+    COUNT(
+      CASE
+        WHEN COALESCE(s.transit_qty,0) > 0
+        THEN 1
+      END
+    )::int AS transit_goods
+
+  FROM stocks s
+
+  INNER JOIN items i
+  ON i.id = s.item_id
+
+  WHERE 1=1
+  ${stockItemWhere}
+  `,
+  {
+    replacements,
+    type: QueryTypes.SELECT,
+  }
+);
 
     const stock = stockSummary[0] || {};
 

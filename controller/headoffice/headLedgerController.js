@@ -279,41 +279,52 @@ export const getStoreCustomerLedger = async (req, res) => {
     const { store_code } = req.params;
 
     if (!store_code) {
-      return res.status(400).json({ error: "store_code is required" });
+      return res.status(400).json({
+        error: "store_code is required"
+      });
     }
 
     const data = await sequelize.query(`
       SELECT 
         c.id AS customer_id,
+
         c.name AS client_name,
 
-        COUNT(inv.id) AS total_deals,
+        COUNT(DISTINCT inv.id) AS total_deals,
 
         COALESCE(SUM(inv.total_amount), 0) AS total_amount,
+
         COALESCE(SUM(inv.received_amount), 0) AS received_amount,
+
         COALESCE(SUM(inv.pending_amount), 0) AS pending_amount
 
       FROM customers c
+
       LEFT JOIN invoices inv 
         ON c.id = inv.customer_id
         AND inv.store_code = :store_code
 
-      WHERE c.store_code = :store_code
+      GROUP BY 
+        c.id,
+        c.name
 
-      GROUP BY c.id
-      ORDER BY client_name
+      ORDER BY c.name ASC
     `, {
       replacements: { store_code },
       type: QueryTypes.SELECT
     });
 
-    res.json({ success: true, data });
+    res.json({
+      success: true,
+      data
+    });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      error: error.message
+    });
   }
 };
-
 
 /**
  * @desc Get Customer Invoices

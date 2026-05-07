@@ -135,64 +135,197 @@ export const getOverallInventoryDashboard = async (req, res) => {
   try {
 
     // ================= CARDS =================
-    const cards = await sequelize.query(`
+    const [cards] = await sequelize.query(
+      `
       SELECT 
-        (SELECT COUNT(*) FROM items) as total_stock_items,
 
-        SUM(CASE 
-          WHEN i."createdAt" < NOW() - INTERVAL '30 days' 
-          THEN 1 ELSE 0 
-        END) as dead_stock_items,
+        -- TOTAL LIVE STOCK QTY
+        COALESCE(SUM(s.available_qty), 0) 
+        AS total_stock_items,
 
-        SUM(CASE 
-          WHEN s.available_qty < 5 
-          THEN 1 ELSE 0 
-        END) as low_stock,
+        -- DEAD STOCK
+        COUNT(
+          DISTINCT CASE
+            WHEN 
+              s.available_qty > 0
 
-        COALESCE(SUM(s.transit_qty),0) as transit_goods
+              AND i."createdAt"
+              < NOW() - INTERVAL '30 days'
+
+              AND NOT EXISTS (
+
+                SELECT 1
+
+                FROM invoice_items ii
+
+                JOIN invoices inv
+                ON inv.id = ii.invoice_id
+
+                WHERE ii.item_id = i.id
+
+                AND inv."createdAt"
+                > NOW() - INTERVAL '30 days'
+              )
+
+            THEN i.id
+          END
+        ) AS dead_stock_items,
+
+        -- LOW STOCK
+        COUNT(
+          DISTINCT CASE
+            WHEN s.available_qty < 5
+            AND s.available_qty > 0
+            THEN i.id
+          END
+        ) AS low_stock,
+
+        -- TRANSIT STOCK
+        COALESCE(SUM(s.transit_qty), 0)
+        AS transit_goods
 
       FROM items i
-      LEFT JOIN stocks s ON s.item_id = i.id
-    `, { type: QueryTypes.SELECT });
 
+      LEFT JOIN stocks s
+      ON s.item_id = i.id
+      `,
+      {
+        type: QueryTypes.SELECT,
+      }
+    );
 
     // ================= TABLE DATA =================
-    const tableData = await sequelize.query(`
+    const tableData = await sequelize.query(
+      `
       SELECT 
-        i.item_name as item,
-        i.sku_code as code,
-        COALESCE(s.available_qty,0) as quantity,
-        i.purchase_rate,
-        i.sale_rate as selling_price,
-        i.making_charge,
+
+        i.id,
+
+        i.item_name AS item,
+
+        i.sku_code AS code,
+
+        i.article_code,
+
+        COALESCE(
+          SUM(s.available_qty),
+          0
+        ) AS quantity,
+
+        COALESCE(
+          SUM(s.transit_qty),
+          0
+        ) AS transit_quantity,
+
+        AVG(i.purchase_rate)
+        AS purchase_rate,
+
+        AVG(i.sale_rate)
+        AS selling_price,
+
+        AVG(i.making_charge)
+        AS making_charge,
+
         i.purity,
-        i.net_weight,
-        i.stone_weight,
-        i.gross_weight
+
+        ROUND(
+          SUM(i.net_weight)::numeric,
+          3
+        ) AS net_weight,
+
+        ROUND(
+          SUM(i.stone_weight)::numeric,
+          3
+        ) AS stone_weight,
+
+        ROUND(
+          SUM(i.gross_weight)::numeric,
+          3
+        ) AS gross_weight,
+
+        CASE
+          WHEN 
+            COALESCE(
+              SUM(s.available_qty),
+              0
+            ) < 5
+
+            AND COALESCE(
+              SUM(s.available_qty),
+              0
+            ) > 0
+
+          THEN 'LOW STOCK'
+
+          WHEN
+            COALESCE(
+              SUM(s.available_qty),
+              0
+            ) = 0
+
+          THEN 'OUT OF STOCK'
+
+          ELSE 'IN STOCK'
+        END AS stock_status
 
       FROM items i
-      LEFT JOIN stocks s ON s.item_id = i.id
+
+      LEFT JOIN stocks s
+      ON s.item_id = i.id
+
+      GROUP BY
+        i.id,
+        i.item_name,
+        i.sku_code,
+        i.article_code,
+        i.purity
 
       ORDER BY i."createdAt" DESC
-    `, { type: QueryTypes.SELECT });
-
+      `,
+      {
+        type: QueryTypes.SELECT,
+      }
+    );
 
     return res.json({
       success: true,
+
       data: {
+
         cards: {
-          totalStocksItems: Number(cards[0].total_stock_items),
-          deadStockItems: Number(cards[0].dead_stock_items),
-          lowStock: Number(cards[0].low_stock),
-          transitGoods: Number(cards[0].transit_goods),
+
+          // TOTAL LIVE STOCK QTY
+          totalStocksItems:
+            Number(cards.total_stock_items),
+
+          // DEAD STOCK ITEMS
+          deadStockItems:
+            Number(cards.dead_stock_items),
+
+          // LOW STOCK ITEMS
+          lowStock:
+            Number(cards.low_stock),
+
+          // TRANSIT QTY
+          transitGoods:
+            Number(cards.transit_goods),
         },
-        table: tableData
-      }
+
+        table: tableData,
+      },
     });
 
   } catch (error) {
-    console.error("Dashboard Error:", error);
-    res.status(500).json({ success: false, message: error.message });
+
+    console.error(
+      "Dashboard Error:",
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
@@ -221,9 +354,9 @@ export const getOverallCategoryItems = async (req, res) => {
 
         i.purity,
 
-        SUM(i.net_weight) as net_weight,
-        SUM(i.stone_weight) as stone_weight,
-        SUM(i.gross_weight) as gross_weight
+        ROUND(AVG(i.net_weight)::numeric, 3) as net_weight,
+        ROUND(AVG(i.stone_weight)::numeric, 3) as stone_weight,
+         ROUND(AVG(i.gross_weight)::numeric, 3) as gross_weight
 
       FROM items i
       LEFT JOIN stocks s ON s.item_id = i.id

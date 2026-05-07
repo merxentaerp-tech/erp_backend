@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import PDFDocument from "pdfkit";
 import { Op } from "sequelize";
-
+import crypto from "crypto";
 import Bill from "../model/Bill.js";
 import BillItem from "../model/BillItem.js";
 import Customer from "../model/Customer.js";
@@ -508,9 +508,9 @@ export const createBill = async (req, res) => {
       });
     }
 
-    const cleanStoreCode = String(
-      store_code || loginStoreCode || ""
-    ).trim().toUpperCase();
+    const cleanStoreCode = String(store_code || loginStoreCode || "")
+      .trim()
+      .toUpperCase();
 
     if (!cleanStoreCode) {
       await t.rollback();
@@ -520,13 +520,9 @@ export const createBill = async (req, res) => {
       });
     }
 
-    const store = await Store.findOne({
-      where: { store_code: cleanStoreCode },
-      transaction: t,
-    });
-
-    if (!store) {
-      throw new Error(`Store not found for code ${cleanStoreCode}`);
+    const itemIds = items.map((i) => i.item_id).filter(Boolean);
+    if (itemIds.length !== new Set(itemIds).size) {
+      throw new Error("Duplicate item found in bill items");
     }
 
     let finalCustomer = null;
@@ -594,45 +590,53 @@ export const createBill = async (req, res) => {
 
     for (const row of items) {
       const item_id = row.item_id;
-
-      const qty =
-        row.qty === undefined || row.qty === null || row.qty === ""
-          ? 1
-          : toNumber(row.qty);
+      const qty = row.qty === undefined || row.qty === null || row.qty === ""
+        ? 1
+        : toNumber(row.qty);
 
       const net_weight = toNumber(row.net_weight);
       const rate = toNumber(row.rate);
       const making_charge_percent = toNumber(row.making_charge_percent);
 
-      if (!item_id) {
-        throw new Error("item_id is required for each item");
-      }
-
-      if (qty <= 0) {
-        throw new Error(`Invalid qty for item ${item_id}`);
-      }
-
-      if (net_weight <= 0) {
-        throw new Error(`Invalid net_weight for item ${item_id}`);
-      }
-
-      if (rate <= 0) {
-        throw new Error(`Invalid rate for item ${item_id}`);
-      }
+      if (!item_id) throw new Error("item_id is required for each item");
+      if (qty <= 0) throw new Error(`Invalid qty for item ${item_id}`);
+      if (rate <= 0) throw new Error(`Invalid rate for item ${item_id}`);
 
       const dbItem = await Item.findOne({
-        where: { id: item_id },
+        where: {
+          id: item_id,
+          organization_id,
+          current_status: "in_stock",
+          is_active: true,
+        },
         transaction: t,
+        lock: t.LOCK.UPDATE,
       });
 
       if (!dbItem) {
-        throw new Error(`Item not found for item_id ${item_id}`);
+        throw new Error(`Item not found or not available for item_id ${item_id}`);
+      }
+
+      const unit = String(dbItem.unit || row.unit || "").toLowerCase();
+      const isPieceItem = ["pcs", "pc", "piece", "pieces"].includes(unit);
+
+      // ✅ INDUSTRY RULE:
+      // PCS item me qty editable hai
+      // Gold / weight item me qty fixed 1 hai
+      if (!isPieceItem && qty !== 1) {
+        throw new Error(
+          `Qty must be 1 for weight-based item ${item_id}`
+        );
+      }
+
+      if (!isPieceItem && net_weight <= 0) {
+        throw new Error(`Invalid net_weight for item ${item_id}`);
       }
 
       const stock = await Stock.findOne({
         where: {
           item_id,
-          organization_id: store.id,
+          organization_id,
         },
         transaction: t,
         lock: t.LOCK.UPDATE,
@@ -649,13 +653,13 @@ export const createBill = async (req, res) => {
         throw new Error(`Insufficient stock qty for item ${item_id}`);
       }
 
-      if (openingWeight < net_weight) {
+      if (!isPieceItem && openingWeight < net_weight) {
         throw new Error(`Insufficient stock weight for item ${item_id}`);
       }
 
-      const metalAmount = net_weight * rate;
-      const makingChargeValue = (metalAmount * making_charge_percent) / 100;
-      const totalAmount = metalAmount + makingChargeValue;
+      const baseAmount = isPieceItem ? qty * rate : net_weight * rate;
+      const makingChargeValue = (baseAmount * making_charge_percent) / 100;
+      const totalAmount = baseAmount + makingChargeValue;
 
       grandTotal += totalAmount;
 
@@ -664,18 +668,19 @@ export const createBill = async (req, res) => {
         stock,
         item_id,
         qty,
+        unit,
+        isPieceItem,
         product_code:
           row.product_code ||
-          dbItem.product_code ||
           dbItem.article_code ||
           dbItem.sku_code ||
           null,
         description:
           row.description ||
-          dbItem.description ||
+          dbItem.details ||
           dbItem.item_name ||
           null,
-        net_weight,
+        net_weight: isPieceItem ? 0 : net_weight,
         rate,
         making_charge_percent,
         making_charge_value: makingChargeValue,
@@ -687,13 +692,22 @@ export const createBill = async (req, res) => {
 
     const paidAmount = toNumber(paid_amount);
     const dueAmount = grandTotal - paidAmount;
+
+    if (paidAmount < 0) {
+      throw new Error("paid_amount cannot be negative");
+    }
+
+    if (paidAmount > grandTotal) {
+      throw new Error("paid_amount cannot be greater than total amount");
+    }
+
     const billNumber = generateBillNumber(cleanStoreCode);
 
     const bill = await Bill.create(
       {
         bill_number: billNumber,
         store_code: cleanStoreCode,
-        organization_id: Number(store.id),
+        organization_id: Number(organization_id),
         customer_id: finalCustomer?.id || null,
         total_amount: Number(grandTotal.toFixed(2)),
         paid_amount: Number(paidAmount.toFixed(2)),
@@ -705,7 +719,9 @@ export const createBill = async (req, res) => {
 
     for (const row of preparedItems) {
       const updatedQty = row.openingQty - row.qty;
-      const updatedWeight = row.openingWeight - row.net_weight;
+      const updatedWeight = row.isPieceItem
+        ? row.openingWeight
+        : row.openingWeight - row.net_weight;
 
       await BillItem.create(
         {
@@ -732,7 +748,7 @@ export const createBill = async (req, res) => {
 
       await StockMovement.create(
         {
-          organization_id: store.id,
+          organization_id,
           item_id: row.item_id,
           movement_type: "sale",
           reference_type: "BILL",
@@ -744,17 +760,22 @@ export const createBill = async (req, res) => {
           opening_available_weight: row.openingWeight,
           closing_available_weight: updatedWeight,
           remarks: `Item sold via billing (${billNumber})`,
+          created_by: req.user?.id || null,
         },
         { transaction: t }
       );
 
-      await Item.update(
-        { current_status: "sold" },
-        {
-          where: { id: row.item_id },
-          transaction: t,
-        }
-      );
+      // ✅ Only unique / weight item sold lock
+      // PCS item me same item ka stock remaining ho sakta hai
+      if (!row.isPieceItem || updatedQty <= 0) {
+        await Item.update(
+          { current_status: "sold" },
+          {
+            where: { id: row.item_id },
+            transaction: t,
+          }
+        );
+      }
     }
 
     if (finalCustomer) {
@@ -817,88 +838,282 @@ export const createBill = async (req, res) => {
   }
 };
 
-export const scanBillItemQR = async (req, res) => {
+// export const scanBillItemQR = async (req, res) => {
+//   try {
+//     const {
+//       organization_id,
+//       store_code: loginStoreCode,
+//     } = resolveUserScope(req.user);
+
+//     const { qr_value, qrValue, article_code, sku_code, item_id } = req.body;
+
+//     const scanValue = qr_value || qrValue || article_code || sku_code || item_id;
+
+//     if (!scanValue) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "QR value is required",
+//       });
+//     }
+
+//     let parsed = null;
+//     try {
+//       parsed = JSON.parse(scanValue);
+//     } catch (e) {}
+
+//     const where = {};
+
+//     if (parsed?.item_id) where.id = parsed.item_id;
+//     else if (parsed?.article_code) where.article_code = parsed.article_code;
+//     else if (parsed?.sku_code) where.sku_code = parsed.sku_code;
+//     else if (item_id) where.id = item_id;
+//     else if (article_code) where.article_code = article_code;
+//     else if (sku_code) where.sku_code = sku_code;
+//     else {
+//       where[Op.or] = [
+//         { qr_value: scanValue },
+//         { article_code: scanValue },
+//         { sku_code: scanValue },
+//       ];
+//     }
+
+//     const item = await Item.findOne({ where });
+
+//     if (!item) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "Item not found",
+//       });
+//     }
+
+//     const stock = await Stock.findOne({
+//       where: {
+//         item_id: item.id,
+//         organization_id,
+//       },
+//     });
+
+//     return res.status(200).json({
+//       success: true,
+//       data: {
+//         item_id: item.id,
+//         product_code:
+//           item.product_code || item.article_code || item.sku_code || null,
+//         article_code: item.article_code || null,
+//         sku_code: item.sku_code || null,
+//         description: item.description || item.item_name || null,
+//         item_name: item.item_name || null,
+//         category: item.category || null,
+//         metal_type: item.metal_type || null,
+//         purity: item.purity || null,
+//         net_weight: item.net_weight || 0,
+//         gross_weight: item.gross_weight || 0,
+//         rate: item.sale_rate || item.rate || 0,
+//         making_charge_percent: item.making_charge_percent || 0,
+//         available_qty: stock?.available_qty || 0,
+//         available_weight: stock?.available_weight || 0,
+//         store_code: loginStoreCode,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("scanBillItemQR error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "QR scan failed",
+//       error: error.message,
+//     });
+//   }
+// };
+
+
+
+const QR_SECRET = process.env.QR_SECRET || "change-this-secret";
+
+const verifyQRPayload = (qrText) => {
   try {
-    const {
-      organization_id,
-      store_code: loginStoreCode,
-    } = resolveUserScope(req.user);
+    const parsed = JSON.parse(qrText);
 
-    const { qr_value, qrValue, article_code, sku_code, item_id } = req.body;
+    if (!parsed?.payload || !parsed?.signature) {
+      return {
+        isSecure: false,
+        code: qrText,
+      };
+    }
 
-    const scanValue = qr_value || qrValue || article_code || sku_code || item_id;
+    const expectedSignature = crypto
+      .createHmac("sha256", QR_SECRET)
+      .update(JSON.stringify(parsed.payload))
+      .digest("hex");
 
-    if (!scanValue) {
+    if (parsed.signature !== expectedSignature) {
+      return {
+        isSecure: true,
+        valid: false,
+        message: "Invalid QR signature",
+      };
+    }
+
+    return {
+      isSecure: true,
+      valid: true,
+      payload: parsed.payload,
+      code: parsed.payload.code,
+      item_id: parsed.payload.item_id,
+      organization_id: parsed.payload.organization_id,
+    };
+  } catch {
+    return {
+      isSecure: false,
+      code: qrText,
+    };
+  }
+};
+
+export const scanBillingItem = async (req, res) => {
+  try {
+    const rawCode = String(req.params.code || "").trim();
+    const organizationId = req.user?.organization_id;
+
+    if (!rawCode) {
       return res.status(400).json({
         success: false,
-        message: "QR value is required",
+        message: "QR/Barcode code is required",
       });
     }
 
-    let parsed = null;
-    try {
-      parsed = JSON.parse(scanValue);
-    } catch (e) {}
+    if (!organizationId) {
+      return res.status(401).json({
+        success: false,
+        message: "organization_id missing in token",
+      });
+    }
 
-    const where = {};
+    const qr = verifyQRPayload(rawCode);
 
-    if (parsed?.item_id) where.id = parsed.item_id;
-    else if (parsed?.article_code) where.article_code = parsed.article_code;
-    else if (parsed?.sku_code) where.sku_code = parsed.sku_code;
-    else if (item_id) where.id = item_id;
-    else if (article_code) where.article_code = article_code;
-    else if (sku_code) where.sku_code = sku_code;
-    else {
-      where[Op.or] = [
-        { qr_value: scanValue },
-        { article_code: scanValue },
-        { sku_code: scanValue },
+    if (qr.isSecure && qr.valid === false) {
+      return res.status(400).json({
+        success: false,
+        message: qr.message || "Invalid QR",
+      });
+    }
+
+    if (
+      qr.isSecure &&
+      qr.organization_id &&
+      String(qr.organization_id) !== String(organizationId)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "This QR does not belong to your organization",
+      });
+    }
+
+    const whereCondition = {
+      organization_id: organizationId,
+      current_status: "in_stock",
+      is_active: true,
+    };
+
+    if (qr.item_id) {
+      whereCondition.id = qr.item_id;
+    } else {
+      whereCondition[Op.or] = [
+        { sku_code: qr.code },
+        { article_code: qr.code },
       ];
     }
 
-    const item = await Item.findOne({ where });
+    const item = await Item.findOne({
+      where: whereCondition,
+    });
 
     if (!item) {
       return res.status(404).json({
         success: false,
-        message: "Item not found",
+        message: "Item not found for this QR code",
       });
     }
 
     const stock = await Stock.findOne({
       where: {
         item_id: item.id,
-        organization_id,
+        organization_id: organizationId,
       },
     });
 
+    if (!stock) {
+      return res.status(404).json({
+        success: false,
+        message: "Stock not found for this item in your store",
+      });
+    }
+
+    if (toNumber(stock.available_qty) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Item is out of stock",
+      });
+    }
+
+    const netWeight = toNumber(item.net_weight);
+    const rate = toNumber(item.sale_rate);
+    const makingPercent = toNumber(item.making_charge);
+
+    const metalValue = netWeight * rate;
+    const makingValue = (metalValue * makingPercent) / 100;
+    const totalAmount = metalValue + makingValue;
+
     return res.status(200).json({
       success: true,
+      message: "Item fetched successfully",
       data: {
         item_id: item.id,
-        product_code:
-          item.product_code || item.article_code || item.sku_code || null,
-        article_code: item.article_code || null,
-        sku_code: item.sku_code || null,
-        description: item.description || item.item_name || null,
-        item_name: item.item_name || null,
-        category: item.category || null,
-        metal_type: item.metal_type || null,
-        purity: item.purity || null,
-        net_weight: item.net_weight || 0,
-        gross_weight: item.gross_weight || 0,
-        rate: item.sale_rate || item.rate || 0,
-        making_charge_percent: item.making_charge_percent || 0,
-        available_qty: stock?.available_qty || 0,
-        available_weight: stock?.available_weight || 0,
-        store_code: loginStoreCode,
+        sku_code: item.sku_code,
+        article_code: item.article_code,
+        product_code: item.article_code || item.sku_code,
+
+        item_name: item.item_name,
+        description: item.details || item.item_name,
+
+        metal_type: item.metal_type,
+        category: item.category,
+        purity: item.purity,
+        gross_weight: toNumber(item.gross_weight),
+        net_weight: netWeight,
+        stone_weight: toNumber(item.stone_weight),
+        stone_amount: toNumber(item.stone_amount),
+
+        rate,
+        purchase_rate: toNumber(item.purchase_rate),
+        sale_rate: toNumber(item.sale_rate),
+
+        making_charge_percent: makingPercent,
+        making_charge_value: Number(makingValue.toFixed(2)),
+        total_amount: Number(totalAmount.toFixed(2)),
+
+        hsn_code: item.hsn_code,
+        unit: item.unit,
+        current_status: item.current_status,
+
+        qty: 1,
+        available_qty: toNumber(stock.available_qty),
+        available_weight: toNumber(stock.available_weight),
+        reserved_qty: toNumber(stock.reserved_qty),
+        reserved_weight: toNumber(stock.reserved_weight),
+        transit_qty: toNumber(stock.transit_qty),
+        transit_weight: toNumber(stock.transit_weight),
+        damaged_qty: toNumber(stock.damaged_qty),
+        damaged_weight: toNumber(stock.damaged_weight),
+
+        qr_type: qr.isSecure ? "secure" : "plain",
+        qr_code_url: item.qr_code_url,
       },
     });
   } catch (error) {
-    console.error("scanBillItemQR error:", error);
+    console.error("Scan Billing Item Error:", error);
     return res.status(500).json({
       success: false,
-      message: "QR scan failed",
+      message: "Failed to fetch scanned item",
       error: error.message,
     });
   }

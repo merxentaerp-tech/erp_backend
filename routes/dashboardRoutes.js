@@ -11,7 +11,7 @@ router.get('/Dis/dash',auth,getDistrictDashboard)
 router.post("/district/item-stock/add", auth, addDistrictItemWithStock);
 router.get('/report',auth,getAllReports)
 
-router.get("/reports",auth, getHeadOfficeReports);
+router.get("/reports", getHeadOfficeReports);
 
 
 

@@ -1165,7 +1165,6 @@ export const addStockIn = async (req, res) => {
       item_name,
       item_code,
 
-      // ✅ REQUIRED IN ITEM MODEL
       metal_type,
       category,
 
@@ -1189,12 +1188,15 @@ export const addStockIn = async (req, res) => {
       });
     }
 
-    let item;
+    const incomingQty = Number(qty);
+    const incomingWeight = Number(net_weight);
+    const incomingStoneWeight = Number(stone_weight || 0);
+    const purchaseRate = Number(purchase_price || 0);
+    const saleRate = Number(selling_price || 0);
+    const makingChargeValue = Number(making_charge || 0);
+    const cleanItemId = item_id ? Number(item_id) : null;
 
-    const incomingQty = Number(qty || 0);
-    const incomingWeight = Number(net_weight || 0);
-
-    if (incomingQty <= 0) {
+    if (!Number.isFinite(incomingQty) || incomingQty <= 0) {
       await t.rollback();
       return res.status(400).json({
         success: false,
@@ -1202,7 +1204,7 @@ export const addStockIn = async (req, res) => {
       });
     }
 
-    if (incomingWeight < 0) {
+    if (!Number.isFinite(incomingWeight) || incomingWeight < 0) {
       await t.rollback();
       return res.status(400).json({
         success: false,
@@ -1210,12 +1212,54 @@ export const addStockIn = async (req, res) => {
       });
     }
 
-    // 🔥 CASE 1: Existing item
-    if (item_id) {
+    if (!Number.isFinite(incomingStoneWeight) || incomingStoneWeight < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Stone weight cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(purchaseRate) || purchaseRate < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Purchase price cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(saleRate) || saleRate < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Selling price cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(makingChargeValue) || makingChargeValue < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Making charge cannot be negative",
+      });
+    }
+
+    const cleanStoreCode = String(user?.store_code || "")
+      .trim()
+      .toUpperCase();
+
+    let item;
+    let isNewItem = false;
+    let isDuplicateItemStockIn = false;
+
+    /**
+     * CASE 1: Existing item stock inward by item_id
+     */
+    if (cleanItemId) {
       item = await Item.findOne({
         where: {
-          id: item_id,
-          ...(user?.role !== "super_admin" && {
+          id: cleanItemId,
+          ...(user.role !== "super_admin" && {
             organization_id: user.organization_id,
           }),
         },
@@ -1231,7 +1275,6 @@ export const addStockIn = async (req, res) => {
         });
       }
 
-      // ✅ Existing item me QR missing ho to generate kar do
       if (!item.qr_code_value || !item.qr_code_url) {
         const qr = await generateItemQR(item);
 
@@ -1249,9 +1292,13 @@ export const addStockIn = async (req, res) => {
       }
     }
 
-    // 🔥 CASE 2: New item create UI form se
+    /**
+     * CASE 2: New item create from UI form
+     * If same article_code already exists in same organization,
+     * then do not create duplicate item. Just increase stock.
+     */
     else {
-      if (!item_name) {
+      if (!item_name || !String(item_name).trim()) {
         await t.rollback();
         return res.status(400).json({
           success: false,
@@ -1267,7 +1314,15 @@ export const addStockIn = async (req, res) => {
         });
       }
 
-      if (!category) {
+      if (!["Gold", "Silver"].includes(metal_type)) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Invalid metal type. Allowed values are Gold or Silver",
+        });
+      }
+
+      if (!category || !String(category).trim()) {
         await t.rollback();
         return res.status(400).json({
           success: false,
@@ -1275,7 +1330,7 @@ export const addStockIn = async (req, res) => {
         });
       }
 
-      if (!purity) {
+      if (!purity || !String(purity).trim()) {
         await t.rollback();
         return res.status(400).json({
           success: false,
@@ -1283,58 +1338,97 @@ export const addStockIn = async (req, res) => {
         });
       }
 
-      const article_code =
-        item_code || `ART-${user.store_code}-${Date.now()}`;
+      const articleCode = item_code
+        ? String(item_code).trim().toUpperCase()
+        : `ART-${cleanStoreCode || "STORE"}-${Date.now()}`;
 
-      const sku_code = `SKU-${user.store_code}-${Date.now()}`;
+      const skuCode = `SKU-${cleanStoreCode || "STORE"}-${Date.now()}`;
 
-      item = await Item.create(
-        {
-          item_name,
-          article_code,
-          sku_code,
-
-          metal_type,
-          category,
-
-          purchase_rate: purchase_price,
-          sale_rate: selling_price,
-          making_charge,
-          purity,
-
-          net_weight,
-          gross_weight: net_weight,
-          stone_weight,
-
-          current_status: "in_stock",
-
+      const duplicateItem = await Item.findOne({
+        where: {
+          article_code: articleCode,
           organization_id: user.organization_id,
-
-          // Agar model me store_code hai to below line ko:
-          // store_code: user.store_code,
-          // kar dena.
-          storeCode: user.store_code,
         },
-        { transaction: t }
-      );
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
 
-      // 🔥 QR generate mandatory
-      const qr = await generateItemQR(item);
+      if (duplicateItem) {
+        item = duplicateItem;
+        isDuplicateItemStockIn = true;
 
-      if (!qr?.qr_code_value || !qr?.qr_code_url) {
-        throw new Error("QR generation failed");
+        if (!item.qr_code_value || !item.qr_code_url) {
+          const qr = await generateItemQR(item);
+
+          if (!qr?.qr_code_value || !qr?.qr_code_url) {
+            throw new Error("QR generation failed");
+          }
+
+          await item.update(
+            {
+              qr_code_value: qr.qr_code_value,
+              qr_code_url: qr.qr_code_url,
+            },
+            { transaction: t }
+          );
+        }
+      } else {
+        isNewItem = true;
+
+        item = await Item.create(
+          {
+            item_name: String(item_name).trim(),
+            article_code: articleCode,
+            sku_code: skuCode,
+
+            metal_type,
+            category: String(category).trim(),
+
+            purchase_rate: purchaseRate,
+            sale_rate: saleRate,
+            making_charge: makingChargeValue,
+            purity: String(purity).trim(),
+
+            net_weight: incomingWeight,
+            gross_weight: incomingWeight + incomingStoneWeight,
+            stone_weight: incomingStoneWeight,
+
+            current_status: "in_stock",
+
+            organization_id: user.organization_id,
+
+            /**
+             * IMPORTANT:
+             * Tumhare old code me `storeCode` use hua tha.
+             * Agar Item model me field name `storeCode` hai to ye sahi hai.
+             * Agar model me `store_code` hai, to is line ko replace karo:
+             *
+             * store_code: user.store_code || null,
+             */
+            storeCode: user.store_code || null,
+          },
+          { transaction: t }
+        );
+
+        const qr = await generateItemQR(item);
+
+        if (!qr?.qr_code_value || !qr?.qr_code_url) {
+          throw new Error("QR generation failed");
+        }
+
+        await item.update(
+          {
+            qr_code_value: qr.qr_code_value,
+            qr_code_url: qr.qr_code_url,
+          },
+          { transaction: t }
+        );
       }
-
-      await item.update(
-        {
-          qr_code_value: qr.qr_code_value,
-          qr_code_url: qr.qr_code_url,
-        },
-        { transaction: t }
-      );
     }
 
-    // 🔥 STOCK HANDLE
+    /**
+     * STOCK HANDLE
+     */
     let stock = await Stock.findOne({
       where: {
         item_id: item.id,
@@ -1349,8 +1443,17 @@ export const addStockIn = async (req, res) => {
         {
           organization_id: item.organization_id,
           item_id: item.id,
+
           available_qty: 0,
           available_weight: 0,
+
+          /**
+           * Agar tumhare Stock model me ye columns nahi hain,
+           * to in 3 lines ko remove kar dena.
+           */
+          reserved_qty: 0,
+          transit_qty: 0,
+          damaged_qty: 0,
         },
         { transaction: t }
       );
@@ -1359,15 +1462,18 @@ export const addStockIn = async (req, res) => {
     const previousAvailableQty = Number(stock.available_qty || 0);
     const previousAvailableWeight = Number(stock.available_weight || 0);
 
+    const newAvailableQty = previousAvailableQty + incomingQty;
+    const newAvailableWeight = previousAvailableWeight + incomingWeight;
+
     await stock.update(
       {
-        available_qty: previousAvailableQty + incomingQty,
-        available_weight: previousAvailableWeight + incomingWeight,
+        available_qty: newAvailableQty,
+        available_weight: newAvailableWeight,
       },
       { transaction: t }
     );
 
-    const previousStatus = item.current_status;
+    const previousStatus = item.current_status || null;
 
     await item.update(
       {
@@ -1376,19 +1482,23 @@ export const addStockIn = async (req, res) => {
       { transaction: t }
     );
 
-    // 🔥 STOCK MOVEMENT
+    /**
+     * STOCK MOVEMENT
+     * Tumhare previous error ke according DB CHECK constraint me lowercase purchase allowed hai.
+     */
     await StockMovement.create(
       {
         item_id: item.id,
         organization_id: item.organization_id,
 
-        // ✅ DB constraint ke according allowed value
         movement_type: "purchase",
 
         qty: incomingQty,
         weight: incomingWeight,
+
         previous_status: previousStatus,
         new_status: "in_stock",
+
         reference_type: "manual_stock_in",
         remarks: remarks || "Stock inward completed",
         created_by: user?.id || null,
@@ -1396,16 +1506,18 @@ export const addStockIn = async (req, res) => {
       { transaction: t }
     );
 
-    // 🔥 RECENT ACTIVITY + LOGS
-    const activityTitle = item_id
-      ? "Stock inward completed"
-      : "New item added to stock";
+    /**
+     * RECENT ACTIVITY + SYSTEM ACTIVITY
+     */
+    const activityTitle = isNewItem
+      ? "New item added to stock"
+      : "Stock inward completed";
 
-    const activityDescription = item_id
-      ? `${item.item_name} stock increased by ${incomingQty} qty at ${
+    const activityDescription = isNewItem
+      ? `${item.item_name} added with ${incomingQty} qty at ${
           user?.store_code || "store"
         }`
-      : `${item.item_name} added with ${incomingQty} qty at ${
+      : `${item.item_name} stock increased by ${incomingQty} qty at ${
           user?.store_code || "store"
         }`;
 
@@ -1414,22 +1526,36 @@ export const addStockIn = async (req, res) => {
       item_name: item.item_name,
       article_code: item.article_code,
       sku_code: item.sku_code,
+
       metal_type: item.metal_type,
       category: item.category,
+      purity: item.purity,
+
       qty: incomingQty,
       weight: incomingWeight,
+
       previous_available_qty: previousAvailableQty,
-      new_available_qty: previousAvailableQty + incomingQty,
+      new_available_qty: newAvailableQty,
+
       previous_available_weight: previousAvailableWeight,
-      new_available_weight: previousAvailableWeight + incomingWeight,
-      purchase_price,
-      selling_price,
-      making_charge,
-      purity: item.purity,
+      new_available_weight: newAvailableWeight,
+
+      purchase_price: purchaseRate,
+      selling_price: saleRate,
+      making_charge: makingChargeValue,
+
       organization_id: item.organization_id,
-      store_code: user?.store_code || item.store_code || item.storeCode || null,
+      store_code:
+        user?.store_code ||
+        item.store_code ||
+        item.storeCode ||
+        null,
+
       movement_type: "purchase",
       reference_type: "manual_stock_in",
+
+      is_new_item: isNewItem,
+      duplicate_item_stock_updated: isDuplicateItemStockIn,
       qr_generated: Boolean(item.qr_code_value && item.qr_code_url),
     };
 
@@ -1437,13 +1563,17 @@ export const addStockIn = async (req, res) => {
       {
         organization_id: item.organization_id,
         user_id: user?.id || null,
-        action: item_id ? "STOCK_IN" : "ITEM_CREATED_STOCK_IN",
+
+        action: isNewItem ? "ITEM_CREATED_STOCK_IN" : "STOCK_IN",
         module_name: "inventory",
+
         reference_id: item.id,
         reference_no: item.article_code,
+
         title: activityTitle,
         description: activityDescription,
         meta: activityMeta,
+
         icon: "package-plus",
         color: "green",
       },
@@ -1454,13 +1584,20 @@ export const addStockIn = async (req, res) => {
       {
         title: activityTitle,
         description: activityDescription,
-        activity_type: item_id ? "stock_in" : "item_created",
+
+        activity_type: isNewItem ? "item_created" : "stock_in",
         module_name: "inventory",
+
         reference_id: item.id,
         reference_no: item.article_code,
+
         state_code: user?.state_code || null,
         district_code: user?.district_code || null,
-        store_code: user?.store_code || item.store_code || item.storeCode || null,
+        store_code:
+          user?.store_code ||
+          item.store_code ||
+          item.storeCode ||
+          null,
       },
       { transaction: t }
     );
@@ -1472,11 +1609,69 @@ export const addStockIn = async (req, res) => {
       message: "Stock inward successful",
       data: {
         item,
-        stock,
+        stock: {
+          ...stock.toJSON(),
+          available_qty: newAvailableQty,
+          available_weight: newAvailableWeight,
+        },
       },
     });
   } catch (error) {
     await t.rollback();
+
+    console.error("addStockIn error:", {
+      name: error?.name,
+      message: error?.message,
+      errors: error?.errors?.map((e) => ({
+        field: e.path,
+        message: e.message,
+        value: e.value,
+        type: e.type,
+        validatorKey: e.validatorKey,
+      })),
+      parent: error?.parent?.detail || error?.parent?.message,
+      sql: error?.sql,
+    });
+
+    if (error?.name === "SequelizeValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: error.errors?.map((e) => ({
+          field: e.path,
+          message: e.message,
+          value: e.value,
+        })),
+      });
+    }
+
+    if (error?.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({
+        success: false,
+        message: "Duplicate item code or SKU code already exists",
+        errors: error.errors?.map((e) => ({
+          field: e.path,
+          message: e.message,
+          value: e.value,
+        })),
+      });
+    }
+
+    if (error?.name === "SequelizeForeignKeyConstraintError") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid reference data",
+        error: error?.parent?.detail || error.message,
+      });
+    }
+
+    if (error?.name === "SequelizeDatabaseError") {
+      return res.status(500).json({
+        success: false,
+        message: "Database error while adding stock inward",
+        error: error?.parent?.detail || error?.parent?.message || error.message,
+      });
+    }
 
     return res.status(500).json({
       success: false,
@@ -1484,7 +1679,10 @@ export const addStockIn = async (req, res) => {
       error: error.message,
     });
   }
-};const clean = (value) => {
+};
+
+
+const clean = (value) => {
   if (value === undefined || value === null) return "";
   return String(value).replace(/\s+/g, " ").trim();
 };

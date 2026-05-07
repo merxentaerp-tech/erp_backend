@@ -286,15 +286,31 @@ export const getStoreCustomerLedger = async (req, res) => {
 
     const data = await sequelize.query(`
       SELECT 
-        id AS customer_id,
-        name AS client_name,
-        store_code
+        c.id AS customer_id,
 
-      FROM customers
+        c.name AS client_name,
 
-      WHERE store_code = :store_code
+        COUNT(DISTINCT inv.id) AS total_deals,
 
-      ORDER BY name ASC
+        COALESCE(SUM(inv.total_amount), 0) AS total_amount,
+
+        COALESCE(SUM(inv.received_amount), 0) AS received_amount,
+
+        COALESCE(SUM(inv.pending_amount), 0) AS pending_amount
+
+      FROM customers c
+
+      LEFT JOIN invoices inv 
+        ON c.id = inv.customer_id
+        AND inv.store_code = :store_code
+
+      WHERE c.store_code = :store_code
+
+      GROUP BY 
+        c.id,
+        c.name
+
+      ORDER BY c.name ASC
     `, {
       replacements: { store_code },
       type: QueryTypes.SELECT

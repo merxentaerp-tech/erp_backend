@@ -139,47 +139,39 @@ export const getCompleteDashboard = async (req, res) => {
       return Number((((curr - prev) / prev) * 100).toFixed(1));
     };
 
-    // ================= CURRENT MONTH =================
-    const current = await sequelize.query(`
-      SELECT 
-        COALESCE(SUM(ii.quantity),0) AS total_sales,
-        COALESCE(SUM(i.purchase_rate * ii.quantity),0) AS total_cost,
-        COALESCE(SUM(ii.total_amount - (i.purchase_rate * ii.quantity)),0) AS total_profit,
-        COALESCE(SUM(p.amount),0) AS received,
-        COALESCE(SUM(inv.pending_amount),0) AS pending
+   // ================= CURRENT DATA =================
+const current = await sequelize.query(`
+  SELECT 
+      COALESCE(SUM(ii.quantity),0) AS total_sales,
 
-      FROM invoice_items ii
-      JOIN items i ON ii.item_id = i.id
-      JOIN invoices inv ON inv.id = ii.invoice_id
-      LEFT JOIN payments p ON p.invoice_id = inv.id
+      COALESCE(SUM(i.purchase_rate * ii.quantity),0) AS total_cost,
 
-      WHERE ii.is_active = true
-      AND ii.invoice_id IS NOT NULL
-      AND inv.status IN ('PAID', 'PARTIAL')
-      AND DATE_TRUNC('month', inv.invoice_date) = DATE_TRUNC('month', CURRENT_DATE)
-    `, { type: QueryTypes.SELECT });
+      COALESCE(
+          SUM(ii.total_amount - (i.purchase_rate * ii.quantity)),
+      0) AS total_profit,
 
-    // ================= PREVIOUS MONTH =================
-    const previous = await sequelize.query(`
-      SELECT 
-        COALESCE(SUM(ii.quantity),0) AS total_sales,
-        COALESCE(SUM(i.purchase_rate * ii.quantity),0) AS total_cost,
-        COALESCE(SUM(ii.total_amount - (i.purchase_rate * ii.quantity)),0) AS total_profit,
-        COALESCE(SUM(p.amount),0) AS received,
-        COALESCE(SUM(inv.pending_amount),0) AS pending
+      COALESCE(SUM(inv.received_amount),0) AS received,
 
-      FROM invoice_items ii
-      JOIN items i ON ii.item_id = i.id
-      JOIN invoices inv ON inv.id = ii.invoice_id
-      LEFT JOIN payments p ON p.invoice_id = inv.id
+      COALESCE(SUM(inv.pending_amount),0) AS pending
 
-      WHERE ii.is_active = true
-      AND ii.invoice_id IS NOT NULL
-      AND inv.status IN ('PAID', 'PARTIAL')
-      AND DATE_TRUNC('month', inv.invoice_date) = 
-            DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')
-    `, { type: QueryTypes.SELECT });
+  FROM invoices inv
 
+  LEFT JOIN invoice_items ii
+      ON inv.id = ii.invoice_id
+
+  LEFT JOIN items i
+      ON ii.item_id = i.id
+
+  WHERE inv.status IN ('PAID', 'PARTIAL')
+  AND COALESCE(ii.is_active, true) = true
+`, { type: QueryTypes.SELECT });
+   const previous = [{
+  total_sales: 0,
+  total_cost: 0,
+  total_profit: 0,
+  received: 0,
+  pending: 0
+}];
     const curr = current[0] || {};
     const prev = previous[0] || {};
 

@@ -218,26 +218,57 @@ const current = await sequelize.query(`
 
     // ================= LEDGER (UNCHANGED) =================
     const ledger = await sequelize.query(`
-      SELECT 
-        st.id,
-        st.store_code,
-        st.store_name,
-        st.organization_level,
+  SELECT 
+    st.id,
+    st.store_code,
+    st.store_name,
+    st.organization_level,
 
-        COUNT(DISTINCT inv.id) AS total_deals,
-        COALESCE(SUM(inv.total_amount), 0) AS total_amount,
-        COALESCE(SUM(inv.received_amount), 0) AS received_amount,
-        COALESCE(SUM(inv.pending_amount), 0) AS pending_amount
+    u.name AS store_manager,
 
-      FROM stores st
-      LEFT JOIN invoices inv 
-        ON st.store_code = inv.store_code
+    COUNT(DISTINCT inv.id) AS total_deals,
 
-      WHERE st.organization_level IN ('District', 'Retail')
+    COALESCE(SUM(inv.total_amount), 0) AS total_amount,
 
-      GROUP BY st.id
-      ORDER BY st.organization_level DESC, st.store_name
-    `, { type: QueryTypes.SELECT });
+    COALESCE(SUM(inv.received_amount), 0) AS received_amount,
+
+    COALESCE(SUM(inv.pending_amount), 0) AS pending_amount
+
+  FROM stores st
+
+  LEFT JOIN users u
+    ON st.store_code = u.store_code
+
+    AND (
+      (
+        st.organization_level = 'Retail'
+        AND LOWER(u.role) = 'retail manager'
+      )
+
+      OR
+
+      (
+        st.organization_level = 'District'
+        AND LOWER(u.role) = 'district manager'
+      )
+    )
+
+  LEFT JOIN invoices inv 
+    ON st.store_code = inv.store_code
+
+  WHERE st.organization_level IN ('District', 'Retail')
+
+  GROUP BY 
+    st.id,
+    st.store_code,
+    st.store_name,
+    st.organization_level,
+    u.name
+
+  ORDER BY 
+    st.organization_level DESC,
+    st.store_name
+`, { type: QueryTypes.SELECT });
 
     // ================= FINAL RESPONSE =================
     res.json({

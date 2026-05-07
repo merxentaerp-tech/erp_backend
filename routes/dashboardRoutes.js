@@ -10,8 +10,8 @@ router.get("/summary", auth, getDashboardSummary);
 router.get('/Dis/dash',auth,getDistrictDashboard)
 router.post("/district/item-stock/add", auth, addDistrictItemWithStock);
 router.get('/report',auth,getAllReports)
-
-router.get("/reports", getHeadOfficeReports);
+// Head Office Reports and Analysis Routes 
+router.get("/reports",auth, getHeadOfficeReports);
 
 
 

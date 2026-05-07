@@ -224,7 +224,7 @@ const current = await sequelize.query(`
     st.store_name,
     st.organization_level,
 
-    u.name AS store_manager,
+    MAX(u.name) AS store_manager,
 
     COUNT(DISTINCT inv.id) AS total_deals,
 
@@ -239,20 +239,6 @@ const current = await sequelize.query(`
   LEFT JOIN users u
     ON st.store_code = u.store_code
 
-    AND (
-      (
-        st.organization_level = 'Retail'
-        AND LOWER(u.role) = 'retail manager'
-      )
-
-      OR
-
-      (
-        st.organization_level = 'District'
-        AND LOWER(u.role) = 'district manager'
-      )
-    )
-
   LEFT JOIN invoices inv 
     ON st.store_code = inv.store_code
 
@@ -262,8 +248,7 @@ const current = await sequelize.query(`
     st.id,
     st.store_code,
     st.store_name,
-    st.organization_level,
-    u.name
+    st.organization_level
 
   ORDER BY 
     st.organization_level DESC,

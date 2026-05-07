@@ -302,7 +302,6 @@ export const getStoreCustomerLedger = async (req, res) => {
 
       LEFT JOIN invoices inv 
         ON c.id = inv.customer_id
-        AND inv.store_code = :store_code
 
       WHERE c.store_code = :store_code
 

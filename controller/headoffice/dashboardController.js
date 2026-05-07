@@ -90,30 +90,29 @@ export const getFullDashboard = async (req, res) => {
     const [deadStockData] = await sequelize.query(
       `
       SELECT 
-        COUNT(*) AS dead_stock,
+  COUNT(DISTINCT i.id) AS dead_stock
 
-        COUNT(*) FILTER (
-          WHERE s.available_qty > 0
-        ) AS total_stock
+FROM items i
 
-      FROM items i
+JOIN stocks s
+ON s.item_id = i.id
 
-      JOIN stocks s
-      ON s.item_id = i.id
+WHERE s.available_qty > 0
 
-      WHERE s.available_qty > 0
+AND NOT EXISTS (
 
-      AND i.id NOT IN (
-        SELECT DISTINCT ii.item_id
+  SELECT 1
 
-        FROM invoice_items ii
+  FROM invoice_items ii
 
-        JOIN invoices inv
-        ON inv.id = ii.invoice_id
+  JOIN invoices inv
+  ON inv.id = ii.invoice_id
 
-        WHERE inv."createdAt"
-        > NOW() - INTERVAL '30 days'
-      )
+  WHERE ii.item_id = i.id
+
+  AND inv."createdAt"
+  > NOW() - INTERVAL '30 days'
+)
       `,
       {
         type: QueryTypes.SELECT,

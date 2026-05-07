@@ -99,6 +99,9 @@ ON s.item_id = i.id
 
 WHERE s.available_qty > 0
 
+AND i."createdAt"
+< NOW() - INTERVAL '30 days'
+
 AND NOT EXISTS (
 
   SELECT 1

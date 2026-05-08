@@ -2,6 +2,7 @@ import  sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
 import ExcelJS from "exceljs";
 import PDFDocument from "pdfkit";
+import { Invoice } from "../../model/index.js";
 export const exportLedgerExcel = async (req, res) => {
   try {
     const { store_code } = req.params;
@@ -512,7 +513,7 @@ export const exportDashboardAndLedgerExcel = async (req, res) => {
   }
 };
 
-import { Invoice } from "../../models/index.js";
+
 
 export const downloadInvoicePdf = async (req, res) => {
   try {

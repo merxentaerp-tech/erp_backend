@@ -21,6 +21,12 @@ const Stock = sequelize.define(
       allowNull: false,
     },
 
+    // ✅ FIX: manual stock-in / upload stock-in dono ke liye store code
+    store_code: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+
     available_qty: {
       type: DataTypes.DECIMAL(12, 3),
       allowNull: false,
@@ -69,7 +75,6 @@ const Stock = sequelize.define(
       defaultValue: 0,
     },
 
-    // dead stock
     dead_qty: {
       type: DataTypes.DECIMAL(12, 3),
       allowNull: false,
@@ -94,6 +99,9 @@ const Stock = sequelize.define(
       },
       { fields: ["organization_id"] },
       { fields: ["item_id"] },
+
+      // ✅ optional but useful for store-wise inventory filtering
+      { fields: ["store_code"] },
     ],
   }
 );

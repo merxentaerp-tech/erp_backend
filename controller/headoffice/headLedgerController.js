@@ -1,6 +1,7 @@
 import  sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
 import ExcelJS from "exceljs";
+import PDFDocument from "pdfkit";
 export const exportLedgerExcel = async (req, res) => {
   try {
     const { store_code } = req.params;
@@ -389,11 +390,6 @@ export const getInvoicePayments = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-/**
- * @desc Export Dashboard + All Stores Ledger Excel
- * @route GET /api/dashboard/export-complete
- */
-
 
 /**
  * @desc Export Dashboard + All Stores Ledger (Single Sheet)
@@ -513,5 +509,90 @@ export const exportDashboardAndLedgerExcel = async (req, res) => {
   } catch (error) {
     console.error("EXPORT ERROR:", error);
     res.status(500).json({ error: error.message });
+  }
+};
+
+import { Invoice } from "../../models/index.js";
+
+export const downloadInvoicePdf = async (req, res) => {
+  try {
+
+    const { invoice_id } = req.params;
+
+    const invoice = await Invoice.findByPk(invoice_id);
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: "Invoice not found",
+      });
+    }
+
+    // ================= PDF =================
+    const doc = new PDFDocument({
+      margin: 40,
+      size: "A4",
+    });
+
+    // ================= HEADERS =================
+    res.setHeader("Content-Type", "application/pdf");
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=invoice-${invoice.invoice_number}.pdf`
+    );
+
+    doc.pipe(res);
+
+    // ================= TITLE =================
+    doc
+      .fontSize(22)
+      .text("Invoice Report", {
+        align: "center",
+      });
+
+    doc.moveDown(2);
+
+    // ================= INVOICE DETAILS =================
+    doc.fontSize(14);
+
+    doc.text(`Invoice Number: ${invoice.invoice_number || "-"}`);
+
+    doc.text(`Invoice ID: ${invoice.id}`);
+
+    doc.text(`Customer ID: ${invoice.customer_id || "-"}`);
+
+    doc.text(`Store Code: ${invoice.store_code || "-"}`);
+
+    doc.text(`Status: ${invoice.status || "-"}`);
+
+    doc.moveDown();
+
+    doc.text(`Total Amount: ₹${invoice.total_amount || 0}`);
+
+    doc.text(`Received Amount: ₹${invoice.received_amount || 0}`);
+
+    doc.text(`Pending Amount: ₹${invoice.pending_amount || 0}`);
+
+    doc.moveDown(2);
+
+    // ================= FOOTER =================
+    doc
+      .fontSize(12)
+      .text(
+        `Generated At: ${new Date().toLocaleString()}`
+      );
+
+    doc.end();
+
+  } catch (error) {
+
+    console.error("Download Invoice PDF Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+
   }
 };

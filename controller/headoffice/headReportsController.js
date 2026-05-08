@@ -140,7 +140,7 @@ export const getHeadOfficeReports = async (req, res) => {
       sales: Number(d.sales || 0)
     }));
 
-    ================= INVENTORY AUDIT REPORT =================
+    // ================= INVENTORY AUDIT REPORT =================
     const auditRaw = await sequelize.query(`
       SELECT
         i.id,

@@ -1469,39 +1469,33 @@ export const addStockIn = async (req, res) => {
         isNewItem = true;
 
         item = await Item.create(
-          {
-            item_name: String(item_name).trim(),
-            article_code: articleCode,
-            sku_code: skuCode,
+  {
+    item_name: String(item_name).trim(),
+    article_code: articleCode,
+    sku_code: skuCode,
 
-            metal_type,
-            category: String(category).trim(),
+    metal_type,
+    category: String(category).trim(),
 
-            purchase_rate: purchaseRate,
-            sale_rate: saleRate,
-            making_charge: makingChargeValue,
-            purity: String(purity).trim(),
+    purchase_rate: purchaseRate,
+    sale_rate: saleRate,
+    making_charge: makingChargeValue,
+    purity: String(purity).trim(),
 
-            net_weight: incomingWeight,
-            gross_weight: incomingWeight + incomingStoneWeight,
-            stone_weight: incomingStoneWeight,
+    net_weight: incomingWeight,
+    gross_weight: incomingWeight + incomingStoneWeight,
+    stone_weight: incomingStoneWeight,
 
-            current_status: "in_stock",
+    current_status: "in_stock",
 
-            organization_id: user.organization_id,
+    organization_id: user.organization_id,
 
-            /**
-             * IMPORTANT:
-             * Tumhare old code me `storeCode` use hua tha.
-             * Agar Item model me field name `storeCode` hai to ye sahi hai.
-             * Agar model me `store_code` hai, to is line ko replace karo:
-             *
-             * store_code: user.store_code || null,
-             */
-            storeCode: user.store_code || null,
-          },
-          { transaction: t }
-        );
+    storeCode: String(user.store_code || "")
+      .trim()
+      .toUpperCase(),
+  },
+  { transaction: t }
+);
 
         const qr = await generateItemQR(item);
 

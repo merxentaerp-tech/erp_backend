@@ -384,3 +384,88 @@ export const getOverallCategoryItems = async (req, res) => {
     });
   }
 };
+export const updateStockPricing = async (req, res) => {
+  try {
+    const { item_id, selling_price, making_charge } = req.body;
+
+    // ================= VALIDATION =================
+    if (!item_id) {
+      return res.status(400).json({
+        success: false,
+        message: "item_id is required",
+      });
+    }
+
+    // ================= CHECK ITEM EXISTS =================
+    const itemExists = await sequelize.query(
+      `
+      SELECT id, item_name, sale_rate, making_charge
+      FROM items
+      WHERE id = :item_id
+      `,
+      {
+        replacements: { item_id },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    if (itemExists.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Item not found",
+      });
+    }
+
+    // ================= UPDATE QUERY =================
+   await sequelize.query(
+  `
+  UPDATE items
+  SET
+    sale_rate = COALESCE(:selling_price, sale_rate),
+    making_charge = COALESCE(:making_charge, making_charge),
+    "updatedAt" = NOW()
+
+  WHERE id = :item_id
+  `,
+  {
+    replacements: {
+      item_id,
+      selling_price: selling_price ?? null,
+      making_charge: making_charge ?? null,
+    },
+    type: QueryTypes.UPDATE,
+  }
+);
+    // ================= UPDATED DATA =================
+    const updatedItem = await sequelize.query(
+      `
+      SELECT
+        id,
+        item_name,
+        sku_code,
+        sale_rate as selling_price,
+        making_charge
+      FROM items
+      WHERE id = :item_id
+      `,
+      {
+        replacements: { item_id },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Stock pricing updated successfully",
+      data: updatedItem[0],
+    });
+
+  } catch (error) {
+    console.error("Update Stock Pricing Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};

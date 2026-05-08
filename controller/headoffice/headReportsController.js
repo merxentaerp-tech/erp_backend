@@ -141,40 +141,40 @@ export const getHeadOfficeReports = async (req, res) => {
     }));
 
     ================= INVENTORY AUDIT REPORT =================
-    const auditRaw = await sequelize.query(`
-      SELECT
-        i.id,
-        i.item_name,
-        i.article_code,
-        i.sku_code,
-        i.category,
-        i.metal_type,
-        i.purity,
-        COALESCE(i.net_weight,0) AS net_weight,
-        COALESCE(i.stone_weight,0) AS stone_weight,
-        COALESCE(i.gross_weight,0) AS gross_weight,
-        COALESCE(i.is_item_audit,false) AS checklist,
-        i.last_audit_status,
-        i.last_audit_reason
-      FROM items i
-      ORDER BY i.id DESC
-    `, { type: QueryTypes.SELECT });
+    // const auditRaw = await sequelize.query(`
+    //   SELECT
+    //     i.id,
+    //     i.item_name,
+    //     i.article_code,
+    //     i.sku_code,
+    //     i.category,
+    //     i.metal_type,
+    //     i.purity,
+    //     COALESCE(i.net_weight,0) AS net_weight,
+    //     COALESCE(i.stone_weight,0) AS stone_weight,
+    //     COALESCE(i.gross_weight,0) AS gross_weight,
+    //     COALESCE(i.is_item_audit,false) AS checklist,
+    //     i.last_audit_status,
+    //     i.last_audit_reason
+    //   FROM items i
+    //   ORDER BY i.id DESC
+    // `, { type: QueryTypes.SELECT });
 
-    const inventoryAuditReport = auditRaw.map(i => ({
-      id: i.id,
-      item: i.item_name,
-      code: i.article_code,
-      sku_code: i.sku_code,
-      category: i.category,
-      metal_type: i.metal_type,
-      purity: i.purity,
-      netWt: `${Number(i.net_weight || 0)}g`,
-      stoneWt: `${Number(i.stone_weight || 0)}g`,
-      grossWt: `${Number(i.gross_weight || 0)}g`,
-      checklist: Boolean(i.checklist),
-      audit_status: i.last_audit_status || "pending",
-      audit_reason: i.last_audit_reason || null
-    }));
+    // const inventoryAuditReport = auditRaw.map(i => ({
+    //   id: i.id,
+    //   item: i.item_name,
+    //   code: i.article_code,
+    //   sku_code: i.sku_code,
+    //   category: i.category,
+    //   metal_type: i.metal_type,
+    //   purity: i.purity,
+    //   netWt: `${Number(i.net_weight || 0)}g`,
+    //   stoneWt: `${Number(i.stone_weight || 0)}g`,
+    //   grossWt: `${Number(i.gross_weight || 0)}g`,
+    //   checklist: Boolean(i.checklist),
+    //   audit_status: i.last_audit_status || "pending",
+    //   audit_reason: i.last_audit_reason || null
+    // }));
 
     // ================= FINAL RESPONSE =================
     return res.json({

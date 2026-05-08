@@ -40,7 +40,7 @@ router.get("/district/inventory/category/:category",auth, getDistrictStockItemsB
 
 
 
-//head stock manage
+//head stock management
 
 import {getOverallInventoryDashboard,getOverallCategoryItems,updateStockPricing } from "../controller/headoffice/headInventoryController.js";
 

@@ -1281,6 +1281,18 @@ export const addStockIn = async (req, res) => {
       });
     }
 
+    const cleanStoreCode = String(user?.store_code || user?.storeCode || "")
+      .trim()
+      .toUpperCase();
+
+    if (!cleanStoreCode) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "store_code missing in login token",
+      });
+    }
+
     const incomingQty = Number(qty);
     const incomingWeight = Number(net_weight);
     const incomingStoneWeight = Number(stone_weight || 0);
@@ -1337,10 +1349,6 @@ export const addStockIn = async (req, res) => {
       });
     }
 
-    const cleanStoreCode = String(user?.store_code || "")
-      .trim()
-      .toUpperCase();
-
     let item;
     let isNewItem = false;
     let isDuplicateItemStockIn = false;
@@ -1368,6 +1376,20 @@ export const addStockIn = async (req, res) => {
         });
       }
 
+      /**
+       * FIX:
+       * Agar existing item me storeCode null hai toh token ke store_code se update kar do.
+       */
+      if (!item.storeCode && cleanStoreCode) {
+        await item.update(
+          {
+            storeCode: cleanStoreCode,
+            storeName: user.store_name || user.storeName || item.storeName || null,
+          },
+          { transaction: t }
+        );
+      }
+
       if (!item.qr_code_value || !item.qr_code_url) {
         const qr = await generateItemQR(item);
 
@@ -1387,8 +1409,6 @@ export const addStockIn = async (req, res) => {
 
     /**
      * CASE 2: New item create from UI form
-     * If same article_code already exists in same organization,
-     * then do not create duplicate item. Just increase stock.
      */
     else {
       if (!item_name || !String(item_name).trim()) {
@@ -1433,9 +1453,9 @@ export const addStockIn = async (req, res) => {
 
       const articleCode = item_code
         ? String(item_code).trim().toUpperCase()
-        : `ART-${cleanStoreCode || "STORE"}-${Date.now()}`;
+        : `ART-${cleanStoreCode}-${Date.now()}`;
 
-      const skuCode = `SKU-${cleanStoreCode || "STORE"}-${Date.now()}`;
+      const skuCode = `SKU-${cleanStoreCode}-${Date.now()}`;
 
       const duplicateItem = await Item.findOne({
         where: {
@@ -1449,6 +1469,21 @@ export const addStockIn = async (req, res) => {
       if (duplicateItem) {
         item = duplicateItem;
         isDuplicateItemStockIn = true;
+
+        /**
+         * FIX:
+         * Duplicate item already exists but storeCode null hai toh update kar do.
+         */
+        if (!item.storeCode && cleanStoreCode) {
+          await item.update(
+            {
+              storeCode: cleanStoreCode,
+              storeName:
+                user.store_name || user.storeName || item.storeName || null,
+            },
+            { transaction: t }
+          );
+        }
 
         if (!item.qr_code_value || !item.qr_code_url) {
           const qr = await generateItemQR(item);
@@ -1469,33 +1504,36 @@ export const addStockIn = async (req, res) => {
         isNewItem = true;
 
         item = await Item.create(
-  {
-    item_name: String(item_name).trim(),
-    article_code: articleCode,
-    sku_code: skuCode,
+          {
+            item_name: String(item_name).trim(),
+            article_code: articleCode,
+            sku_code: skuCode,
 
-    metal_type,
-    category: String(category).trim(),
+            metal_type,
+            category: String(category).trim(),
 
-    purchase_rate: purchaseRate,
-    sale_rate: saleRate,
-    making_charge: makingChargeValue,
-    purity: String(purity).trim(),
+            purchase_rate: purchaseRate,
+            sale_rate: saleRate,
+            making_charge: makingChargeValue,
+            purity: String(purity).trim(),
 
-    net_weight: incomingWeight,
-    gross_weight: incomingWeight + incomingStoneWeight,
-    stone_weight: incomingStoneWeight,
+            net_weight: incomingWeight,
+            gross_weight: incomingWeight + incomingStoneWeight,
+            stone_weight: incomingStoneWeight,
 
-    current_status: "in_stock",
+            current_status: "in_stock",
 
-    organization_id: user.organization_id,
+            organization_id: user.organization_id,
 
-    storeCode: String(user.store_code || "")
-      .trim()
-      .toUpperCase(),
-  },
-  { transaction: t }
-);
+            /**
+             * FIX:
+             * Item level store code.
+             */
+            storeCode: cleanStoreCode,
+            storeName: user.store_name || user.storeName || null,
+          },
+          { transaction: t }
+        );
 
         const qr = await generateItemQR(item);
 
@@ -1531,16 +1569,29 @@ export const addStockIn = async (req, res) => {
           organization_id: item.organization_id,
           item_id: item.id,
 
+          /**
+           * FIX:
+           * Stock table me store_code save hoga.
+           */
+          store_code: cleanStoreCode,
+
           available_qty: 0,
           available_weight: 0,
 
-          /**
-           * Agar tumhare Stock model me ye columns nahi hain,
-           * to in 3 lines ko remove kar dena.
-           */
           reserved_qty: 0,
           transit_qty: 0,
           damaged_qty: 0,
+        },
+        { transaction: t }
+      );
+    } else if (!stock.store_code && cleanStoreCode) {
+      /**
+       * FIX:
+       * Existing stock record me store_code null hai toh update karo.
+       */
+      await stock.update(
+        {
+          store_code: cleanStoreCode,
         },
         { transaction: t }
       );
@@ -1554,6 +1605,7 @@ export const addStockIn = async (req, res) => {
 
     await stock.update(
       {
+        store_code: cleanStoreCode,
         available_qty: newAvailableQty,
         available_weight: newAvailableWeight,
       },
@@ -1565,18 +1617,25 @@ export const addStockIn = async (req, res) => {
     await item.update(
       {
         current_status: "in_stock",
+        storeCode: item.storeCode || cleanStoreCode,
+        storeName: item.storeName || user.store_name || user.storeName || null,
       },
       { transaction: t }
     );
 
     /**
      * STOCK MOVEMENT
-     * Tumhare previous error ke according DB CHECK constraint me lowercase purchase allowed hai.
      */
     await StockMovement.create(
       {
         item_id: item.id,
         organization_id: item.organization_id,
+
+        /**
+         * FIX:
+         * Movement table me bhi store_code save hoga.
+         */
+        store_code: cleanStoreCode,
 
         movement_type: "purchase",
 
@@ -1587,6 +1646,9 @@ export const addStockIn = async (req, res) => {
         new_status: "in_stock",
 
         reference_type: "manual_stock_in",
+        reference_id: item.id,
+        reference_no: item.article_code,
+
         remarks: remarks || "Stock inward completed",
         created_by: user?.id || null,
       },
@@ -1601,12 +1663,8 @@ export const addStockIn = async (req, res) => {
       : "Stock inward completed";
 
     const activityDescription = isNewItem
-      ? `${item.item_name} added with ${incomingQty} qty at ${
-          user?.store_code || "store"
-        }`
-      : `${item.item_name} stock increased by ${incomingQty} qty at ${
-          user?.store_code || "store"
-        }`;
+      ? `${item.item_name} added with ${incomingQty} qty at ${cleanStoreCode}`
+      : `${item.item_name} stock increased by ${incomingQty} qty at ${cleanStoreCode}`;
 
     const activityMeta = {
       item_id: item.id,
@@ -1632,11 +1690,8 @@ export const addStockIn = async (req, res) => {
       making_charge: makingChargeValue,
 
       organization_id: item.organization_id,
-      store_code:
-        user?.store_code ||
-        item.store_code ||
-        item.storeCode ||
-        null,
+      store_code: cleanStoreCode,
+      store_name: user.store_name || user.storeName || item.storeName || null,
 
       movement_type: "purchase",
       reference_type: "manual_stock_in",
@@ -1680,27 +1735,56 @@ export const addStockIn = async (req, res) => {
 
         state_code: user?.state_code || null,
         district_code: user?.district_code || null,
-        store_code:
-          user?.store_code ||
-          item.store_code ||
-          item.storeCode ||
-          null,
+
+        /**
+         * FIX:
+         * System activity me bhi same store_code.
+         */
+        store_code: cleanStoreCode,
+        store_name: user.store_name || user.storeName || item.storeName || null,
+
+        created_by: user?.id || null,
       },
       { transaction: t }
     );
 
     await t.commit();
 
+    const freshItem = await Item.findByPk(item.id, {
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          required: false,
+        },
+      ],
+    });
+
+    const freshStock = await Stock.findOne({
+      where: {
+        item_id: item.id,
+        organization_id: item.organization_id,
+      },
+    });
+
     return res.status(200).json({
       success: true,
       message: "Stock inward successful",
       data: {
-        item,
-        stock: {
-          ...stock.toJSON(),
-          available_qty: newAvailableQty,
-          available_weight: newAvailableWeight,
-        },
+        item: freshItem || item,
+        stock: freshStock
+          ? {
+              ...freshStock.toJSON(),
+              available_qty: newAvailableQty,
+              available_weight: newAvailableWeight,
+              store_code: cleanStoreCode,
+            }
+          : {
+              ...stock.toJSON(),
+              available_qty: newAvailableQty,
+              available_weight: newAvailableWeight,
+              store_code: cleanStoreCode,
+            },
       },
     });
   } catch (error) {

@@ -77,6 +77,8 @@ export const getRetailInventory = async (req, res) => {
       category,
       metal_type,
       organization_id,
+      page = 1,
+      limit = 1000,
     } = req.query;
 
     if (!user?.role) {
@@ -171,6 +173,17 @@ export const getRetailInventory = async (req, res) => {
     }
 
     // =================================================
+    // PAGINATION
+    // =================================================
+
+    const pageNumber = Number(page) || 1;
+
+    const pageLimit = Number(limit) || 1000;
+
+    const offset =
+      (pageNumber - 1) * pageLimit;
+
+    // =================================================
     // FETCH ITEMS
     // =================================================
 
@@ -221,6 +234,12 @@ export const getRetailInventory = async (req, res) => {
       ],
 
       order: [["id", "DESC"]],
+
+      limit: pageLimit,
+
+      offset,
+
+      subQuery: false,
     });
 
     // =================================================
@@ -256,7 +275,9 @@ export const getRetailInventory = async (req, res) => {
       );
 
       totalStock += available_qty;
+
       transitGoods += transit_qty;
+
       deadStock += dead_qty;
 
       if (
@@ -329,6 +350,11 @@ export const getRetailInventory = async (req, res) => {
         low_stock_items: lowStock,
 
         transit_goods: transitGoods,
+      },
+
+      pagination: {
+        page: pageNumber,
+        limit: pageLimit,
       },
 
       count: data.length,

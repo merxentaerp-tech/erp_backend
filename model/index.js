@@ -25,6 +25,7 @@ import TransactionEntry from "./TransactionEntry.js";
 Item.hasMany(Stock, {
   foreignKey: "item_id",
   as: "stocks",
+  onDelete: "CASCADE",
 });
 
 Stock.belongsTo(Item, {
@@ -107,7 +108,7 @@ Customer.hasMany(LedgerEntry, {
 
 LedgerEntry.belongsTo(Customer, {
   foreignKey: "customer_id",
-  as: "Customer",
+  as: "customer",
 });
 
 Store.hasMany(Customer, {

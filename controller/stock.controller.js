@@ -118,13 +118,17 @@ export const getRetailInventory = async (req, res) => {
       stockWhere.organization_id =
         Number(user.organization_id);
 
+      // =================================================
+      // STORE FILTER
+      // =================================================
+
       if (
         ["district", "retail", "store"].includes(
           level
         ) &&
         user.store_code
       ) {
-        itemWhere.storeCode = String(
+        stockWhere.store_code = String(
           user.store_code
         )
           .trim()
@@ -214,7 +218,7 @@ export const getRetailInventory = async (req, res) => {
 
           as: "stocks",
 
-          required: false,
+          required: true,
 
           where:
             Object.keys(stockWhere).length
@@ -224,11 +228,15 @@ export const getRetailInventory = async (req, res) => {
           attributes: [
             "id",
             "item_id",
+            "store_code",
             "available_qty",
             "available_weight",
             "reserved_qty",
+            "reserved_weight",
             "transit_qty",
+            "transit_weight",
             "dead_qty",
+            "dead_weight",
           ],
         },
       ],
@@ -252,26 +260,43 @@ export const getRetailInventory = async (req, res) => {
     let lowStock = 0;
 
     const data = items.map((item) => {
-      const stock =
-        Array.isArray(item.stocks) &&
-        item.stocks.length > 0
-          ? item.stocks[0]
-          : null;
+      const stocks = Array.isArray(item.stocks)
+        ? item.stocks
+        : [];
 
-      const available_qty = Number(
-        stock?.available_qty || 0
+      // =================================================
+      // STORE WISE STOCK SUM
+      // =================================================
+
+      const available_qty = stocks.reduce(
+        (sum, s) =>
+          sum + Number(s.available_qty || 0),
+        0
       );
 
-      const available_weight = Number(
-        stock?.available_weight || 0
+      const available_weight = stocks.reduce(
+        (sum, s) =>
+          sum +
+          Number(s.available_weight || 0),
+        0
       );
 
-      const transit_qty = Number(
-        stock?.transit_qty || 0
+      const reserved_qty = stocks.reduce(
+        (sum, s) =>
+          sum + Number(s.reserved_qty || 0),
+        0
       );
 
-      const dead_qty = Number(
-        stock?.dead_qty || 0
+      const transit_qty = stocks.reduce(
+        (sum, s) =>
+          sum + Number(s.transit_qty || 0),
+        0
+      );
+
+      const dead_qty = stocks.reduce(
+        (sum, s) =>
+          sum + Number(s.dead_qty || 0),
+        0
       );
 
       totalStock += available_qty;
@@ -304,7 +329,15 @@ export const getRetailInventory = async (req, res) => {
 
         quantity: available_qty,
 
+        available_qty,
+
         available_weight,
+
+        reserved_qty,
+
+        transit_qty,
+
+        dead_qty,
 
         net_weight: Number(
           item.net_weight || 0
@@ -329,10 +362,15 @@ export const getRetailInventory = async (req, res) => {
         current_status:
           item.current_status,
 
-        storeCode: item.storeCode,
+        storeCode:
+          stocks?.[0]?.store_code ||
+          item.storeCode ||
+          null,
 
         organization_id:
           item.organization_id,
+
+        stocks,
       };
     });
 

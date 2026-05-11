@@ -39,24 +39,18 @@ export const getLedger = async (req, res) => {
       });
     }
 
-    const ledgerWhere = {
-      organization_id,
-    };
+    const ledgerWhere = { organization_id };
+    const customerWhere = { organization_id };
 
-    const customerWhere = {
-      organization_id,
-    };
+    const cleanSearch = String(search || "").trim();
 
-    if (search?.trim()) {
+    if (cleanSearch) {
       customerWhere[Op.or] = [
-        { name: { [Op.iLike]: `%${search.trim()}%` } },
-        { phone: { [Op.iLike]: `%${search.trim()}%` } },
+        { name: { [Op.iLike]: `%${cleanSearch}%` } },
+        { phone: { [Op.iLike]: `%${cleanSearch}%` } },
       ];
     }
 
-    // ===============================
-    // SUMMARY CARDS
-    // ===============================
     const summaryRaw = await LedgerEntry.findOne({
       where: ledgerWhere,
       attributes: [
@@ -65,7 +59,9 @@ export const getLedger = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`
+              )
             ),
             0
           ),
@@ -76,7 +72,9 @@ export const getLedger = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`
+              )
             ),
             0
           ),
@@ -92,9 +90,6 @@ export const getLedger = async (req, res) => {
       goods_receipt: Number(summaryRaw?.goods_receipt || 0),
     };
 
-    // ===============================
-    // CLIENT WISE TABLE
-    // ===============================
     const clientRows = await LedgerEntry.findAll({
       where: ledgerWhere,
       attributes: [
@@ -113,7 +108,9 @@ export const getLedger = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN "LedgerEntry"."amount" ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN "LedgerEntry"."amount" ELSE 0 END`
+              )
             ),
             0
           ),
@@ -124,7 +121,9 @@ export const getLedger = async (req, res) => {
             "COALESCE",
             fn(
               "SUM",
-              literal(`CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN "LedgerEntry"."amount" ELSE 0 END`)
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN "LedgerEntry"."amount" ELSE 0 END`
+              )
             ),
             0
           ),
@@ -142,22 +141,23 @@ export const getLedger = async (req, res) => {
       include: [
         {
           model: Customer,
-          as: "Customer",
+          as: "customer", // ✅ FIXED: association alias is lowercase
           attributes: ["id", "name", "phone", "address", "store_code"],
           where: customerWhere,
           required: true,
         },
       ],
-      group: ["LedgerEntry.customer_id", "Customer.id"],
+      group: ["LedgerEntry.customer_id", "customer.id"],
       order: [[literal(`"pending_amount"`), "DESC"]],
+      subQuery: false,
     });
 
     const clients = clientRows.map((row) => ({
-      customer_id: row.customer_id,
-      client_name: row.Customer?.name || "",
-      phone: row.Customer?.phone || "",
-      address: row.Customer?.address || "",
-      store_code: row.Customer?.store_code || "",
+      customer_id: Number(row.customer_id),
+      client_name: row.customer?.name || "",
+      phone: row.customer?.phone || "",
+      address: row.customer?.address || "",
+      store_code: row.customer?.store_code || "",
       total_deals: Number(row.get("total_deals") || 0),
       total_amount: Number(row.get("total_amount") || 0),
       received_amount: Number(row.get("received_amount") || 0),
@@ -174,6 +174,7 @@ export const getLedger = async (req, res) => {
     });
   } catch (error) {
     console.error("Ledger Error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch ledger",
@@ -181,7 +182,6 @@ export const getLedger = async (req, res) => {
     });
   }
 };
-
 
 export const downloadLedgerExcel = async (req, res) => {
   try {

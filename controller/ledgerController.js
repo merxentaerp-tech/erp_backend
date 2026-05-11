@@ -202,30 +202,57 @@ export const downloadLedgerExcel = async (req, res) => {
       });
     }
 
-    // same logic as working getLedger API
-    const ledgerWhere = {
-      organization_id,
-    };
+    const cleanSearch = String(search || "").trim();
 
-    const customerWhere = {
-      organization_id,
-    };
+    const ledgerWhere = { organization_id };
+    const customerWhere = { organization_id };
 
-    if (search?.trim()) {
+    if (cleanSearch) {
       customerWhere[Op.or] = [
-        { name: { [Op.iLike]: `%${search.trim()}%` } },
-        { phone: { [Op.iLike]: `%${search.trim()}%` } },
+        { name: { [Op.iLike]: `%${cleanSearch}%` } },
+        { phone: { [Op.iLike]: `%${cleanSearch}%` } },
       ];
     }
 
-    // store info for header
     const store = await Store.findOne({
       where: { id: organization_id },
       attributes: ["id", "store_name", "store_code", "organization_level"],
       raw: true,
     });
 
-    // client-wise data
+    const summaryRaw = await LedgerEntry.findOne({
+      where: ledgerWhere,
+      attributes: [
+        [
+          fn(
+            "COALESCE",
+            fn(
+              "SUM",
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN 1 ELSE 0 END`
+              )
+            ),
+            0
+          ),
+          "total_sales",
+        ],
+        [
+          fn(
+            "COALESCE",
+            fn(
+              "SUM",
+              literal(
+                `CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN 1 ELSE 0 END`
+              )
+            ),
+            0
+          ),
+          "goods_receipt",
+        ],
+      ],
+      raw: true,
+    });
+
     const clientRows = await LedgerEntry.findAll({
       where: ledgerWhere,
       attributes: [
@@ -277,122 +304,377 @@ export const downloadLedgerExcel = async (req, res) => {
       include: [
         {
           model: Customer,
-          as: "Customer",
+          as: "customer",
           attributes: ["id", "name", "phone", "address", "store_code"],
           where: customerWhere,
           required: true,
         },
       ],
-      group: ["LedgerEntry.customer_id", "Customer.id"],
+      group: ["LedgerEntry.customer_id", "customer.id"],
       order: [[literal(`"pending_amount"`), "DESC"]],
+      subQuery: false,
     });
 
-    const data = clientRows.map((row) => ({
-      customer_id: row.customer_id,
-      client_name: row.Customer?.name || "",
-      phone: row.Customer?.phone || "",
-      address: row.Customer?.address || "",
-      customer_store_code: row.Customer?.store_code || "",
+    const clients = clientRows.map((row) => ({
+      customer_id: Number(row.customer_id),
+      client_name: row.customer?.name || "",
+      phone: row.customer?.phone || "",
+      address: row.customer?.address || "",
+      store_code: row.customer?.store_code || "",
       total_deals: Number(row.get("total_deals") || 0),
       total_amount: Number(row.get("total_amount") || 0),
       received_amount: Number(row.get("received_amount") || 0),
       pending_amount: Number(row.get("pending_amount") || 0),
-      action: "View",
     }));
 
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("Ledger Data");
+    const summary = {
+      total_sales: Number(summaryRaw?.total_sales || 0),
+      loss: 0,
+      goods_receipt: Number(summaryRaw?.goods_receipt || 0),
+      total_clients: clients.length,
+      total_amount: clients.reduce(
+        (sum, item) => sum + Number(item.total_amount || 0),
+        0
+      ),
+      received_amount: clients.reduce(
+        (sum, item) => sum + Number(item.received_amount || 0),
+        0
+      ),
+      pending_amount: clients.reduce(
+        (sum, item) => sum + Number(item.pending_amount || 0),
+        0
+      ),
+    };
 
-    // title
-    worksheet.mergeCells("A1:I1");
-    worksheet.getCell("A1").value = "Ledger Dashboard Report";
-    worksheet.getCell("A1").font = { bold: true, size: 16 };
-    worksheet.getCell("A1").alignment = {
+    const workbook = new ExcelJS.Workbook();
+
+    workbook.creator = "ERP System";
+    workbook.created = new Date();
+    workbook.modified = new Date();
+
+    const worksheet = workbook.addWorksheet("Ledger Report", {
+      views: [{ state: "frozen", ySplit: 12 }],
+      pageSetup: {
+        paperSize: 9,
+        orientation: "landscape",
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+      },
+    });
+
+    worksheet.properties.defaultRowHeight = 22;
+
+    worksheet.columns = [
+      { key: "customer_name", width: 26 },
+      { key: "phone", width: 16 },
+      { key: "store_code", width: 16 },
+      { key: "address", width: 34 },
+      { key: "total_deals", width: 14 },
+      { key: "total_amount", width: 18 },
+      { key: "received_amount", width: 20 },
+      { key: "pending_amount", width: 20 },
+    ];
+
+    const titleFill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF111827" },
+    };
+
+    const sectionFill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFE5E7EB" },
+    };
+
+    const headerFill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1F2937" },
+    };
+
+    const cardFill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFF9FAFB" },
+    };
+
+    const border = {
+      top: { style: "thin", color: { argb: "FFD1D5DB" } },
+      left: { style: "thin", color: { argb: "FFD1D5DB" } },
+      bottom: { style: "thin", color: { argb: "FFD1D5DB" } },
+      right: { style: "thin", color: { argb: "FFD1D5DB" } },
+    };
+
+    const moneyFormat = '₹#,##0.00;[Red]-₹#,##0.00';
+    const numberFormat = '#,##0';
+
+    // =========================
+    // TITLE
+    // =========================
+    worksheet.mergeCells("A1:H1");
+    const titleCell = worksheet.getCell("A1");
+    titleCell.value = "Dashboard & Ledger Report";
+    titleCell.font = {
+      bold: true,
+      size: 18,
+      color: { argb: "FFFFFFFF" },
+    };
+    titleCell.fill = titleFill;
+    titleCell.alignment = {
       horizontal: "center",
       vertical: "middle",
     };
+    worksheet.getRow(1).height = 34;
 
-    // store/org info
-    worksheet.getCell("A3").value = "Store Name";
-    worksheet.getCell("B3").value = store?.store_name || "";
+    // =========================
+    // STORE INFO
+    // =========================
+    worksheet.mergeCells("A3:B3");
+    worksheet.getCell("A3").value = "Store / Organization";
+    worksheet.getCell("A3").font = { bold: true };
 
-    worksheet.getCell("A4").value = "Store Code";
-    worksheet.getCell("B4").value = store?.store_code || req.user?.store_code || "";
+    worksheet.mergeCells("C3:D3");
+    worksheet.getCell("C3").value =
+      store?.store_name || req.user?.store_name || "N/A";
 
-    worksheet.getCell("A5").value = "Organization ID";
-    worksheet.getCell("B5").value = organization_id;
+    worksheet.mergeCells("E3:F3");
+    worksheet.getCell("E3").value = "Store Code";
+    worksheet.getCell("E3").font = { bold: true };
 
-    worksheet.getCell("A6").value = "Organization Level";
-    worksheet.getCell("B6").value = store?.organization_level || "";
+    worksheet.mergeCells("G3:H3");
+    worksheet.getCell("G3").value =
+      store?.store_code || req.user?.store_code || "N/A";
 
-    worksheet.getCell("A7").value = "Generated At";
-    worksheet.getCell("B7").value = new Date().toLocaleString();
+    worksheet.mergeCells("A4:B4");
+    worksheet.getCell("A4").value = "Organization ID";
+    worksheet.getCell("A4").font = { bold: true };
 
-    // make header labels bold
-    ["A3", "A4", "A5", "A6", "A7"].forEach((cell) => {
-      worksheet.getCell(cell).font = { bold: true };
+    worksheet.mergeCells("C4:D4");
+    worksheet.getCell("C4").value = organization_id;
+
+    worksheet.mergeCells("E4:F4");
+    worksheet.getCell("E4").value = "Generated At";
+    worksheet.getCell("E4").font = { bold: true };
+
+    worksheet.mergeCells("G4:H4");
+    worksheet.getCell("G4").value = new Date().toLocaleString("en-IN");
+
+    ["A3", "C3", "E3", "G3", "A4", "C4", "E4", "G4"].forEach((cell) => {
+      worksheet.getCell(cell).border = border;
+      worksheet.getCell(cell).alignment = {
+        vertical: "middle",
+        horizontal: "left",
+      };
     });
 
-    // blank row then table
-    const headerRowIndex = 9;
+    // =========================
+    // DASHBOARD CARDS
+    // =========================
+    worksheet.mergeCells("A6:H6");
+    worksheet.getCell("A6").value = "Dashboard Cards";
+    worksheet.getCell("A6").font = { bold: true, size: 13 };
+    worksheet.getCell("A6").fill = sectionFill;
+    worksheet.getCell("A6").border = border;
 
-    worksheet.getRow(headerRowIndex).values = [
-      "Customer ID",
-      "Client Name",
+    const cards = [
+      ["A7:B8", "Total Sales", summary.total_sales, numberFormat],
+      ["C7:D8", "Goods Receipt", summary.goods_receipt, numberFormat],
+      ["E7:F8", "Total Clients", summary.total_clients, numberFormat],
+      ["G7:H8", "Loss", summary.loss, moneyFormat],
+      ["A9:B10", "Total Amount", summary.total_amount, moneyFormat],
+      ["C9:D10", "Received Amount", summary.received_amount, moneyFormat],
+      ["E9:F10", "Pending Amount", summary.pending_amount, moneyFormat],
+      ["G9:H10", "Collectable", summary.pending_amount, moneyFormat],
+    ];
+
+    cards.forEach(([range, label, value, format]) => {
+      worksheet.mergeCells(range);
+
+      const startCell = range.split(":")[0];
+      const cell = worksheet.getCell(startCell);
+
+      cell.value = {
+        richText: [
+          {
+            text: `${label}\n`,
+            font: {
+              bold: true,
+              size: 10,
+              color: { argb: "FF6B7280" },
+            },
+          },
+          {
+            text: String(value),
+            font: {
+              bold: true,
+              size: 15,
+              color: { argb: "FF111827" },
+            },
+          },
+        ],
+      };
+
+      cell.fill = cardFill;
+      cell.border = border;
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+
+      if (typeof value === "number") {
+        cell.numFmt = format;
+      }
+    });
+
+    worksheet.getRow(7).height = 25;
+    worksheet.getRow(8).height = 25;
+    worksheet.getRow(9).height = 25;
+    worksheet.getRow(10).height = 25;
+
+    // =========================
+    // CUSTOMER LEDGER TABLE
+    // =========================
+    worksheet.mergeCells("A12:H12");
+    worksheet.getCell("A12").value = "Customer Ledger";
+    worksheet.getCell("A12").font = { bold: true, size: 13 };
+    worksheet.getCell("A12").fill = sectionFill;
+    worksheet.getCell("A12").border = border;
+
+    const headerRowIndex = 13;
+    const headerRow = worksheet.getRow(headerRowIndex);
+
+    headerRow.values = [
+      "Customer Name",
       "Phone",
+      "Store Code",
       "Address",
-      "Customer Store Code",
       "Total Deals",
       "Total Amount",
       "Received Amount",
       "Pending Amount",
     ];
 
-    worksheet.getRow(headerRowIndex).font = { bold: true };
+    headerRow.height = 26;
 
-    data.forEach((item) => {
-      worksheet.addRow([
-        item.customer_id,
-        item.client_name,
-        item.phone,
-        item.address,
-        item.customer_store_code,
-        item.total_deals,
-        item.total_amount,
-        item.received_amount,
-        item.pending_amount,
-      ]);
+    headerRow.eachCell((cell) => {
+      cell.font = {
+        bold: true,
+        color: { argb: "FFFFFFFF" },
+      };
+      cell.fill = headerFill;
+      cell.border = border;
+      cell.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
     });
 
-    // widths
-    worksheet.columns = [
-      { width: 15 }, // Customer ID
-      { width: 25 }, // Client Name
-      { width: 18 }, // Phone
-      { width: 30 }, // Address
-      { width: 20 }, // Customer Store Code
-      { width: 15 }, // Total Deals
-      { width: 18 }, // Total Amount
-      { width: 18 }, // Received Amount
-      { width: 18 }, // Pending Amount
-    ];
+    clients.forEach((item) => {
+      const row = worksheet.addRow({
+        customer_name: item.client_name,
+        phone: item.phone,
+        store_code: item.store_code,
+        address: item.address,
+        total_deals: item.total_deals,
+        total_amount: item.total_amount,
+        received_amount: item.received_amount,
+        pending_amount: item.pending_amount,
+      });
 
-    // alignment for numeric columns
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber >= headerRowIndex) {
-        row.getCell(6).alignment = { horizontal: "center" };
-        row.getCell(7).alignment = { horizontal: "right" };
-        row.getCell(8).alignment = { horizontal: "right" };
-        row.getCell(9).alignment = { horizontal: "right" };
-      }
+      row.eachCell((cell, colNumber) => {
+        cell.border = border;
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: colNumber >= 5 ? "right" : "left",
+          wrapText: true,
+        };
+      });
+
+      row.getCell(2).numFmt = "@";
+      row.getCell(3).numFmt = "@";
+      row.getCell(5).numFmt = numberFormat;
+      row.getCell(6).numFmt = moneyFormat;
+      row.getCell(7).numFmt = moneyFormat;
+      row.getCell(8).numFmt = moneyFormat;
     });
 
-    const fileName = `ledger_data_${store?.store_code || organization_id}_${Date.now()}.xlsx`;
+    const lastRow = worksheet.rowCount;
+
+    if (clients.length > 0) {
+      const totalRow = worksheet.addRow({
+        customer_name: "Grand Total",
+        phone: "",
+        store_code: "",
+        address: "",
+        total_deals: clients.reduce(
+          (sum, item) => sum + Number(item.total_deals || 0),
+          0
+        ),
+        total_amount: summary.total_amount,
+        received_amount: summary.received_amount,
+        pending_amount: summary.pending_amount,
+      });
+
+      totalRow.height = 26;
+
+      totalRow.eachCell((cell, colNumber) => {
+        cell.font = { bold: true };
+        cell.fill = sectionFill;
+        cell.border = border;
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: colNumber >= 5 ? "right" : "left",
+        };
+      });
+
+      totalRow.getCell(5).numFmt = numberFormat;
+      totalRow.getCell(6).numFmt = moneyFormat;
+      totalRow.getCell(7).numFmt = moneyFormat;
+      totalRow.getCell(8).numFmt = moneyFormat;
+    }
+
+    worksheet.autoFilter = {
+      from: {
+        row: headerRowIndex,
+        column: 1,
+      },
+      to: {
+        row: headerRowIndex,
+        column: 8,
+      },
+    };
+
+    worksheet.eachRow((row) => {
+      row.eachCell((cell) => {
+        cell.font = {
+          name: "Calibri",
+          size: cell.font?.size || 11,
+          bold: cell.font?.bold || false,
+          color: cell.font?.color,
+        };
+      });
+    });
+
+    worksheet.getRow(1).font = {
+      name: "Calibri",
+      bold: true,
+      size: 18,
+      color: { argb: "FFFFFFFF" },
+    };
+
+    const fileName = `ledger_report_${
+      store?.store_code || req.user?.store_code || organization_id
+    }_${Date.now()}.xlsx`;
 
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
+
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${fileName}"`
@@ -402,11 +684,16 @@ export const downloadLedgerExcel = async (req, res) => {
     return res.end();
   } catch (error) {
     console.error("Download Ledger Excel Error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to download ledger excel",
-      error: error.message,
-    });
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to download ledger excel",
+        error: error.message,
+      });
+    }
+
+    return res.end();
   }
 };
 /**

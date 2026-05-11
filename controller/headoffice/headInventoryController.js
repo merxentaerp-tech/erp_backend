@@ -341,46 +341,57 @@ export const getOverallCategoryItems = async (req, res) => {
       });
     }
 
-    const data = await sequelize.query(`
+    const data = await sequelize.query(
+      `
       SELECT 
-        i.item_name as article,
-        i.sku_code as code,
+        i.id AS item_id,
+        i.item_name AS article,
+        i.sku_code AS code,
 
-        COALESCE(SUM(s.available_qty), 0) as quantity,
+        COALESCE(SUM(s.available_qty), 0) AS quantity,
 
-        AVG(i.purchase_rate) as purchase_price,
-        AVG(i.sale_rate) as selling_price,
-        AVG(i.making_charge) as making_charge,
+        AVG(i.purchase_rate) AS purchase_price,
+        AVG(i.sale_rate) AS selling_price,
+        AVG(i.making_charge) AS making_charge,
 
         i.purity,
 
-        ROUND(AVG(i.net_weight)::numeric, 3) as net_weight,
-        ROUND(AVG(i.stone_weight)::numeric, 3) as stone_weight,
-         ROUND(AVG(i.gross_weight)::numeric, 3) as gross_weight
+        ROUND(AVG(i.net_weight)::numeric, 3) AS net_weight,
+        ROUND(AVG(i.stone_weight)::numeric, 3) AS stone_weight,
+        ROUND(AVG(i.gross_weight)::numeric, 3) AS gross_weight
 
       FROM items i
-      LEFT JOIN stocks s ON s.item_id = i.id
+
+      LEFT JOIN stocks s 
+        ON s.item_id = i.id
 
       WHERE i.category = :category
 
-      GROUP BY i.item_name, i.sku_code, i.purity
+      GROUP BY 
+        i.id,
+        i.item_name,
+        i.sku_code,
+        i.purity
 
       ORDER BY i.item_name ASC
-    `, {
-      replacements: { category },
-      type: QueryTypes.SELECT
-    });
+      `,
+      {
+        replacements: { category },
+        type: QueryTypes.SELECT,
+      }
+    );
 
     return res.json({
       success: true,
-      data
+      data,
     });
 
   } catch (error) {
     console.error("Overall Category Error:", error);
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
     });
   }
 };

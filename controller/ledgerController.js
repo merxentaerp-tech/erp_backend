@@ -39,10 +39,15 @@ export const getLedger = async (req, res) => {
       });
     }
 
-    const ledgerWhere = { organization_id };
-    const customerWhere = { organization_id };
-
     const cleanSearch = String(search || "").trim();
+
+    const ledgerWhere = {
+      organization_id,
+    };
+
+    const customerWhere = {
+      organization_id,
+    };
 
     if (cleanSearch) {
       customerWhere[Op.or] = [
@@ -51,6 +56,9 @@ export const getLedger = async (req, res) => {
       ];
     }
 
+    // ===============================
+    // SUMMARY RAW
+    // ===============================
     const summaryRaw = await LedgerEntry.findOne({
       where: ledgerWhere,
       attributes: [
@@ -84,12 +92,9 @@ export const getLedger = async (req, res) => {
       raw: true,
     });
 
-    const summary = {
-      total_sales: Number(summaryRaw?.total_sales || 0),
-      loss: 0,
-      goods_receipt: Number(summaryRaw?.goods_receipt || 0),
-    };
-
+    // ===============================
+    // CLIENT WISE TABLE
+    // ===============================
     const clientRows = await LedgerEntry.findAll({
       where: ledgerWhere,
       attributes: [
@@ -131,9 +136,27 @@ export const getLedger = async (req, res) => {
         ],
         [
           literal(`
-            COALESCE(SUM(CASE WHEN "LedgerEntry"."type" = 'DEBIT' THEN "LedgerEntry"."amount" ELSE 0 END), 0)
+            COALESCE(
+              SUM(
+                CASE 
+                  WHEN "LedgerEntry"."type" = 'DEBIT' 
+                  THEN "LedgerEntry"."amount" 
+                  ELSE 0 
+                END
+              ), 
+              0
+            )
             -
-            COALESCE(SUM(CASE WHEN "LedgerEntry"."type" = 'CREDIT' THEN "LedgerEntry"."amount" ELSE 0 END), 0)
+            COALESCE(
+              SUM(
+                CASE 
+                  WHEN "LedgerEntry"."type" = 'CREDIT' 
+                  THEN "LedgerEntry"."amount" 
+                  ELSE 0 
+                END
+              ), 
+              0
+            )
           `),
           "pending_amount",
         ],
@@ -141,7 +164,7 @@ export const getLedger = async (req, res) => {
       include: [
         {
           model: Customer,
-          as: "customer", // ✅ FIXED: association alias is lowercase
+          as: "customer", // ✅ FIXED: alias lowercase hona chahiye
           attributes: ["id", "name", "phone", "address", "store_code"],
           where: customerWhere,
           required: true,
@@ -152,17 +175,57 @@ export const getLedger = async (req, res) => {
       subQuery: false,
     });
 
-    const clients = clientRows.map((row) => ({
-      customer_id: Number(row.customer_id),
-      client_name: row.customer?.name || "",
-      phone: row.customer?.phone || "",
-      address: row.customer?.address || "",
-      store_code: row.customer?.store_code || "",
-      total_deals: Number(row.get("total_deals") || 0),
-      total_amount: Number(row.get("total_amount") || 0),
-      received_amount: Number(row.get("received_amount") || 0),
-      pending_amount: Number(row.get("pending_amount") || 0),
-    }));
+    const clients = clientRows.map((row) => {
+      const totalAmount = Number(row.get("total_amount") || 0);
+      const receivedAmount = Number(row.get("received_amount") || 0);
+      const pendingAmount = Number(row.get("pending_amount") || 0);
+
+      return {
+        customer_id: Number(row.customer_id),
+        client_name: row.customer?.name || "",
+        phone: row.customer?.phone || "",
+        address: row.customer?.address || "",
+        store_code: row.customer?.store_code || "",
+        total_deals: Number(row.get("total_deals") || 0),
+        total_amount: Number(totalAmount.toFixed(2)),
+        received_amount: Number(receivedAmount.toFixed(2)),
+        pending_amount: Number(pendingAmount.toFixed(2)),
+      };
+    });
+
+    const totalAmount = clients.reduce(
+      (sum, item) => sum + Number(item.total_amount || 0),
+      0
+    );
+
+    const receivedAmount = clients.reduce(
+      (sum, item) => sum + Number(item.received_amount || 0),
+      0
+    );
+
+    const pendingAmount = clients.reduce(
+      (sum, item) => sum + Number(item.pending_amount || 0),
+      0
+    );
+
+    const summary = {
+      total_sales: Number(summaryRaw?.total_sales || 0),
+
+      // UI me Total Loss ke liye
+      loss: 0,
+
+      // Purana key backward compatibility ke liye rakha hai
+      goods_receipt: Number(summaryRaw?.goods_receipt || 0),
+
+      // New proper dashboard keys
+      total_clients: clients.length,
+      total_amount: Number(totalAmount.toFixed(2)),
+      received_amount: Number(receivedAmount.toFixed(2)),
+      pending_amount: Number(pendingAmount.toFixed(2)),
+
+      // UI me Collectable Amount ke liye ye use karo
+      collectable_amount: Number(pendingAmount.toFixed(2)),
+    };
 
     return res.status(200).json({
       success: true,
@@ -182,7 +245,6 @@ export const getLedger = async (req, res) => {
     });
   }
 };
-
 export const downloadLedgerExcel = async (req, res) => {
   try {
     if (!req.user) {

@@ -2014,7 +2014,7 @@ export const getDistrictDashboard = async (req, res) => {
     });
   }
 };
-* -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------- */
 
 export const getDistrictReportsAnalytics = async (req, res) => {
   try {

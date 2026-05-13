@@ -1606,7 +1606,8 @@ export const getDistrictDashboard = async (req, res) => {
 
     const districtInventoryItems = [];
 
-    const getItemObj = (row) => row.item || row.Item || row.dataValues?.item || row.dataValues?.Item || {};
+    const getItemObj = (row) =>
+      row.item || row.Item || row.dataValues?.item || row.dataValues?.Item || {};
 
     const getStockQty = (row) => {
       const availableQty = safeNum(row.available_qty ?? row.quantity);
@@ -1659,7 +1660,11 @@ export const getDistrictDashboard = async (req, res) => {
       totalStock += totalQty;
       transitGoods += transitQty;
 
-      if (deadQty > 0 || deadWeight > 0 || String(row.status).toUpperCase() === "DEAD") {
+      if (
+        deadQty > 0 ||
+        deadWeight > 0 ||
+        String(row.status).toUpperCase() === "DEAD"
+      ) {
         deadStockItems += 1;
       }
 
@@ -1769,7 +1774,12 @@ export const getDistrictDashboard = async (req, res) => {
           sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"),
           sequelize.fn("DATE_PART", "month", sequelize.col("created_at")),
         ],
-        order: [[sequelize.fn("DATE_PART", "month", sequelize.col("created_at")), "ASC"]],
+        order: [
+          [
+            sequelize.fn("DATE_PART", "month", sequelize.col("created_at")),
+            "ASC",
+          ],
+        ],
         raw: true,
       });
 
@@ -1805,7 +1815,9 @@ export const getDistrictDashboard = async (req, res) => {
       const now = new Date();
 
       pendingTasks = pendingTasks.map((task) => {
-        const createdAt = new Date(task.created_at || task.createdAt || new Date());
+        const createdAt = new Date(
+          task.created_at || task.createdAt || new Date()
+        );
 
         const diffMs = now - createdAt;
         const diffMinutes = Math.floor(diffMs / (1000 * 60));
@@ -1955,8 +1967,8 @@ export const getDistrictDashboard = async (req, res) => {
           dead_stock_items: deadStockItems,
           transit_goods: transitGoods,
 
-          gold_price_value: goldPriceValue,
-          silver_price_value: silverPriceValue,
+          gold_price_value: liveRate.gold_price,
+          silver_price_value: liveRate.silver_price,
 
           gold_price: liveRate.gold_price,
           silver_price: liveRate.silver_price,
@@ -2002,9 +2014,7 @@ export const getDistrictDashboard = async (req, res) => {
     });
   }
 };
-/* -------------------------------------------------------------------------- */
-/*                       DISTRICT REPORTS & ANALYTICS API                     */
-/* -------------------------------------------------------------------------- */
+* -------------------------------------------------------------------------- */
 
 export const getDistrictReportsAnalytics = async (req, res) => {
   try {

@@ -8,6 +8,7 @@ import Task from "../model/task.js";
 import MetalRate from "../model/metalRate.js";
 import Customer from "../model/Customer.js";
 // import Invoice from "../model/Invoice.js";
+
 const hasAttr = (model, attr) => !!model?.rawAttributes?.[attr];
 
 const pickAttr = (model, attrs = []) => {
@@ -117,6 +118,7 @@ const getSafeWhere = (model, user, extra = {}) => {
   const scoped = buildScopedWhere(model, user, extra);
   return scoped === null ? null : scoped;
 };
+
 const num = (v) => Number(v || 0);
 
 const getUserScopeSql = (user, alias = "") => {
@@ -187,12 +189,6 @@ const getLast7DaysLabelsIndia = () => {
   return labels;
 };
 
-
-
-
-
-
-
 export const getDashboardSummary = async (req, res) => {
   try {
     if (!req.user) {
@@ -239,60 +235,60 @@ export const getDashboardSummary = async (req, res) => {
     // =====================================================
     // STOCK CARDS - RETAIL STORE DATA ONLY
     // =====================================================
-   const stockSummary = await sequelize.query(
-  `
-  SELECT
-    COALESCE(SUM(s.available_qty), 0) AS total_available_qty,
+    const stockSummary = await sequelize.query(
+      `
+      SELECT
+        COALESCE(SUM(s.available_qty), 0) AS total_available_qty,
 
-    COALESCE(SUM(s.transit_qty), 0) AS total_transit_qty,
+        COALESCE(SUM(s.transit_qty), 0) AS total_transit_qty,
 
-    COUNT(
-      DISTINCT CASE
-        WHEN
-          s.available_qty > 0
+        COUNT(
+          DISTINCT CASE
+            WHEN
+              s.available_qty > 0
 
-          AND i."createdAt"
-          < NOW() - INTERVAL '30 days'
+              AND i."createdAt"
+              < NOW() - INTERVAL '30 days'
 
-          AND NOT EXISTS (
+              AND NOT EXISTS (
 
-            SELECT 1
+                SELECT 1
 
-            FROM invoice_items ii
+                FROM invoice_items ii
 
-            JOIN invoices inv
-            ON inv.id = ii.invoice_id
+                JOIN invoices inv
+                ON inv.id = ii.invoice_id
 
-            WHERE ii.item_id = i.id
+                WHERE ii.item_id = i.id
 
-            AND inv."createdAt"
-            > NOW() - INTERVAL '30 days'
-          )
+                AND inv."createdAt"
+                > NOW() - INTERVAL '30 days'
+              )
 
-        THEN i.id
-      END
-    )::int AS dead_stock_items,
+            THEN i.id
+          END
+        )::int AS dead_stock_items,
 
-    COUNT(
-      CASE
-        WHEN COALESCE(s.transit_qty,0) > 0
-        THEN 1
-      END
-    )::int AS transit_goods
+        COUNT(
+          CASE
+            WHEN COALESCE(s.transit_qty,0) > 0
+            THEN 1
+          END
+        )::int AS transit_goods
 
-  FROM stocks s
+      FROM stocks s
 
-  INNER JOIN items i
-  ON i.id = s.item_id
+      INNER JOIN items i
+      ON i.id = s.item_id
 
-  WHERE 1=1
-  ${stockItemWhere}
-  `,
-  {
-    replacements,
-    type: QueryTypes.SELECT,
-  }
-);
+      WHERE 1=1
+      ${stockItemWhere}
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
 
     const stock = stockSummary[0] || {};
 
@@ -459,6 +455,7 @@ export const getDashboardSummary = async (req, res) => {
     });
   }
 };
+
 export const getAllReports = async (req, res) => {
   try {
     if (!req.user) {
@@ -546,6 +543,31 @@ export const getAllReports = async (req, res) => {
       }
     );
 
+    // =====================================================
+    // METAL RATES - ONLY ADDED FOR DISTRICT REPORT DASHBOARD
+    // =====================================================
+    const goldRate = await sequelize.query(
+      `
+      SELECT rate
+      FROM metal_rates
+      WHERE metal_type ILIKE 'gold'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      { type: QueryTypes.SELECT }
+    );
+
+    const silverRate = await sequelize.query(
+      `
+      SELECT rate
+      FROM metal_rates
+      WHERE metal_type ILIKE 'silver'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      { type: QueryTypes.SELECT }
+    );
+
     const s = salesSummary[0] || {};
     const p = paymentSummary[0] || {};
 
@@ -555,6 +577,10 @@ export const getAllReports = async (req, res) => {
       totalSales: num(s.total_sales),
       totalCashReceived: num(p.total_cash_received),
       accountTransfer: num(p.account_transfer),
+
+      // ONLY ADDED
+      gold_price: goldRate[0] ? num(goldRate[0].rate) : 0,
+      silver_price: silverRate[0] ? num(silverRate[0].rate) : 0,
     };
 
     // =====================================================
@@ -563,45 +589,46 @@ export const getAllReports = async (req, res) => {
     const labels = getLast7DaysLabelsIndia();
     const startDate = labels[0].fullDate;
     const endDate = labels[labels.length - 1].fullDate;
-// replace only cashRaw + cashVsAccount block
 
-const cashRaw = await sequelize.query(
-  `
-  SELECT
-    DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata') AS date,
-    COALESCE(SUM(inv.received_amount),0) AS cash,
-    COALESCE(SUM(inv.pending_amount),0) AS pending,
-    COALESCE(SUM(inv.total_amount),0) AS total
-  FROM invoices inv
-  WHERE DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
-    BETWEEN :startDate AND :endDate
-  ${invoiceWhere}
-  GROUP BY DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
-  ORDER BY DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
-  `,
-  {
-    replacements: {
-      ...replacements,
-      startDate,
-      endDate,
-    },
-    type: QueryTypes.SELECT,
-  }
-);
+    // replace only cashRaw + cashVsAccount block
+    const cashRaw = await sequelize.query(
+      `
+      SELECT
+        DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata') AS date,
+        COALESCE(SUM(inv.received_amount),0) AS cash,
+        COALESCE(SUM(inv.pending_amount),0) AS pending,
+        COALESCE(SUM(inv.total_amount),0) AS total
+      FROM invoices inv
+      WHERE DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
+        BETWEEN :startDate AND :endDate
+      ${invoiceWhere}
+      GROUP BY DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
+      ORDER BY DATE(inv.invoice_date AT TIME ZONE 'Asia/Kolkata')
+      `,
+      {
+        replacements: {
+          ...replacements,
+          startDate,
+          endDate,
+        },
+        type: QueryTypes.SELECT,
+      }
+    );
 
-const cashMap = new Map(cashRaw.map((r) => [String(r.date), r]));
+    const cashMap = new Map(cashRaw.map((r) => [String(r.date), r]));
 
-const cashVsAccount = labels.map((d) => {
-  const row = cashMap.get(d.fullDate) || {};
+    const cashVsAccount = labels.map((d) => {
+      const row = cashMap.get(d.fullDate) || {};
 
-  return {
-    date: d.fullDate,
-    day: d.label,
-    cash: num(row.cash),
-    pending: num(row.pending),
-    total: num(row.total),
-  };
-});
+      return {
+        date: d.fullDate,
+        day: d.label,
+        cash: num(row.cash),
+        pending: num(row.pending),
+        total: num(row.total),
+      };
+    });
+
     // =====================================================
     // CATEGORY SALES FROM STOCK_MOVEMENTS
     // =====================================================
@@ -743,10 +770,6 @@ const cashVsAccount = labels.map((d) => {
   }
 };
 
-
-
-
-
 export const getStoreReports = async (req, res) => {
   try {
     const storeCode = req.headers.store_code;
@@ -759,25 +782,34 @@ export const getStoreReports = async (req, res) => {
     }
 
     // ================= DASHBOARD =================
-    const totalCustomers = await sequelize.query(`
+    const totalCustomers = await sequelize.query(
+      `
       SELECT COUNT(*) as count 
       FROM customers 
       WHERE store_code = '${storeCode}'
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
-    const totalRevenue = await sequelize.query(`
+    const totalRevenue = await sequelize.query(
+      `
       SELECT COALESCE(SUM(total_amount),0) as total
       FROM invoices
       WHERE store_code = '${storeCode}'
       AND status IN ('PAID','PARTIAL')
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
-    const totalSales = await sequelize.query(`
+    const totalSales = await sequelize.query(
+      `
       SELECT COUNT(*) as count
       FROM invoices
       WHERE store_code = '${storeCode}'
       AND status IN ('PAID','PARTIAL')
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
     const dashboardSummary = {
       totalCustomers: Number(totalCustomers[0].count),
@@ -786,7 +818,8 @@ export const getStoreReports = async (req, res) => {
     };
 
     // ================= CASH VS ACCOUNT =================
-    const cashVsAccount = await sequelize.query(`
+    const cashVsAccount = await sequelize.query(
+      `
       SELECT 
         DATE(p.payment_date) as date,
         TO_CHAR(p.payment_date, 'Dy') as day,
@@ -802,10 +835,13 @@ export const getStoreReports = async (req, res) => {
 
       GROUP BY DATE(p.payment_date), TO_CHAR(p.payment_date, 'Dy')
       ORDER BY DATE(p.payment_date)
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
     // ================= CATEGORY SALES =================
-    const categoryRaw = await sequelize.query(`
+    const categoryRaw = await sequelize.query(
+      `
       SELECT 
         i.category,
         SUM(ii.total_amount) as total_revenue
@@ -815,14 +851,16 @@ export const getStoreReports = async (req, res) => {
       WHERE inv.store_code = '${storeCode}'
       AND inv.status IN ('PAID','PARTIAL')
       GROUP BY i.category
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
     const totalCategoryRevenue = categoryRaw.reduce(
       (sum, item) => sum + Number(item.total_revenue),
       0
     );
 
-    const categorySales = categoryRaw.map(item => ({
+    const categorySales = categoryRaw.map((item) => ({
       category: item.category,
       percentage: totalCategoryRevenue
         ? Math.round((item.total_revenue / totalCategoryRevenue) * 100)
@@ -830,7 +868,8 @@ export const getStoreReports = async (req, res) => {
     }));
 
     // ================= TYPE DISTRIBUTION =================
-    const typeDistribution = await sequelize.query(`
+    const typeDistribution = await sequelize.query(
+      `
       SELECT 
         CONCAT(i.metal_type, ' ', i.purity) as label,
         SUM(ii.total_amount) as value
@@ -841,10 +880,13 @@ export const getStoreReports = async (req, res) => {
       AND inv.status IN ('PAID','PARTIAL')
       GROUP BY i.metal_type, i.purity
       ORDER BY value DESC
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
     // ================= TOP PRODUCTS =================
-    const topProductsRaw = await sequelize.query(`
+    const topProductsRaw = await sequelize.query(
+      `
       SELECT 
         i.item_name,
         i.category,
@@ -858,7 +900,9 @@ export const getStoreReports = async (req, res) => {
       GROUP BY i.id, i.item_name, i.category
       ORDER BY total_revenue DESC
       LIMIT 5
-    `, { type: sequelize.QueryTypes.SELECT });
+      `,
+      { type: sequelize.QueryTypes.SELECT }
+    );
 
     const maxRevenue = topProductsRaw.length
       ? Number(topProductsRaw[0].total_revenue)
@@ -887,7 +931,6 @@ export const getStoreReports = async (req, res) => {
         topProducts,
       },
     });
-
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

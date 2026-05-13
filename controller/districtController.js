@@ -10,9 +10,9 @@ import User from "../model/user.js"
 import Invoice from "../model/invoices.js"
 import Transaction from "../model/Transaction.js";
 import InvoiceItem from "../model/InvoiceItem.js";
-
 import { getGoldRate } from "../service/goldService.js";
-
+import { getGoldRate } from "../service/goldService.js";
+import axios from "axios";
 
 
 
@@ -1421,85 +1421,48 @@ export const getDistrictDashboard = async (req, res) => {
     };
 
     try {
-      const rateData = await getGoldRate();
+  // 1 Gold & Silver USD per ounce
+  const goldRes = await axios.get("https://api.gold-api.com/price/XAU");
+  const silverRes = await axios.get("https://api.gold-api.com/price/XAG");
 
-      let gold24PerGram = Number(rateData?.price_gram_24k || 0);
-      let gold22PerGram = Number(rateData?.price_gram_22k || 0);
-      let gold18PerGram = Number(rateData?.price_gram_18k || 0);
+  // 2 LIVE USD → INR
+  const rateRes = await axios.get("https://open.er-api.com/v6/latest/USD");
+  const usdToInr = Number(rateRes?.data?.rates?.INR || 0);
 
-      let silverPerGram = Number(
-        rateData?.silver_price_gram ||
-          rateData?.silver_high_rate ||
-          rateData?.silver_price ||
-          rateData?.price_gram_silver ||
-          0
-      );
+  const ounceToGram = 31.1035;
 
-      let goldChange = Number(rateData?.gold_change_percent || 0);
-      let silverChange = Number(rateData?.silver_change_percent || 0);
+  // 3 Gold 24K per gram INR
+  const gold24K = ((Number(goldRes?.data?.price || 0)) / ounceToGram) * usdToInr;
 
-      if (!gold24PerGram && typeof MetalRate !== "undefined") {
-        const dbGoldRate = await MetalRate.findOne({
-          where: {
-            metal_type: {
-              [Op.iLike]: "gold",
-            },
-          },
-          order: [["created_at", "DESC"]],
-          raw: true,
-        });
+  // 4 Gold 22K / 18K per gram INR
+  const gold22K = gold24K * (22 / 24);
+  const gold18K = gold24K * (18 / 24);
 
-        const dbGold = Number(
-          dbGoldRate?.rate || dbGoldRate?.metal_rate || dbGoldRate?.price || 0
-        );
+  // 5 Silver 999 → 925 per gram INR
+  const silver999 = ((Number(silverRes?.data?.price || 0)) / ounceToGram) * usdToInr;
+  const silver925 = silver999 * 0.925;
 
-        if (dbGold > 0) {
-          gold24PerGram = dbGold / 10;
-          gold22PerGram = gold24PerGram * (22 / 24);
-          gold18PerGram = gold24PerGram * (18 / 24);
-        }
-      }
+  liveRate = {
+    gold_price: Number((gold24K * 10).toFixed(2)), // 24K per 10 gram
+    silver_price: Number(silver925.toFixed(2)),   // silver 925 per gram
 
-      if (!silverPerGram && typeof MetalRate !== "undefined") {
-        const dbSilverRate = await MetalRate.findOne({
-          where: {
-            metal_type: {
-              [Op.iLike]: "silver",
-            },
-          },
-          order: [["created_at", "DESC"]],
-          raw: true,
-        });
+    gold_rate_24k: Number(gold24K.toFixed(2)),
+    gold_rate_22k: Number(gold22K.toFixed(2)),
+    gold_rate_18k: Number(gold18K.toFixed(2)),
+    silver_rate: Number(silver925.toFixed(2)),
 
-        silverPerGram = Number(
-          dbSilverRate?.rate ||
-            dbSilverRate?.metal_rate ||
-            dbSilverRate?.price ||
-            0
-        );
-      }
+    gold_change_percent: 0,
+    silver_change_percent: 0,
 
-      liveRate = {
-        gold_price: Number((gold24PerGram * 10).toFixed(2)),
-        silver_price: Number(silverPerGram.toFixed(2)),
+    gold_trend: "up",
+    silver_trend: "up",
 
-        gold_rate_24k: Number(gold24PerGram.toFixed(2)),
-        gold_rate_22k: Number(gold22PerGram.toFixed(2)),
-        gold_rate_18k: Number(gold18PerGram.toFixed(2)),
-        silver_rate: Number(silverPerGram.toFixed(2)),
-
-        gold_change_percent: Number(goldChange.toFixed(2)),
-        silver_change_percent: Number(silverChange.toFixed(2)),
-
-        gold_trend: goldChange >= 0 ? "up" : "down",
-        silver_trend: silverChange >= 0 ? "up" : "down",
-
-        currency: rateData?.currency || "INR",
-        updated_at: rateData?.timestamp || new Date().toISOString(),
-      };
-    } catch (err) {
-      console.error("Live rate fetch error:", err.message);
-    }
+    currency: "INR",
+    updated_at: new Date().toISOString(),
+  };
+} catch (err) {
+  console.log("District Gold/Silver API Error:", err.message);
+}
 
     // =========================================================
     // STORES

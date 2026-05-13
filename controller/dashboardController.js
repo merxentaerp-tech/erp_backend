@@ -7,6 +7,7 @@ import SystemActivity from "../model/systemActivity.js";
 import Task from "../model/task.js";
 import MetalRate from "../model/metalRate.js";
 import Customer from "../model/Customer.js";
+import axios from "axios";
 // import Invoice from "../model/Invoice.js";
 
 const hasAttr = (model, attr) => !!model?.rawAttributes?.[attr];
@@ -120,6 +121,44 @@ const getSafeWhere = (model, user, extra = {}) => {
 };
 
 const num = (v) => Number(v || 0);
+
+// ✅ ONLY ADDED: Same live Gold/Silver logic as Head Dashboard
+const getLiveGoldSilverPrice = async () => {
+  let goldPrice = 0;
+  let silverPrice = 0;
+
+  try {
+    const [goldRes, silverRes, rateRes] = await Promise.all([
+      axios.get("https://api.gold-api.com/price/XAU", { timeout: 8000 }),
+      axios.get("https://api.gold-api.com/price/XAG", { timeout: 8000 }),
+      axios.get("https://open.er-api.com/v6/latest/USD", { timeout: 8000 }),
+    ]);
+
+    const usdToInr = Number(rateRes?.data?.rates?.INR || 0);
+    const ounceToGram = 31.1035;
+
+    const goldUsdPerOunce = Number(goldRes?.data?.price || 0);
+    const silverUsdPerOunce = Number(silverRes?.data?.price || 0);
+
+    if (usdToInr > 0 && goldUsdPerOunce > 0) {
+      // 24K gold per gram INR
+      goldPrice = (goldUsdPerOunce / ounceToGram) * usdToInr;
+    }
+
+    if (usdToInr > 0 && silverUsdPerOunce > 0) {
+      // Silver 925 per gram INR
+      const silver999 = (silverUsdPerOunce / ounceToGram) * usdToInr;
+      silverPrice = silver999 * 0.925;
+    }
+  } catch (error) {
+    console.log("Gold/Silver live price API error:", error.message);
+  }
+
+  return {
+    goldPrice: Number(goldPrice.toFixed(2)),
+    silverPrice: Number(silverPrice.toFixed(2)),
+  };
+};
 
 const getUserScopeSql = (user, alias = "") => {
   const p = alias ? `${alias}.` : "";
@@ -295,27 +334,8 @@ export const getDashboardSummary = async (req, res) => {
     // =====================================================
     // METAL RATES
     // =====================================================
-    const goldRate = await sequelize.query(
-      `
-      SELECT rate
-      FROM metal_rates
-      WHERE metal_type ILIKE 'gold'
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      { type: QueryTypes.SELECT }
-    );
-
-    const silverRate = await sequelize.query(
-      `
-      SELECT rate
-      FROM metal_rates
-      WHERE metal_type ILIKE 'silver'
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      { type: QueryTypes.SELECT }
-    );
+    // ✅ ONLY MODIFIED: DB metal_rates ki jagah live Head Dashboard wali value
+    const { goldPrice, silverPrice } = await getLiveGoldSilverPrice();
 
     // =====================================================
     // SALES TREND - STOCK_MOVEMENTS
@@ -435,8 +455,10 @@ export const getDashboardSummary = async (req, res) => {
           total_stock: num(stock.total_available_qty),
           dead_stock_items: num(stock.dead_stock_items),
           transit_goods: num(stock.transit_goods),
-          gold_price: goldRate[0] ? num(goldRate[0].rate) : 0,
-          silver_price: silverRate[0] ? num(silverRate[0].rate) : 0,
+
+          // ✅ ONLY MODIFIED
+          gold_price: goldPrice,
+          silver_price: silverPrice,
         },
         charts: {
           sales_trends: salesTrends,
@@ -546,27 +568,8 @@ export const getAllReports = async (req, res) => {
     // =====================================================
     // METAL RATES - ONLY ADDED FOR DISTRICT REPORT DASHBOARD
     // =====================================================
-    const goldRate = await sequelize.query(
-      `
-      SELECT rate
-      FROM metal_rates
-      WHERE metal_type ILIKE 'gold'
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      { type: QueryTypes.SELECT }
-    );
-
-    const silverRate = await sequelize.query(
-      `
-      SELECT rate
-      FROM metal_rates
-      WHERE metal_type ILIKE 'silver'
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
-      { type: QueryTypes.SELECT }
-    );
+    // ✅ ONLY MODIFIED: DB metal_rates ki jagah live Head Dashboard wali value
+    const { goldPrice, silverPrice } = await getLiveGoldSilverPrice();
 
     const s = salesSummary[0] || {};
     const p = paymentSummary[0] || {};
@@ -578,9 +581,9 @@ export const getAllReports = async (req, res) => {
       totalCashReceived: num(p.total_cash_received),
       accountTransfer: num(p.account_transfer),
 
-      // ONLY ADDED
-      gold_price: goldRate[0] ? num(goldRate[0].rate) : 0,
-      silver_price: silverRate[0] ? num(silverRate[0].rate) : 0,
+      // ✅ ONLY MODIFIED
+      gold_price: goldPrice,
+      silver_price: silverPrice,
     };
 
     // =====================================================

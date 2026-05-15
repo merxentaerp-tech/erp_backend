@@ -521,6 +521,7 @@ export const createBill = async (req, res) => {
     }
 
     const itemIds = items.map((i) => i.item_id).filter(Boolean);
+
     if (itemIds.length !== new Set(itemIds).size) {
       throw new Error("Duplicate item found in bill items");
     }
@@ -545,13 +546,20 @@ export const createBill = async (req, res) => {
       (customer.phone || customer.pan_card_number || customer.name)
     ) {
       const cleanPhone = normalizePhone(customer.phone);
+
       const cleanPan = customer.pan_card_number
         ? String(customer.pan_card_number).trim().toUpperCase()
         : null;
 
       const orConditions = [];
-      if (cleanPhone) orConditions.push({ phone: cleanPhone });
-      if (cleanPan) orConditions.push({ pan_card_number: cleanPan });
+
+      if (cleanPhone) {
+        orConditions.push({ phone: cleanPhone });
+      }
+
+      if (cleanPan) {
+        orConditions.push({ pan_card_number: cleanPan });
+      }
 
       if (orConditions.length > 0) {
         finalCustomer = await Customer.findOne({
@@ -590,17 +598,27 @@ export const createBill = async (req, res) => {
 
     for (const row of items) {
       const item_id = row.item_id;
-      const qty = row.qty === undefined || row.qty === null || row.qty === ""
-        ? 1
-        : toNumber(row.qty);
+
+      const qty =
+        row.qty === undefined || row.qty === null || row.qty === ""
+          ? 1
+          : toNumber(row.qty);
 
       const net_weight = toNumber(row.net_weight);
       const rate = toNumber(row.rate);
       const making_charge_percent = toNumber(row.making_charge_percent);
 
-      if (!item_id) throw new Error("item_id is required for each item");
-      if (qty <= 0) throw new Error(`Invalid qty for item ${item_id}`);
-      if (rate <= 0) throw new Error(`Invalid rate for item ${item_id}`);
+      if (!item_id) {
+        throw new Error("item_id is required for each item");
+      }
+
+      if (qty <= 0) {
+        throw new Error(`Invalid qty for item ${item_id}`);
+      }
+
+      if (rate <= 0) {
+        throw new Error(`Invalid rate for item ${item_id}`);
+      }
 
       const dbItem = await Item.findOne({
         where: {
@@ -620,13 +638,10 @@ export const createBill = async (req, res) => {
       const unit = String(dbItem.unit || row.unit || "").toLowerCase();
       const isPieceItem = ["pcs", "pc", "piece", "pieces"].includes(unit);
 
-      // ✅ INDUSTRY RULE:
-      // PCS item me qty editable hai
-      // Gold / weight item me qty fixed 1 hai
+      // PCS item me qty editable hai.
+      // Weight based item me qty fixed 1 hai.
       if (!isPieceItem && qty !== 1) {
-        throw new Error(
-          `Qty must be 1 for weight-based item ${item_id}`
-        );
+        throw new Error(`Qty must be 1 for weight-based item ${item_id}`);
       }
 
       if (!isPieceItem && net_weight <= 0) {
@@ -670,17 +685,34 @@ export const createBill = async (req, res) => {
         qty,
         unit,
         isPieceItem,
+
         product_code:
           row.product_code ||
           dbItem.article_code ||
           dbItem.sku_code ||
           null,
+
         description:
           row.description ||
           dbItem.details ||
           dbItem.item_name ||
           null,
+
+        item_name: dbItem.item_name || row.description || null,
+        metal_type: dbItem.metal_type || row.metal_type || null,
+        category: dbItem.category || row.category || null,
+        purity: dbItem.purity || row.purity || null,
+
+        gross_weight: isPieceItem
+          ? 0
+          : toNumber(row.gross_weight || dbItem.gross_weight || net_weight),
+
         net_weight: isPieceItem ? 0 : net_weight,
+
+        stone_weight: isPieceItem
+          ? 0
+          : toNumber(row.stone_weight || dbItem.stone_weight || 0),
+
         rate,
         making_charge_percent,
         making_charge_value: makingChargeValue,
@@ -717,8 +749,42 @@ export const createBill = async (req, res) => {
       { transaction: t }
     );
 
+    // ✅ NEW: invoice create with bill
+    const invoiceNumber =
+      typeof generateInvoiceNumber === "function"
+        ? generateInvoiceNumber(cleanStoreCode)
+        : `INV-${cleanStoreCode}-${Date.now()}`;
+
+    const invoice = await Invoice.create(
+      {
+        invoice_number: invoiceNumber,
+
+        // Agar tumhare Invoice model me bill_id nahi hai to ye line remove kar dena.
+        bill_id: bill.id,
+
+        customer_id: finalCustomer?.id || null,
+        organization_id: Number(organization_id),
+        organization_level,
+        store_code: cleanStoreCode,
+
+        invoice_date: new Date(),
+
+        total_amount: Number(grandTotal.toFixed(2)),
+        paid_amount: Number(paidAmount.toFixed(2)),
+        due_amount: Number(dueAmount.toFixed(2)),
+
+        status: dueAmount > 0 ? "partial" : "paid",
+        payment_status: dueAmount > 0 ? "partial" : "paid",
+
+        notes,
+        created_by: req.user?.id || null,
+      },
+      { transaction: t }
+    );
+
     for (const row of preparedItems) {
       const updatedQty = row.openingQty - row.qty;
+
       const updatedWeight = row.isPieceItem
         ? row.openingWeight
         : row.openingWeight - row.net_weight;
@@ -730,6 +796,35 @@ export const createBill = async (req, res) => {
           product_code: row.product_code,
           description: row.description,
           net_weight: row.net_weight,
+          rate: row.rate,
+          making_charge_percent: row.making_charge_percent,
+          making_charge_value: Number(row.making_charge_value.toFixed(2)),
+          total_amount: Number(row.total_amount.toFixed(2)),
+        },
+        { transaction: t }
+      );
+
+      // ✅ NEW: invoice item create with bill item
+      await InvoiceItem.create(
+        {
+          invoice_id: invoice.id,
+          item_id: row.item_id,
+
+          product_code: row.product_code,
+          item_name: row.item_name,
+          description: row.description,
+
+          qty: row.qty,
+          unit: row.unit,
+
+          metal_type: row.metal_type,
+          category: row.category,
+          purity: row.purity,
+
+          gross_weight: row.gross_weight,
+          net_weight: row.net_weight,
+          stone_weight: row.stone_weight,
+
           rate: row.rate,
           making_charge_percent: row.making_charge_percent,
           making_charge_value: Number(row.making_charge_value.toFixed(2)),
@@ -765,13 +860,17 @@ export const createBill = async (req, res) => {
         { transaction: t }
       );
 
-      // ✅ Only unique / weight item sold lock
-      // PCS item me same item ka stock remaining ho sakta hai
+      // Unique / weight item sold lock.
+      // PCS item me same item ka stock remaining ho sakta hai.
       if (!row.isPieceItem || updatedQty <= 0) {
         await Item.update(
-          { current_status: "sold" },
           {
-            where: { id: row.item_id },
+            current_status: "sold",
+          },
+          {
+            where: {
+              id: row.item_id,
+            },
             transaction: t,
           }
         );
@@ -785,6 +884,10 @@ export const createBill = async (req, res) => {
           organization_id,
           store_code: cleanStoreCode,
           bill_id: bill.id,
+
+          // Agar tumhare LedgerEntry model me invoice_id hai to ye useful hai.
+          invoice_id: invoice.id,
+
           type: "DEBIT",
           amount: Number(grandTotal.toFixed(2)),
           remarks: `Bill created: ${billNumber}`,
@@ -800,6 +903,10 @@ export const createBill = async (req, res) => {
             organization_id,
             store_code: cleanStoreCode,
             bill_id: bill.id,
+
+            // Agar tumhare LedgerEntry model me invoice_id hai to ye useful hai.
+            invoice_id: invoice.id,
+
             type: "CREDIT",
             amount: Number(paidAmount.toFixed(2)),
             remarks: `Payment received against bill: ${billNumber}`,
@@ -814,20 +921,27 @@ export const createBill = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Bill created successfully",
+      message: "Bill and invoice created successfully",
       data: {
         bill_id: bill.id,
         bill_number: bill.bill_number,
+
+        invoice_id: invoice.id,
+        invoice_number: invoice.invoice_number,
+
         customer_id: finalCustomer?.id || null,
         customer_name: finalCustomer?.name || null,
+
         total_items: preparedItems.length,
         total_amount: Number(grandTotal.toFixed(2)),
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
+        payment_status: dueAmount > 0 ? "partial" : "paid",
       },
     });
   } catch (error) {
     await t.rollback();
+
     console.error("Create Bill Error:", error);
 
     return res.status(500).json({
@@ -837,7 +951,6 @@ export const createBill = async (req, res) => {
     });
   }
 };
-
 // export const scanBillItemQR = async (req, res) => {
 //   try {
 //     const {

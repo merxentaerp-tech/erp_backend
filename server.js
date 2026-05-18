@@ -116,30 +116,30 @@ const emitDashboardData = async (socket, user) => {
 async function startServer() {
   try {
     await sequelize.authenticate();
-    console.log("✅ PostgreSQL connected successfully");
+    console.log(" PostgreSQL connected successfully");
 
     const server = app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(` Server running on port ${PORT}`);
     });
 
     const io = new Server(server, {
       cors: corsOptions,
     });
 
-    // ✅ IMPORTANT: controller me global.io.emit use karne ke liye
+    // IMPORTANT: controller me global.io.emit use karne ke liye
     global.io = io;
 
     io.on("connection", async (socket) => {
-      console.log("✅ Client connected:", socket.id);
+      console.log(" Client connected:", socket.id);
 
-      // ✅ Transfer live tracking room
+      //  Transfer live tracking room
       socket.on("join-transfer-tracking", (transferId) => {
         if (!transferId) return;
 
         socket.join(`transfer_${transferId}`);
 
         console.log(
-          `✅ Socket ${socket.id} joined transfer_${transferId}`
+          `Socket ${socket.id} joined transfer_${transferId}`
         );
 
         socket.emit("transfer-tracking-joined", {
@@ -155,7 +155,7 @@ async function startServer() {
         socket.leave(`transfer_${transferId}`);
 
         console.log(
-          `❌ Socket ${socket.id} left transfer_${transferId}`
+          ` Socket ${socket.id} left transfer_${transferId}`
         );
       });
 
@@ -180,7 +180,7 @@ async function startServer() {
       });
 
       socket.on("disconnect", () => {
-        console.log("❌ Client disconnected:", socket.id);
+        console.log(" Client disconnected:", socket.id);
       });
     });
 
@@ -205,13 +205,13 @@ async function startServer() {
           await emitDashboardData(socket, user);
         }
 
-        console.log("✅ Live dashboard data emitted");
+        console.log(" Live dashboard data emitted");
       } catch (error) {
         console.error("Live dashboard socket error:", error.message);
       }
     }, 30000);
   } catch (error) {
-    console.error("❌ Database connection failed:", error.message);
+    console.error(" Database connection failed:", error.message);
   }
 }
 

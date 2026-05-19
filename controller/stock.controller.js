@@ -2038,18 +2038,18 @@ const parseExcelRows = (buffer) => {
 //   return Number.isFinite(num) ? num : fallback;
 // };
 
-const normalizeUnit = (unit) => {
-  const u = clean(unit).toLowerCase();
+// const normalizeUnit = (unit) => {
+//   const u = clean(unit).toLowerCase();
 
-  if (["g", "gm", "gms", "gram", "grams"].includes(u)) return "g";
-  if (["kg", "kilogram", "kilograms"].includes(u)) return "kg";
-  if (["mg", "milligram", "milligrams"].includes(u)) return "mg";
-  if (["piece", "pieces", "pcs", "pc", "nos"].includes(u)) return "pcs";
-  if (["pair", "pairs"].includes(u)) return "pair";
-  if (["set", "sets"].includes(u)) return "set";
+//   if (["g", "gm", "gms", "gram", "grams"].includes(u)) return "g";
+//   if (["kg", "kilogram", "kilograms"].includes(u)) return "kg";
+//   if (["mg", "milligram", "milligrams"].includes(u)) return "mg";
+//   if (["piece", "pieces", "pcs", "pc", "nos"].includes(u)) return "pcs";
+//   if (["pair", "pairs"].includes(u)) return "pair";
+//   if (["set", "sets"].includes(u)) return "set";
 
-  return u || "pcs";
-};
+//   return u || "pcs";
+// };
 
 const normalizeMetalType = (itemName) => {
   const text = clean(itemName).toLowerCase();

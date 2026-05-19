@@ -15,6 +15,7 @@ import Store from "../model/Store.js";
 import { createActivityLog } from "../service/activity.service.js";
 // import {generateItemQR} from "../service/qrgen.js"
 import XLSX from "xlsx";
+import cloudinary from "../utils/cloudinary.js";
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -1291,13 +1292,9 @@ export const addStockIn = async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
-    /**
-     * SAME RESPONSE STRUCTURE
-     * SINGLE + MULTIPLE BOTH SUPPORT
-     */
-    const payloads = Array.isArray(req.body)
-      ? req.body
-      : [req.body];
+    const payloads = Array.isArray(req.body.items)
+      ? req.body.items
+      : JSON.parse(req.body.items || "[]");
 
     const user = req.user;
 
@@ -1316,18 +1313,11 @@ export const addStockIn = async (req, res) => {
       .trim()
       .toUpperCase();
 
-    if (!cleanStoreCode) {
-      await t.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: "store_code missing in login token",
-      });
-    }
-
     const responseData = [];
 
-    for (const body of payloads) {
+    for (let index = 0; index < payloads.length; index++) {
+      const body = payloads[index];
+
       const {
         item_id,
         item_name,
@@ -1346,11 +1336,34 @@ export const addStockIn = async (req, res) => {
         remarks,
       } = body;
 
+      // ==========================================
+      // IMAGE UPLOAD
+      // ==========================================
+
+      let uploadedImage = null;
+
+      if (
+        req.files &&
+        req.files[index]
+      ) {
+        uploadedImage =
+          await cloudinary.uploader.upload(
+            req.files[index].path ||
+              req.files[index].buffer,
+            {
+              folder:
+                "inventory/items",
+            }
+          );
+      }
+
       const incomingQty = Number(qty);
-      const incomingWeight = Number(net_weight);
-      const incomingStoneWeight = Number(
-        stone_weight || 0
-      );
+
+      const incomingWeight =
+        Number(net_weight);
+
+      const incomingStoneWeight =
+        Number(stone_weight || 0);
 
       const purchaseRate = Number(
         purchase_price || 0
@@ -1360,9 +1373,8 @@ export const addStockIn = async (req, res) => {
         selling_price || 0
       );
 
-      const makingChargeValue = Number(
-        making_charge || 0
-      );
+      const makingChargeValue =
+        Number(making_charge || 0);
 
       const cleanItemId = item_id
         ? Number(item_id)
@@ -1370,11 +1382,9 @@ export const addStockIn = async (req, res) => {
 
       let item;
 
-      /**
-       * =========================================
-       * EXISTING ITEM
-       * =========================================
-       */
+      // ==========================================
+      // EXISTING ITEM
+      // ==========================================
 
       if (cleanItemId) {
         item = await Item.findOne({
@@ -1400,11 +1410,9 @@ export const addStockIn = async (req, res) => {
         }
       }
 
-      /**
-       * =========================================
-       * NEW ITEM
-       * =========================================
-       */
+      // ==========================================
+      // NEW ITEM
+      // ==========================================
 
       else {
         const articleCode = item_code
@@ -1415,10 +1423,6 @@ export const addStockIn = async (req, res) => {
               1000 +
                 Math.random() * 9000
             )}`;
-
-        /**
-         * DUPLICATE CHECK
-         */
 
         const duplicateItem =
           await Item.findOne({
@@ -1471,7 +1475,8 @@ export const addStockIn = async (req, res) => {
             purchase_rate:
               purchaseRate,
 
-            sale_rate: saleRate,
+            sale_rate:
+              saleRate,
 
             making_charge:
               makingChargeValue,
@@ -1501,16 +1506,26 @@ export const addStockIn = async (req, res) => {
               user.store_name ||
               user.storeName ||
               null,
+
+            // ==========================================
+            // IMAGE
+            // ==========================================
+
+            image_url:
+              uploadedImage?.secure_url ||
+              null,
+
+            image_public_id:
+              uploadedImage?.public_id ||
+              null,
           },
           { transaction: t }
         );
 
-        /**
-         * QR GENERATE
-         */
-
         const qr =
-          await generateItemQR(item);
+          await generateItemQR(
+            item
+          );
 
         await item.update(
           {
@@ -1524,11 +1539,9 @@ export const addStockIn = async (req, res) => {
         );
       }
 
-      /**
-       * =========================================
-       * STOCK
-       * =========================================
-       */
+      // ==========================================
+      // STOCK
+      // ==========================================
 
       let stock = await Stock.findOne({
         where: {
@@ -1592,12 +1605,6 @@ export const addStockIn = async (req, res) => {
         { transaction: t }
       );
 
-      /**
-       * =========================================
-       * ITEM STATUS
-       * =========================================
-       */
-
       await item.update(
         {
           current_status:
@@ -1605,12 +1612,6 @@ export const addStockIn = async (req, res) => {
         },
         { transaction: t }
       );
-
-      /**
-       * =========================================
-       * STOCK MOVEMENT
-       * =========================================
-       */
 
       await StockMovement.create(
         {
@@ -1655,16 +1656,11 @@ export const addStockIn = async (req, res) => {
         { transaction: t }
       );
 
-      /**
-       * =========================================
-       * RESPONSE SAME AS BEFORE
-       * =========================================
-       */
-
       responseData.push({
         item,
         stock: {
           ...stock.toJSON(),
+
           available_qty:
             newAvailableQty,
 
@@ -1696,41 +1692,6 @@ export const addStockIn = async (req, res) => {
       "addStockIn error:",
       error
     );
-
-    if (
-      error?.name ===
-      "SequelizeValidationError"
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Validation failed",
-        errors: error.errors?.map(
-          (e) => ({
-            field: e.path,
-            message: e.message,
-            value: e.value,
-          })
-        ),
-      });
-    }
-
-    if (
-      error?.name ===
-      "SequelizeUniqueConstraintError"
-    ) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "Duplicate item code or SKU code already exists",
-        errors: error.errors?.map(
-          (e) => ({
-            field: e.path,
-            message: e.message,
-            value: e.value,
-          })
-        ),
-      });
-    }
 
     return res.status(500).json({
       success: false,

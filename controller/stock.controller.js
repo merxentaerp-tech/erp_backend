@@ -1,4 +1,5 @@
-import { Op } from "sequelize";
+import { Op,QueryTypes } from "sequelize";
+
 import sequelize from "../config/db.js";
 import QRCode from "qrcode";
 // import QRCode from "qrcode";
@@ -14,8 +15,10 @@ import SystemActivity from "../model/systemActivity.js";
 import Store from "../model/Store.js";
 import { createActivityLog } from "../service/activity.service.js";
 // import {generateItemQR} from "../service/qrgen.js"
+
+
+import { InventoryTrackingService } from "../service/inventoryTracking.service.js";
 import XLSX from "xlsx";
-import cloudinary from "../utils/cloudinary.js";
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -72,15 +75,7 @@ const getCreatedKey = (model) =>
 export const getRetailInventory = async (req, res) => {
   try {
     const user = req.user;
-
-    const {
-      search,
-      category,
-      metal_type,
-      organization_id,
-      page = 1,
-      limit = 1000,
-    } = req.query;
+    const { search, category, metal_type, organization_id } = req.query;
 
     if (!user?.role) {
       return res.status(401).json({
@@ -92,326 +87,203 @@ export const getRetailInventory = async (req, res) => {
     const itemWhere = {};
     const stockWhere = {};
 
-    const level = String(
-      user.organization_level || ""
-    ).toLowerCase();
-
-    const role = String(
-      user.role || ""
-    ).toLowerCase();
+    const level = String(user.organization_level || "").toLowerCase();
+    const role = String(user.role || "").toLowerCase();
 
     // =================================================
-    // ACCESS FILTER
+    // SUPER ADMIN
     // =================================================
-
     if (role === "super_admin") {
       if (organization_id) {
-        itemWhere.organization_id =
-          Number(organization_id);
-
-        stockWhere.organization_id =
-          Number(organization_id);
+        itemWhere.organization_id = Number(organization_id);
+        stockWhere.organization_id = Number(organization_id);
       }
-    } else {
-      itemWhere.organization_id =
-        Number(user.organization_id);
+    }
 
-      stockWhere.organization_id =
-        Number(user.organization_id);
+    // =================================================
+    // DISTRICT USER
+    // =================================================
+    else if (level === "district") {
+      itemWhere.organization_id = Number(user.organization_id);
 
-      // =================================================
-      // STORE FILTER
-      // =================================================
-
-      if (
-        ["district", "retail", "store"].includes(
-          level
-        ) &&
-        user.store_code
-      ) {
-        stockWhere.store_code = String(
-          user.store_code
-        )
-          .trim()
-          .toUpperCase();
+      if (user.store_code) {
+        itemWhere.storeCode = user.store_code;
       }
+
+      stockWhere.organization_id = Number(user.organization_id);
+    }
+
+    // =================================================
+    // RETAIL / STORE USER
+    // =================================================
+    else if (level === "retail" || level === "store") {
+      if (!user.store_code) {
+        return res.status(403).json({
+          success: false,
+          message: "Store code not found for this user",
+        });
+      }
+
+      itemWhere.storeCode = user.store_code;
+      stockWhere.organization_id = Number(user.organization_id);
+    }
+
+    // =================================================
+    // OTHER USERS
+    // =================================================
+    else {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid user level",
+      });
     }
 
     // =================================================
     // FILTERS
     // =================================================
-
-    if (category) {
-      itemWhere.category = category;
-    }
-
-    if (metal_type) {
-      itemWhere.metal_type = metal_type;
-    }
+    if (category) itemWhere.category = category;
+    if (metal_type) itemWhere.metal_type = metal_type;
 
     if (search) {
       itemWhere[Op.or] = [
-        {
-          item_name: {
-            [Op.iLike]: `%${search}%`,
-          },
-        },
-
-        {
-          article_code: {
-            [Op.iLike]: `%${search}%`,
-          },
-        },
-
-        {
-          sku_code: {
-            [Op.iLike]: `%${search}%`,
-          },
-        },
-
-        {
-          purity: {
-            [Op.iLike]: `%${search}%`,
-          },
-        },
+        { category: { [Op.iLike]: `%${search}%` } },
+        { article_code: { [Op.iLike]: `%${search}%` } },
+        { item_name: { [Op.iLike]: `%${search}%` } },
+        { purity: { [Op.iLike]: `%${search}%` } },
+        { sku_code: { [Op.iLike]: `%${search}%` } },
       ];
     }
 
     // =================================================
-    // PAGINATION
+    // FETCH ITEMS WITH STOCK
     // =================================================
-
-    const pageNumber = Number(page) || 1;
-
-    const pageLimit = Number(limit) || 1000;
-
-    const offset =
-      (pageNumber - 1) * pageLimit;
-
-    // =================================================
-    // FETCH ITEMS
-    // =================================================
-
     const items = await Item.findAll({
-      where: itemWhere,
-
       attributes: [
         "id",
-        "item_name",
+        "category",
         "article_code",
         "sku_code",
-        "category",
-        "metal_type",
+        "item_name",
+        "sale_rate",
+        "making_charge",
         "purity",
         "net_weight",
         "stone_weight",
         "gross_weight",
-        "sale_rate",
-        "making_charge",
-        "current_status",
         "storeCode",
         "organization_id",
+        "current_status",
       ],
-
+      where: itemWhere,
       include: [
         {
           model: Stock,
-
           as: "stocks",
-
-          required: true,
-
-          where:
-            Object.keys(stockWhere).length
-              ? stockWhere
-              : undefined,
-
+          required: false,
           attributes: [
             "id",
-            "item_id",
-            "store_code",
+            "organization_id",
             "available_qty",
             "available_weight",
             "reserved_qty",
             "reserved_weight",
             "transit_qty",
             "transit_weight",
+            "damaged_qty",
+            "damaged_weight",
             "dead_qty",
             "dead_weight",
           ],
+          where: Object.keys(stockWhere).length ? stockWhere : undefined,
         },
       ],
-
       order: [["id", "DESC"]],
-
-      limit: pageLimit,
-
-      offset,
-
-      subQuery: false,
     });
 
     // =================================================
-    // SUMMARY
+    // SUMMARY CARDS
     // =================================================
-
-    let totalStock = 0;
-    let deadStock = 0;
+    let totalStockItems = 0;
+    let deadStockItems = 0;
+    let lowStockItems = 0;
     let transitGoods = 0;
-    let lowStock = 0;
 
-    const data = items.map((item) => {
-      const stocks = Array.isArray(item.stocks)
-        ? item.stocks
-        : [];
+    // low stock threshold
+    const LOW_STOCK_THRESHOLD = 5;
 
-      // =================================================
-      // STORE WISE STOCK SUM
-      // =================================================
+    // =================================================
+    // GROUP CATEGORY TABLE
+    // =================================================
+    const grouped = {};
 
-      const available_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.available_qty || 0),
-        0
-      );
+    for (const item of items) {
+      const key = item.category || "Other";
+      const stocks = Array.isArray(item.stocks) ? item.stocks : [];
 
-      const available_weight = stocks.reduce(
-        (sum, s) =>
-          sum +
-          Number(s.available_weight || 0),
-        0
-      );
+      let itemAvailableQty = 0;
+      let itemTransitQty = 0;
+      let itemDeadQty = 0;
 
-      const reserved_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.reserved_qty || 0),
-        0
-      );
-
-      const transit_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.transit_qty || 0),
-        0
-      );
-
-      const dead_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.dead_qty || 0),
-        0
-      );
-
-      totalStock += available_qty;
-
-      transitGoods += transit_qty;
-
-      deadStock += dead_qty;
-
-      if (
-        available_qty > 0 &&
-        available_qty <= 5
-      ) {
-        lowStock++;
+      for (const stock of stocks) {
+        itemAvailableQty += Number(stock.available_qty || 0);
+        itemTransitQty += Number(stock.transit_qty || 0);
+        itemDeadQty += Number(stock.dead_qty || 0);
       }
 
-      return {
-        id: item.id,
+      totalStockItems += itemAvailableQty;
+      transitGoods += itemTransitQty;
+      deadStockItems += itemDeadQty;
 
-        item_name: item.item_name,
+      if (itemAvailableQty > 0 && itemAvailableQty <= LOW_STOCK_THRESHOLD) {
+        lowStockItems += 1;
+      }
 
-        article_code: item.article_code,
+      if (!grouped[key]) {
+        grouped[key] = {
+          category: key,
+          code: item.article_code || "-",
+          quantity: 0,
+          selling_price: Number(item.sale_rate || 0),
+          making_charge: Number(item.making_charge || 0),
+          purity: item.purity || "-",
+          net_weight: 0,
+          stone_weight: 0,
+          gross_weight: 0,
+          action: "View Details",
+        };
+      }
 
-        sku_code: item.sku_code,
+      grouped[key].quantity += itemAvailableQty;
+      grouped[key].net_weight += Number(item.net_weight || 0);
+      grouped[key].stone_weight += Number(item.stone_weight || 0);
+      grouped[key].gross_weight += Number(item.gross_weight || 0);
+    }
 
-        category: item.category,
-
-        metal_type: item.metal_type,
-
-        purity: item.purity,
-
-        quantity: available_qty,
-
-        available_qty,
-
-        available_weight,
-
-        reserved_qty,
-
-        transit_qty,
-
-        dead_qty,
-
-        net_weight: Number(
-          item.net_weight || 0
-        ),
-
-        gross_weight: Number(
-          item.gross_weight || 0
-        ),
-
-        stone_weight: Number(
-          item.stone_weight || 0
-        ),
-
-        selling_price: Number(
-          item.sale_rate || 0
-        ),
-
-        making_charge: Number(
-          item.making_charge || 0
-        ),
-
-        current_status:
-          item.current_status,
-
-        storeCode:
-          stocks?.[0]?.store_code ||
-          item.storeCode ||
-          null,
-
-        organization_id:
-          item.organization_id,
-
-        stocks,
-      };
-    });
+    const data = Object.values(grouped).map((row) => ({
+      ...row,
+      quantity: Number(row.quantity.toFixed(3)),
+      net_weight: Number(row.net_weight.toFixed(3)),
+      stone_weight: Number(row.stone_weight.toFixed(3)),
+      gross_weight: Number(row.gross_weight.toFixed(3)),
+    }));
 
     return res.status(200).json({
       success: true,
-
-      message:
-        "Retail inventory fetched successfully",
-
+      message: "Retail inventory fetched successfully",
       summary: {
-        total_stock_items: totalStock,
-
-        dead_stock_items: deadStock,
-
-        low_stock_items: lowStock,
-
-        transit_goods: transitGoods,
+        total_stock_items: Number(totalStockItems.toFixed(3)),
+        dead_stock_items: Number(deadStockItems.toFixed(3)),
+        low_stock_items: lowStockItems,
+        transit_goods: Number(transitGoods.toFixed(3)),
       },
-
-      pagination: {
-        page: pageNumber,
-        limit: pageLimit,
-      },
-
       count: data.length,
-
       data,
     });
   } catch (error) {
-    console.error(
-      "getRetailInventory error:",
-      error
-    );
-
+    console.error("getRetailInventory error:", error);
     return res.status(500).json({
       success: false,
-
-      message:
-        "Failed to fetch retail inventory",
-
+      message: "Failed to fetch retail inventory",
       error: error.message,
     });
   }
@@ -2148,6 +2020,522 @@ const parseExcelRows = (buffer) => {
 /* =========================================================
    MAIN CONTROLLER
 ========================================================= */
+const clean = (value) => {
+  if (value === undefined || value === null) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+};
+
+const toNumber = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === "") return fallback;
+
+  const cleaned = String(value)
+    .replace(/₹/g, "")
+    .replace(/,/g, "")
+    .replace(/[^\d.-]/g, "")
+    .trim();
+
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const normalizeUnit = (unit) => {
+  const u = clean(unit).toLowerCase();
+
+  if (["g", "gm", "gms", "gram", "grams"].includes(u)) return "g";
+  if (["kg", "kilogram", "kilograms"].includes(u)) return "kg";
+  if (["mg", "milligram", "milligrams"].includes(u)) return "mg";
+  if (["piece", "pieces", "pcs", "pc", "nos"].includes(u)) return "pcs";
+  if (["pair", "pairs"].includes(u)) return "pair";
+  if (["set", "sets"].includes(u)) return "set";
+
+  return u || "pcs";
+};
+
+const normalizeMetalType = (itemName) => {
+  const text = clean(itemName).toLowerCase();
+
+  if (text.includes("silver")) return "Silver";
+  return "Gold";
+};
+
+const generateCode = (storeCode, prefix, i) => {
+  return `${prefix}-${storeCode}-${Date.now()}-${i}`;
+};
+
+const isPdfFile = (file) => {
+  const fileName = file.originalname.toLowerCase();
+
+  return file.mimetype === "application/pdf" || fileName.endsWith(".pdf");
+};
+
+const isExcelFile = (file) => {
+  const fileName = file.originalname.toLowerCase();
+
+  return (
+    file.mimetype ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    file.mimetype === "application/vnd.ms-excel" ||
+    fileName.endsWith(".xlsx") ||
+    fileName.endsWith(".xls")
+  );
+};
+
+/* =========================================================
+   PDF PARSER - DELIVERY CHALLAN ITEM TABLE ONLY
+========================================================= */
+
+const PDF_STANDARD_FONT_PATH = pathToFileURL(
+  path.join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts")
+).href + "/";
+
+const cleanPdf = (value = "") =>
+  String(value)
+    .replace(/\s+/g, " ")
+    .replace(/₹/g, "")
+    .trim();
+
+const pdfNum = (value) => {
+  if (value === undefined || value === null || value === "") return 0;
+
+  const num = Number(
+    String(value)
+      .replace(/₹/g, "")
+      .replace(/,/g, "")
+      .replace(/[^\d.-]/g, "")
+      .trim()
+  );
+
+  return Number.isFinite(num) ? num : 0;
+};
+
+const getPdfCategory = (itemName = "") => {
+  const value = cleanPdf(itemName);
+  if (!value.includes("/")) return "General";
+
+  return cleanPdf(value.split("/").pop()) || "General";
+};
+
+const isValidProductCode = (value = "") => {
+  return /^[A-Z]{2,}(?:-[A-Z0-9]+){3,}-\d{3,}$/i.test(cleanPdf(value));
+};
+
+const isValidHsn = (value = "") => {
+  return /^\d{6,10}$/.test(cleanPdf(value));
+};
+
+const isValidPurity = (value = "") => {
+  return /^(18|20|22|24)\s*(kt|k)?\s*\/?\s*\d{3}$/i.test(cleanPdf(value));
+};
+const isValidHuid = (value = "") => {
+  return /^HUID[A-Z0-9]+$/i.test(cleanPdf(value));
+};
+
+const groupByY = (items, tolerance = 2.5) => {
+  const lines = [];
+
+  for (const item of items) {
+    const text = cleanPdf(item.str);
+    if (!text) continue;
+
+    const x = item.transform[4];
+    const y = item.transform[5];
+
+    let line = lines.find((l) => Math.abs(l.y - y) <= tolerance);
+
+    if (!line) {
+      line = { y, items: [] };
+      lines.push(line);
+    }
+
+    line.items.push({ x, y, text });
+  }
+
+  return lines
+    .sort((a, b) => b.y - a.y)
+    .map((line) => ({
+      y: line.y,
+      items: line.items.sort((a, b) => a.x - b.x),
+      text: line.items
+        .sort((a, b) => a.x - b.x)
+        .map((i) => i.text)
+        .join(" "),
+    }));
+};
+
+const getCellText = (line, minX, maxX) => {
+  return cleanPdf(
+    line.items
+      .filter((i) => i.x >= minX && i.x < maxX)
+      .map((i) => i.text)
+      .join(" ")
+  );
+};
+const parsePdfRows = async (buffer) => {
+  try {
+    if (!buffer) {
+      return {
+        success: false,
+        message: "PDF file buffer missing",
+        rows: [],
+      };
+    }
+
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+
+    const pdf = await pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      standardFontDataUrl: PDF_STANDARD_FONT_PATH,
+      disableWorker: true,
+      disableFontFace: true,
+    }).promise;
+
+    let fullText = "";
+
+    for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+      const page = await pdf.getPage(pageNo);
+      const textContent = await page.getTextContent();
+
+      const pageText = textContent.items
+        .map((item) => cleanPdf(item.str))
+        .filter(Boolean)
+        .join(" ");
+
+      fullText += " " + pageText;
+    }
+
+    const normalizedText = cleanPdf(fullText);
+
+    /*
+      IMPORTANT FIX:
+      Header/address me bhi numbers hote hain, jaise H. No. 999.
+      Old regex waha se row match start kar raha tha.
+      Isliye hum sirf item table ke baad ka text parse karenge.
+    */
+    const tableHeaderRegex =
+      /S\.?\s*No\s+Material\s+Description\s+Product\s+Code\s+Qty\s+HSN\s+Code\s+Purity\/Karat\s+Net\s+Weight\s*\(g\)\s+Rate\/Gram\s+Making\s+Charges\s+HUID\s+Code\s+Base\s+Value/i;
+
+    const headerMatch = normalizedText.match(tableHeaderRegex);
+
+    if (!headerMatch || headerMatch.index === undefined) {
+      console.log("PDF NORMALIZED TEXT:", normalizedText);
+
+      return {
+        success: false,
+        message: "Delivery challan item table header not found in PDF",
+        rows: [],
+      };
+    }
+
+    const tableStartIndex = headerMatch.index + headerMatch[0].length;
+    let tableText = normalizedText.slice(tableStartIndex);
+
+    /*
+      Total ke baad tax/remarks/declaration aa jata hai.
+      Usse pehle hi item rows finish ho jati hain.
+    */
+    const totalIndex = tableText.search(/\sTotal\s+\d+\s+/i);
+    if (totalIndex !== -1) {
+      tableText = tableText.slice(0, totalIndex);
+    }
+
+    tableText = cleanPdf(tableText);
+
+    const rows = [];
+
+    /*
+      Example row:
+      1 Gold Ornaments/Mangalsutra VPL-HJP-01-MS-000253 2 71131910 18 kt/750 5.100 7,250.00 2,600.00 - 36,975.00
+    */
+    const rowRegex =
+      /(?:^|\s)(\d+)\s+(.+?)\s+([A-Z]{2,}(?:-[A-Z0-9]+){3,}-\d{3,})\s+(\d+(?:\.\d+)?)\s+(\d{6,10})\s+(\d{1,2}\s*(?:kt|k)?\s*\/\s*\d{3})\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([A-Z0-9/-]+|-)\s+([\d,]+(?:\.\d+)?)/gi;
+
+    let match;
+
+    while ((match = rowRegex.exec(tableText)) !== null) {
+      const [
+        ,
+        serialNo,
+        itemName,
+        productCode,
+        qty,
+        hsnCode,
+        purity,
+        netWeight,
+        rate,
+        makingCharge,
+        huidCode,
+        baseValue,
+      ] = match;
+
+      const finalItemName = cleanPdf(itemName);
+      const finalProductCode = cleanPdf(productCode);
+      const finalHsnCode = cleanPdf(hsnCode);
+      const finalPurity = cleanPdf(purity);
+      const finalHuid = cleanPdf(huidCode);
+
+      if (!finalItemName) continue;
+      if (!isValidProductCode(finalProductCode)) continue;
+      if (!isValidHsn(finalHsnCode)) continue;
+      if (!isValidPurity(finalPurity)) continue;
+
+      rows.push({
+        source_row_no: Number(serialNo),
+
+        item_name: finalItemName,
+        product_code: finalProductCode,
+
+        qty: pdfNum(qty) || 1,
+        hsn_code: finalHsnCode,
+        purity: finalPurity,
+
+        net_weight: pdfNum(netWeight),
+        gross_weight: pdfNum(netWeight),
+
+        rate: pdfNum(rate),
+        making_charge: pdfNum(makingCharge),
+
+        huid_code: isValidHuid(finalHuid) ? finalHuid : "",
+        amount: pdfNum(baseValue),
+        base_value: pdfNum(baseValue),
+
+        unit: "g",
+        metal_type: normalizeMetalType(finalItemName),
+        category: getPdfCategory(finalItemName),
+      });
+    }
+
+    const uniqueRows = [];
+    const seenProductCodes = new Set();
+
+    for (const row of rows) {
+      if (!row.product_code) continue;
+      if (seenProductCodes.has(row.product_code)) continue;
+
+      seenProductCodes.add(row.product_code);
+
+      uniqueRows.push({
+        ...row,
+        source_row_no: uniqueRows.length + 1,
+      });
+    }
+
+    console.log("PDF TABLE TEXT:", tableText);
+    console.log("PDF PARSED ROWS:", uniqueRows);
+
+    if (!uniqueRows.length) {
+      return {
+        success: false,
+        message: "No valid item rows found in PDF challan",
+        rows: [],
+      };
+    }
+
+    return {
+      success: true,
+      rows: uniqueRows,
+    };
+  } catch (err) {
+    console.error("PDF parse failed:", err);
+
+    return {
+      success: false,
+      message: `PDF parse failed: ${err.message}`,
+      rows: [],
+    };
+  }
+};
+/* =========================================================
+   EXCEL PARSER
+========================================================= */
+
+const parseExcelRows = (buffer) => {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+
+  if (!sheetName) {
+    return {
+      success: false,
+      message: "No sheet found in uploaded file",
+      rows: [],
+    };
+  }
+
+  const sheet = workbook.Sheets[sheetName];
+
+  const rawRows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: "",
+    raw: false,
+  });
+
+  let headerIndex = rawRows.findIndex((row) => {
+    const rowText = row.map(clean).join(" ").toLowerCase();
+
+    return (
+      rowText.includes("material description") &&
+      rowText.includes("product code") &&
+      rowText.includes("hsn")
+    );
+  });
+
+  if (headerIndex === -1) {
+    headerIndex = rawRows.findIndex((row) =>
+      row.some((cell) => clean(cell).toUpperCase() === "PARTICULAR")
+    );
+  }
+
+  if (headerIndex === -1) {
+    return {
+      success: false,
+      message: "Invalid challan format",
+      rows: [],
+    };
+  }
+
+  const headerRow = rawRows[headerIndex].map((cell) =>
+    clean(cell).toLowerCase()
+  );
+
+  const findCol = (...names) => {
+    return headerRow.findIndex((header) =>
+      names.some((name) => header.includes(name))
+    );
+  };
+
+  const hasDeliveryChallanHeader = headerRow.some((header) =>
+    header.includes("material description")
+  );
+
+  /**
+   * Old PARTICULAR format
+   */
+  if (!hasDeliveryChallanHeader) {
+    const dataRows = rawRows.slice(headerIndex + 1);
+
+    const rows = dataRows
+      .map((row, index) => {
+        const item_name = clean(row[1]);
+        if (!item_name) return null;
+
+        const unit = normalizeUnit(row[3]);
+        const qty = toNumber(row[4]);
+
+        return {
+          source_row_no: headerIndex + index + 2,
+
+          item_name,
+          product_code: "",
+
+          hsn_code: clean(row[2]),
+          unit,
+          qty,
+
+          rate: toNumber(row[5]),
+          amount: toNumber(row[6]),
+          base_value: toNumber(row[6]),
+
+          purity: "NA",
+          net_weight: unit === "g" ? qty : 0,
+          gross_weight: unit === "g" ? qty : 0,
+
+          making_charge: 0,
+          huid_code: "",
+
+          metal_type: normalizeMetalType(item_name),
+          category: "General",
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      success: true,
+      rows,
+    };
+  }
+
+  /**
+   * Delivery Challan format
+   */
+  const colItem = findCol("material description", "description", "particular");
+  const colProduct = findCol("product code", "sku", "article");
+  const colQty = findCol("qty", "quantity");
+  const colHsn = findCol("hsn");
+  const colPurity = findCol("purity", "karat");
+  const colNetWeight = findCol("net weight", "weight");
+  const colRate = findCol("rate");
+  const colMaking = findCol("making");
+  const colHuid = findCol("huid");
+  const colBaseValue = findCol("base value", "amount", "value");
+
+  const requiredCols = [
+    { name: "Material Description", index: colItem },
+    { name: "Product Code", index: colProduct },
+    { name: "Qty", index: colQty },
+    { name: "HSN Code", index: colHsn },
+    { name: "Purity/Karat", index: colPurity },
+    { name: "Net Weight", index: colNetWeight },
+  ];
+
+  const missingCol = requiredCols.find((col) => col.index === -1);
+
+  if (missingCol) {
+    return {
+      success: false,
+      message: `${missingCol.name} column missing in Excel challan`,
+      rows: [],
+    };
+  }
+
+  const dataRows = rawRows.slice(headerIndex + 1);
+
+  const rows = dataRows
+    .map((row, index) => {
+      const item_name = clean(row[colItem]);
+      const product_code = clean(row[colProduct]);
+
+      if (!item_name && !product_code) return null;
+
+      const netWeight = toNumber(row[colNetWeight]);
+
+      return {
+        source_row_no: headerIndex + index + 2,
+
+        item_name,
+        product_code,
+
+        qty: toNumber(row[colQty]) || 1,
+        hsn_code: clean(row[colHsn]),
+        purity: clean(row[colPurity]) || "NA",
+
+        net_weight: netWeight,
+        gross_weight: netWeight,
+
+        rate: colRate !== -1 ? toNumber(row[colRate]) : 0,
+        making_charge: colMaking !== -1 ? toNumber(row[colMaking]) : 0,
+        huid_code: colHuid !== -1 ? clean(row[colHuid]) : "",
+        amount: colBaseValue !== -1 ? toNumber(row[colBaseValue]) : 0,
+        base_value: colBaseValue !== -1 ? toNumber(row[colBaseValue]) : 0,
+
+        unit: "g",
+        metal_type: normalizeMetalType(item_name),
+        category: getPdfCategory(item_name),
+      };
+    })
+    .filter(Boolean);
+
+  if (!rows.length) {
+    return {
+      success: false,
+      message: "No item rows found in Excel challan",
+      rows: [],
+    };
+  }
+
+  return {
+    success: true,
+    rows,
+  };
+};
 
 export const uploadStockInItems = async (req, res) => {
   const t = await sequelize.transaction();
@@ -2314,151 +2702,211 @@ export const uploadStockInItems = async (req, res) => {
       }
 
       const article_code = product_code;
-      const sku_code = generateCode(store_code, "SKU", i + 1);
 
-      const existingItem = await Item.findOne({
+      /*
+        INDUSTRY LEVEL LOGIC:
+        - product_code/article_code is item identity
+        - agar item already inventory me hai, usko duplicate bolke skip nahi karna
+        - same item ko current store ke Stock me add/update karna hai
+        - item identity same rahegi, location Stock table se manage hogi
+      */
+      let item = await Item.findOne({
         where: {
           [Op.or]: [{ article_code }, { sku_code: product_code }],
         },
         transaction: t,
       });
 
-      if (existingItem) {
-        skipped.push({
-          row: rowNo,
-          item_name,
-          reason: "Duplicate product code",
-        });
-        continue;
+      const isExistingItem = !!item;
+
+      let sku_code = item?.sku_code || null;
+
+      if (!item) {
+        sku_code = generateCode(store_code, "SKU", i + 1);
+
+        item = await Item.create(
+          {
+            article_code,
+            sku_code,
+
+            item_name,
+            metal_type,
+            category,
+            details: "Uploaded from delivery challan",
+            purity,
+
+            gross_weight: finalGrossWeight,
+            net_weight: finalNetWeight,
+            stone_weight: 0,
+            stone_amount: 0,
+            making_charge,
+
+            purchase_rate: rate,
+            sale_rate: rate,
+            hsn_code,
+            unit,
+            huid_code,
+
+            current_status: "in_stock",
+
+            store_id: organization_id,
+            storeCode: store_code,
+            storeName: store_name,
+            organization_id,
+
+            is_active: true,
+            isItemAudit: false,
+            itemAuditAt: null,
+            is_item_audit: false,
+            item_audit_at: null,
+            last_audit_status: null,
+            last_audit_reason: null,
+          },
+          { transaction: t }
+        );
       }
 
-      const item = await Item.create(
-        {
-          article_code,
-          sku_code,
-
-          item_name,
-          metal_type,
-          category,
-          details: "Uploaded from delivery challan",
-          purity,
-
-          gross_weight: finalGrossWeight,
-          net_weight: finalNetWeight,
-          stone_weight: 0,
-          stone_amount: 0,
-          making_charge,
-
-          purchase_rate: rate,
-          sale_rate: rate,
-          hsn_code,
-          unit,
-          huid_code,
-
-          current_status: "in_stock",
-
-          store_id: organization_id,
-          storeCode: store_code,
-          storeName: store_name,
-          organization_id,
-
-          is_active: true,
-          isItemAudit: false,
-          itemAuditAt: null,
-          is_item_audit: false,
-          item_audit_at: null,
-          last_audit_status: null,
-          last_audit_reason: null,
-        },
-        { transaction: t }
-      );
-
-      /*
-        IMPORTANT:
-        qr_code_value me ab JSON payload nahi save hoga.
-        qr_code_value = sku_code
-        qr_code_url = QR image data/base64/url
-      */
       let qr = {
-        qr_code_value: sku_code,
-        qr_code_url: null,
+        qr_code_value: item.qr_code_value || sku_code,
+        qr_code_url: item.qr_code_url || null,
       };
 
-      try {
-        qr = await generateItemQR({
-          ...item.toJSON(),
-          qr_code_value: sku_code,
-          sku_code,
-          article_code,
-          product_code,
-        });
-
-        await item.update(
-          {
+      /*
+        QR sirf new item ke liye generate karo.
+        Existing item ka QR/Product identity same rehna chahiye.
+      */
+      if (!isExistingItem) {
+        try {
+          qr = await generateItemQR({
+            ...item.toJSON(),
             qr_code_value: sku_code,
-            qr_code_url: qr.qr_code_url,
-          },
-          { transaction: t }
-        );
+            sku_code,
+            article_code,
+            product_code,
+          });
 
-        qr.qr_code_value = sku_code;
-      } catch (qrErr) {
-        console.error("QR generation failed:", qrErr.message);
+          await item.update(
+            {
+              qr_code_value: sku_code,
+              qr_code_url: qr.qr_code_url,
+            },
+            { transaction: t }
+          );
 
-        await item.update(
-          {
+          qr.qr_code_value = sku_code;
+        } catch (qrErr) {
+          console.error("QR generation failed:", qrErr.message);
+
+          await item.update(
+            {
+              qr_code_value: sku_code,
+              qr_code_url: null,
+            },
+            { transaction: t }
+          );
+
+          qr = {
             qr_code_value: sku_code,
             qr_code_url: null,
-          },
-          { transaction: t }
-        );
-
-        qr = {
-          qr_code_value: sku_code,
-          qr_code_url: null,
-        };
+          };
+        }
       }
 
       const available_qty = qty;
       const available_weight = unit === "g" ? finalNetWeight : 0;
 
-      await Stock.create(
-        {
+      /*
+        IMPORTANT:
+        Stock store-wise hota hai.
+        Same item_id different organization/store me exist kar sakta hai.
+      */
+      let stock = await Stock.findOne({
+        where: {
           item_id: item.id,
           organization_id,
           store_code,
-
-          available_qty,
-          available_weight,
-
-          reserved_qty: 0,
-          reserved_weight: 0,
-          transit_qty: 0,
-          transit_weight: 0,
-          damaged_qty: 0,
-          damaged_weight: 0,
         },
-        { transaction: t }
-      );
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
 
+      if (stock) {
+        const currentQty = toNumber(stock.available_qty);
+        const currentWeight = toNumber(stock.available_weight);
+
+        await stock.update(
+          {
+            available_qty: currentQty + available_qty,
+            available_weight: currentWeight + available_weight,
+          },
+          { transaction: t }
+        );
+      } else {
+        stock = await Stock.create(
+          {
+            item_id: item.id,
+            organization_id,
+            store_code,
+
+            available_qty,
+            available_weight,
+
+            reserved_qty: 0,
+            reserved_weight: 0,
+            transit_qty: 0,
+            transit_weight: 0,
+            damaged_qty: 0,
+            damaged_weight: 0,
+          },
+          { transaction: t }
+        );
+      }
+
+      /*
+        DB check constraint ke according movement_type purchase safe rakha hai.
+        Agar tumhare DB me transfer_in allowed hai, to existing item ke liye movement_type: "transfer_in" kar sakte ho.
+      */
       await StockMovement.create(
         {
           item_id: item.id,
           organization_id,
           store_code,
 
-          // DB check constraint ke according lowercase rakha hai
           movement_type: "purchase",
 
           qty: available_qty,
           weight: available_weight,
 
-          reference_type: "stock_upload",
+          reference_type: isExistingItem
+            ? "stock_upload_existing_item"
+            : "stock_upload",
           reference_id: item.id,
           reference_no: article_code,
 
-          remarks: "Stock added via delivery challan upload",
+          remarks: isExistingItem
+            ? "Existing item stock added via delivery challan upload"
+            : "Stock added via delivery challan upload",
+
           created_by: user_id,
+        },
+        { transaction: t }
+      );
+
+      const batch = await createStockInRootBatch(
+        {
+          item,
+          stock,
+          organization_id,
+          quantity: available_qty,
+          weight: available_weight,
+          remarks: isExistingItem
+            ? "Existing item stock added via delivery challan upload"
+            : "Stock added via delivery challan upload",
+          created_by: user_id,
+          source_type: isExistingItem
+            ? "stock_upload_existing_item"
+            : "stock_upload",
+          source_reference_id: item.id,
         },
         { transaction: t }
       );
@@ -2468,13 +2916,16 @@ export const uploadStockInItems = async (req, res) => {
           organization_id,
           user_id,
 
-          action: "stock_upload",
+          action: isExistingItem ? "stock_update" : "stock_upload",
           module_name: "inventory",
 
           reference_id: item.id,
           reference_no: article_code,
 
-          title: "Stock added via upload",
+          title: isExistingItem
+            ? "Existing item stock added"
+            : "Stock added via upload",
+
           description: `${item_name} (${qty} ${unit}) added to inventory`,
 
           meta: {
@@ -2484,7 +2935,9 @@ export const uploadStockInItems = async (req, res) => {
             item_id: item.id,
             article_code,
             sku_code,
+
             product_code,
+            existing_item: isExistingItem,
 
             item_name,
             hsn_code,
@@ -2501,6 +2954,10 @@ export const uploadStockInItems = async (req, res) => {
             store_code,
             store_name,
             organization_id,
+
+            stock_id: stock.id,
+            batch_id: batch.id,
+            batch_no: batch.batch_no,
           },
 
           icon: "activity",
@@ -2511,10 +2968,10 @@ export const uploadStockInItems = async (req, res) => {
 
       await SystemActivity.create(
         {
-          title: "Stock Uploaded",
+          title: isExistingItem ? "Existing Stock Added" : "Stock Uploaded",
           description: `${item_name} added to ${store_code}`,
 
-          activity_type: "stock_upload",
+          activity_type: isExistingItem ? "stock_update" : "stock_upload",
           module_name: "inventory",
 
           reference_id: item.id,
@@ -2532,7 +2989,14 @@ export const uploadStockInItems = async (req, res) => {
 
       uploaded.push({
         row: rowNo,
+
         item_id: item.id,
+        stock_id: stock.id,
+
+        batch_id: batch.id,
+        batch_no: batch.batch_no,
+
+        existing_item: isExistingItem,
 
         item_name,
         product_code,
@@ -2556,7 +3020,7 @@ export const uploadStockInItems = async (req, res) => {
         store_name,
         organization_id,
 
-        qr_code_value: sku_code,
+        qr_code_value: qr.qr_code_value,
         qr_code_url: qr.qr_code_url,
       });
     }
@@ -2585,7 +3049,104 @@ export const uploadStockInItems = async (req, res) => {
   }
 };
 
+export const getItemQR = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const user = req.user;
 
+    const where = { id: itemId };
+
+    if (user?.role !== "super_admin") {
+      where.organization_id = user.organization_id;
+    }
+
+    const item = await Item.findOne({
+      where,
+      attributes: [
+        "id",
+        "item_name",
+        "article_code",
+        "sku_code",
+        "qr_code_value",
+        "qr_code_url",
+      ],
+    });
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Item not found",
+      });
+    }
+
+    if (!item.qr_code_url) {
+      return res.status(404).json({
+        success: false,
+        message: "QR not generated for this item",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "QR fetched successfully",
+      data: {
+        item_id: item.id,
+        item_name: item.item_name,
+        article_code: item.article_code,
+        sku_code: item.sku_code,
+        qr_code_value: item.qr_code_value,
+        qr_code_url: item.qr_code_url,
+      },
+    });
+  } catch (error) {
+    console.error("getItemQR error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch item QR",
+      error: error.message,
+    });
+  }
+};
+
+export const getMyStoreItemQRs = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const where = {};
+
+    if (user?.role !== "super_admin") {
+      where.organization_id = user.organization_id;
+    }
+
+    const items = await Item.findAll({
+      where,
+      attributes: [
+        "id",
+        "item_name",
+        "article_code",
+        "sku_code",
+        "qr_code_value",
+        "qr_code_url",
+        "current_status",
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "QR list fetched successfully",
+      count: items.length,
+      data: items,
+    });
+  } catch (error) {
+    console.error("getMyStoreItemQRs error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch QR list",
+      error: error.message,
+    });
+  }
+};
 export const getItemQR = async (req, res) => {
   try {
     const { itemId } = req.params;

@@ -1159,420 +1159,641 @@ export const stockSummary = async (req, res) => {
 /* =========================================================
    ADD STOCK IN
 ========================================================= */
+const createStockInRootBatch = async (
+  {
+    item,
+    stock,
+    organization_id,
+    quantity,
+    weight,
+    remarks,
+    created_by,
+    source_type = "manual_stock_in",
+    source_reference_id = null,
+  },
+  { transaction }
+) => {
+  const batchNo = `BATCH-${item.article_code || item.sku_code || item.id}-${Date.now()}`;
 
+  const batchRows = await sequelize.query(
+    `
+    INSERT INTO public.inventory_batches (
+      batch_no,
+      organization_id,
+      item_id,
+      stock_record_id,
+      current_organization_id,
+      total_qty,
+      available_qty,
+      total_weight,
+      available_weight,
+      status,
+      remarks,
+      created_by,
+      root_batch_id,
+      parent_batch_id,
+      split_level,
+      is_leaf,
+      source_type,
+      source_reference_id,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      :batch_no,
+      :organization_id,
+      :item_id,
+      :stock_record_id,
+      :current_organization_id,
+      :total_qty,
+      :available_qty,
+      :total_weight,
+      :available_weight,
+      'created',
+      :remarks,
+      :created_by,
+      NULL,
+      NULL,
+      0,
+      true,
+      :source_type,
+      :source_reference_id,
+      NOW(),
+      NOW()
+    )
+    RETURNING *
+    `,
+    {
+      replacements: {
+        batch_no: batchNo,
+        organization_id,
+        item_id: item.id,
+        stock_record_id: stock?.id || null,
+        current_organization_id: organization_id,
+        total_qty: Number(quantity || 0),
+        available_qty: Number(quantity || 0),
+        total_weight: Number(weight || 0),
+        available_weight: Number(weight || 0),
+        remarks: remarks || "Stock inward root batch",
+        created_by: created_by || null,
+        source_type,
+        source_reference_id,
+      },
+      type: QueryTypes.SELECT,
+      transaction,
+    }
+  );
+
+  const batch = batchRows[0];
+
+  await InventoryTrackingService.ensureRootBatch(
+    { batch_id: batch.id },
+    { transaction }
+  );
+
+  return batch;
+};
 export const addStockIn = async (req, res) => {
   const t = await sequelize.transaction();
 
   try {
-    const payloads = Array.isArray(req.body.items)
-      ? req.body.items
-      : JSON.parse(req.body.items || "[]");
+    const {
+      item_id,
+      item_name,
+      item_code,
+
+      metal_type,
+      category,
+
+      qty = 1,
+      purchase_price = 0,
+      selling_price = 0,
+      making_charge = 0,
+      purity,
+      net_weight = 0,
+      stone_weight = 0,
+      remarks,
+    } = req.body;
 
     const user = req.user;
 
     if (!user?.organization_id) {
       await t.rollback();
-
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const cleanStoreCode = String(
-      user?.store_code || user?.storeCode || ""
-    )
+    const incomingQty = Number(qty);
+    const incomingWeight = Number(net_weight);
+    const incomingStoneWeight = Number(stone_weight || 0);
+    const purchaseRate = Number(purchase_price || 0);
+    const saleRate = Number(selling_price || 0);
+    const makingChargeValue = Number(making_charge || 0);
+    const cleanItemId = item_id ? Number(item_id) : null;
+
+    if (!Number.isFinite(incomingQty) || incomingQty <= 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Quantity must be greater than 0",
+      });
+    }
+
+    if (!Number.isFinite(incomingWeight) || incomingWeight < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Net weight cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(incomingStoneWeight) || incomingStoneWeight < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Stone weight cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(purchaseRate) || purchaseRate < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Purchase price cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(saleRate) || saleRate < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Selling price cannot be negative",
+      });
+    }
+
+    if (!Number.isFinite(makingChargeValue) || makingChargeValue < 0) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Making charge cannot be negative",
+      });
+    }
+
+    const cleanStoreCode = String(user?.store_code || "")
       .trim()
       .toUpperCase();
 
-    const responseData = [];
+    let item;
+    let isNewItem = false;
+    let isDuplicateItemStockIn = false;
 
-    for (let index = 0; index < payloads.length; index++) {
-      const body = payloads[index];
-
-      const {
-        item_id,
-        item_name,
-        item_code,
-
-        metal_type,
-        category,
-
-        qty = 1,
-        purchase_price = 0,
-        selling_price = 0,
-        making_charge = 0,
-        purity,
-        net_weight = 0,
-        stone_weight = 0,
-        remarks,
-      } = body;
-
-      // ==========================================
-      // IMAGE UPLOAD
-      // ==========================================
-
-      let uploadedImage = null;
-
-      if (
-        req.files &&
-        req.files[index]
-      ) {
-        uploadedImage =
-          await cloudinary.uploader.upload(
-            req.files[index].path ||
-              req.files[index].buffer,
-            {
-              folder:
-                "inventory/items",
-            }
-          );
-      }
-
-      const incomingQty = Number(qty);
-
-      const incomingWeight =
-        Number(net_weight);
-
-      const incomingStoneWeight =
-        Number(stone_weight || 0);
-
-      const purchaseRate = Number(
-        purchase_price || 0
-      );
-
-      const saleRate = Number(
-        selling_price || 0
-      );
-
-      const makingChargeValue =
-        Number(making_charge || 0);
-
-      const cleanItemId = item_id
-        ? Number(item_id)
-        : null;
-
-      let item;
-
-      // ==========================================
-      // EXISTING ITEM
-      // ==========================================
-
-      if (cleanItemId) {
-        item = await Item.findOne({
-          where: {
-            id: cleanItemId,
-            ...(user.role !==
-              "super_admin" && {
-              organization_id:
-                user.organization_id,
-            }),
-          },
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
-
-        if (!item) {
-          await t.rollback();
-
-          return res.status(404).json({
-            success: false,
-            message: "Item not found",
-          });
-        }
-      }
-
-      // ==========================================
-      // NEW ITEM
-      // ==========================================
-
-      else {
-        const articleCode = item_code
-          ? String(item_code)
-              .trim()
-              .toUpperCase()
-          : `ART-${cleanStoreCode}-${Date.now()}-${Math.floor(
-              1000 +
-                Math.random() * 9000
-            )}`;
-
-        const duplicateItem =
-          await Item.findOne({
-            where: {
-              article_code:
-                articleCode,
-              organization_id:
-                user.organization_id,
-            },
-            transaction: t,
-          });
-
-        if (duplicateItem) {
-          await t.rollback();
-
-          return res.status(409).json({
-            success: false,
-            message:
-              "Duplicate item code or SKU code already exists",
-            errors: [
-              {
-                field:
-                  "article_code",
-                message:
-                  "article_code must be unique",
-                value:
-                  articleCode,
-              },
-            ],
-          });
-        }
-
-        const skuCode = `SKU-${cleanStoreCode}-${Date.now()}-${Math.floor(
-          1000 + Math.random() * 9000
-        )}`;
-
-        item = await Item.create(
-          {
-            item_name:
-              String(item_name).trim(),
-
-            article_code:
-              articleCode,
-
-            sku_code: skuCode,
-
-            metal_type,
-            category,
-
-            purchase_rate:
-              purchaseRate,
-
-            sale_rate:
-              saleRate,
-
-            making_charge:
-              makingChargeValue,
-
-            purity,
-
-            net_weight:
-              incomingWeight,
-
-            gross_weight:
-              incomingWeight +
-              incomingStoneWeight,
-
-            stone_weight:
-              incomingStoneWeight,
-
-            current_status:
-              "in_stock",
-
-            organization_id:
-              user.organization_id,
-
-            storeCode:
-              cleanStoreCode,
-
-            storeName:
-              user.store_name ||
-              user.storeName ||
-              null,
-
-            // ==========================================
-            // IMAGE
-            // ==========================================
-
-            image_url:
-              uploadedImage?.secure_url ||
-              null,
-
-            image_public_id:
-              uploadedImage?.public_id ||
-              null,
-          },
-          { transaction: t }
-        );
-
-        const qr =
-          await generateItemQR(
-            item
-          );
-
-        await item.update(
-          {
-            qr_code_value:
-              qr.qr_code_value,
-
-            qr_code_url:
-              qr.qr_code_url,
-          },
-          { transaction: t }
-        );
-      }
-
-      // ==========================================
-      // STOCK
-      // ==========================================
-
-      let stock = await Stock.findOne({
+    /**
+     * CASE 1: Existing item stock inward by item_id
+     */
+    if (cleanItemId) {
+      item = await Item.findOne({
         where: {
-          item_id: item.id,
-          organization_id:
-            item.organization_id,
+          id: cleanItemId,
+          ...(user.role !== "super_admin" && {
+            organization_id: user.organization_id,
+          }),
         },
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
 
-      if (!stock) {
-        stock = await Stock.create(
+      if (!item) {
+        await t.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Item not found",
+        });
+      }
+
+      if (!item.qr_code_value || !item.qr_code_url) {
+        const qr = await generateItemQR(item);
+
+        if (!qr?.qr_code_value || !qr?.qr_code_url) {
+          throw new Error("QR generation failed");
+        }
+
+        await item.update(
           {
-            organization_id:
-              item.organization_id,
-
-            item_id: item.id,
-
-            store_code:
-              cleanStoreCode,
-
-            available_qty: 0,
-            available_weight: 0,
-
-            reserved_qty: 0,
-            transit_qty: 0,
-            damaged_qty: 0,
+            qr_code_value: qr.qr_code_value,
+            qr_code_url: qr.qr_code_url,
           },
           { transaction: t }
         );
       }
+    }
 
-      const previousAvailableQty =
-        Number(stock.available_qty || 0);
+    /**
+     * CASE 2: New item create from UI form
+     * If same article_code already exists in same organization,
+     * then do not create duplicate item. Just increase stock.
+     */
+    else {
+      if (!item_name || !String(item_name).trim()) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Item name is required",
+        });
+      }
 
-      const previousAvailableWeight =
-        Number(
-          stock.available_weight || 0
+      if (!metal_type) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Metal type is required",
+        });
+      }
+
+      if (!["Gold", "Silver"].includes(metal_type)) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Invalid metal type. Allowed values are Gold or Silver",
+        });
+      }
+
+      if (!category || !String(category).trim()) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Category is required",
+        });
+      }
+
+      if (!purity || !String(purity).trim()) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Purity is required",
+        });
+      }
+
+      const articleCode = item_code
+        ? String(item_code).trim().toUpperCase()
+        : `ART-${cleanStoreCode || "STORE"}-${Date.now()}`;
+
+      const skuCode = `SKU-${cleanStoreCode || "STORE"}-${Date.now()}`;
+
+      const duplicateItem = await Item.findOne({
+        where: {
+          article_code: articleCode,
+          organization_id: user.organization_id,
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (duplicateItem) {
+        item = duplicateItem;
+        isDuplicateItemStockIn = true;
+
+        if (!item.qr_code_value || !item.qr_code_url) {
+          const qr = await generateItemQR(item);
+
+          if (!qr?.qr_code_value || !qr?.qr_code_url) {
+            throw new Error("QR generation failed");
+          }
+
+          await item.update(
+            {
+              qr_code_value: qr.qr_code_value,
+              qr_code_url: qr.qr_code_url,
+            },
+            { transaction: t }
+          );
+        }
+      } else {
+        isNewItem = true;
+
+        item = await Item.create(
+          {
+            item_name: String(item_name).trim(),
+            article_code: articleCode,
+            sku_code: skuCode,
+
+            metal_type,
+            category: String(category).trim(),
+
+            purchase_rate: purchaseRate,
+            sale_rate: saleRate,
+            making_charge: makingChargeValue,
+            purity: String(purity).trim(),
+
+            net_weight: incomingWeight,
+            gross_weight: incomingWeight + incomingStoneWeight,
+            stone_weight: incomingStoneWeight,
+
+            current_status: "in_stock",
+
+            organization_id: user.organization_id,
+
+            /**
+             * IMPORTANT:
+             * Tumhare old code me `storeCode` use hua tha.
+             * Agar Item model me field name `storeCode` hai to ye sahi hai.
+             * Agar model me `store_code` hai, to is line ko replace karo:
+             *
+             * store_code: user.store_code || null,
+             */
+            storeCode: user.store_code || null,
+          },
+          { transaction: t }
         );
 
-      const newAvailableQty =
-        previousAvailableQty +
-        incomingQty;
+        const qr = await generateItemQR(item);
 
-      const newAvailableWeight =
-        previousAvailableWeight +
-        incomingWeight;
+        if (!qr?.qr_code_value || !qr?.qr_code_url) {
+          throw new Error("QR generation failed");
+        }
 
-      await stock.update(
+        await item.update(
+          {
+            qr_code_value: qr.qr_code_value,
+            qr_code_url: qr.qr_code_url,
+          },
+          { transaction: t }
+        );
+      }
+    }
+
+    /**
+     * STOCK HANDLE
+     */
+    let stock = await Stock.findOne({
+      where: {
+        item_id: item.id,
+        organization_id: item.organization_id,
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!stock) {
+      stock = await Stock.create(
         {
-          available_qty:
-            newAvailableQty,
-
-          available_weight:
-            newAvailableWeight,
-
-          store_code:
-            cleanStoreCode,
-        },
-        { transaction: t }
-      );
-
-      await item.update(
-        {
-          current_status:
-            "in_stock",
-        },
-        { transaction: t }
-      );
-
-      await StockMovement.create(
-        {
+          organization_id: item.organization_id,
           item_id: item.id,
 
-          organization_id:
-            item.organization_id,
+          available_qty: 0,
+          available_weight: 0,
 
-          store_code:
-            cleanStoreCode,
-
-          movement_type:
-            "purchase",
-
-          qty: incomingQty,
-
-          weight:
-            incomingWeight,
-
-          previous_status:
-            item.current_status,
-
-          new_status:
-            "in_stock",
-
-          reference_type:
-            "manual_stock_in",
-
-          reference_id:
-            item.id,
-
-          reference_no:
-            item.article_code,
-
-          remarks:
-            remarks ||
-            "Stock inward completed",
-
-          created_by:
-            user?.id || null,
+          /**
+           * Agar tumhare Stock model me ye columns nahi hain,
+           * to in 3 lines ko remove kar dena.
+           */
+          reserved_qty: 0,
+          transit_qty: 0,
+          damaged_qty: 0,
         },
         { transaction: t }
       );
-
-      responseData.push({
-        item,
-        stock: {
-          ...stock.toJSON(),
-
-          available_qty:
-            newAvailableQty,
-
-          available_weight:
-            newAvailableWeight,
-
-          store_code:
-            cleanStoreCode,
-        },
-      });
     }
+
+    const previousAvailableQty = Number(stock.available_qty || 0);
+    const previousAvailableWeight = Number(stock.available_weight || 0);
+
+    const newAvailableQty = previousAvailableQty + incomingQty;
+    const newAvailableWeight = previousAvailableWeight + incomingWeight;
+
+    await stock.update(
+      {
+        available_qty: newAvailableQty,
+        available_weight: newAvailableWeight,
+      },
+      { transaction: t }
+    );
+
+    const previousStatus = item.current_status || null;
+
+    await item.update(
+      {
+        current_status: "in_stock",
+      },
+      { transaction: t }
+    );
+
+    /**
+     * STOCK MOVEMENT
+     * Tumhare previous error ke according DB CHECK constraint me lowercase purchase allowed hai.
+     */
+    await StockMovement.create(
+      {
+        item_id: item.id,
+        organization_id: item.organization_id,
+
+        movement_type: "purchase",
+
+        qty: incomingQty,
+        weight: incomingWeight,
+
+        previous_status: previousStatus,
+        new_status: "in_stock",
+
+        reference_type: "manual_stock_in",
+        remarks: remarks || "Stock inward completed",
+        created_by: user?.id || null,
+      },
+      { transaction: t }
+    );
+
+    const batch = await createStockInRootBatch(
+  {
+    item,
+    stock,
+    organization_id: item.organization_id,
+    quantity: incomingQty,
+    weight: incomingWeight,
+    remarks: remarks || "Manual stock inward root batch",
+    created_by: user?.id || null,
+    source_type: "manual_stock_in",
+    source_reference_id: item.id,
+  },
+  { transaction: t }
+);
+    /**
+     * RECENT ACTIVITY + SYSTEM ACTIVITY
+     */
+    const activityTitle = isNewItem
+      ? "New item added to stock"
+      : "Stock inward completed";
+
+    const activityDescription = isNewItem
+      ? `${item.item_name} added with ${incomingQty} qty at ${
+          user?.store_code || "store"
+        }`
+      : `${item.item_name} stock increased by ${incomingQty} qty at ${
+          user?.store_code || "store"
+        }`;
+
+    const activityMeta = {
+      item_id: item.id,
+      item_name: item.item_name,
+      article_code: item.article_code,
+      sku_code: item.sku_code,
+
+      metal_type: item.metal_type,
+      category: item.category,
+      purity: item.purity,
+
+      qty: incomingQty,
+      weight: incomingWeight,
+
+      previous_available_qty: previousAvailableQty,
+      new_available_qty: newAvailableQty,
+
+      previous_available_weight: previousAvailableWeight,
+      new_available_weight: newAvailableWeight,
+
+      purchase_price: purchaseRate,
+      selling_price: saleRate,
+      making_charge: makingChargeValue,
+
+      organization_id: item.organization_id,
+      store_code:
+        user?.store_code ||
+        item.store_code ||
+        item.storeCode ||
+        null,
+
+      movement_type: "purchase",
+      reference_type: "manual_stock_in",
+
+      is_new_item: isNewItem,
+      duplicate_item_stock_updated: isDuplicateItemStockIn,
+      qr_generated: Boolean(item.qr_code_value && item.qr_code_url),
+    };
+
+    await ActivityLog.create(
+      {
+        organization_id: item.organization_id,
+        user_id: user?.id || null,
+
+        action: isNewItem ? "ITEM_CREATED_STOCK_IN" : "STOCK_IN",
+        module_name: "inventory",
+
+        reference_id: item.id,
+        reference_no: item.article_code,
+
+        title: activityTitle,
+        description: activityDescription,
+        meta: activityMeta,
+
+        icon: "package-plus",
+        color: "green",
+      },
+      { transaction: t }
+    );
+
+    await SystemActivity.create(
+      {
+        title: activityTitle,
+        description: activityDescription,
+
+        activity_type: isNewItem ? "item_created" : "stock_in",
+        module_name: "inventory",
+
+        reference_id: item.id,
+        reference_no: item.article_code,
+
+        state_code: user?.state_code || null,
+        district_code: user?.district_code || null,
+        store_code:
+          user?.store_code ||
+          item.store_code ||
+          item.storeCode ||
+          null,
+      },
+      { transaction: t }
+    );
 
     await t.commit();
 
     return res.status(200).json({
       success: true,
-      message:
-        "Stock inward successful",
-
-      data:
-        payloads.length === 1
-          ? responseData[0]
-          : responseData,
+      message: "Stock inward successful",
+      data: {
+        item,
+        stock: {
+          ...stock.toJSON(),
+          available_qty: newAvailableQty,
+          available_weight: newAvailableWeight,
+        },
+        batch,
+      },
     });
   } catch (error) {
     await t.rollback();
 
-    console.error(
-      "addStockIn error:",
-      error
-    );
+    console.error("addStockIn error:", {
+      name: error?.name,
+      message: error?.message,
+      errors: error?.errors?.map((e) => ({
+        field: e.path,
+        message: e.message,
+        value: e.value,
+        type: e.type,
+        validatorKey: e.validatorKey,
+      })),
+      parent: error?.parent?.detail || error?.parent?.message,
+      sql: error?.sql,
+    });
+
+    if (error?.name === "SequelizeValidationError") {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: error.errors?.map((e) => ({
+          field: e.path,
+          message: e.message,
+          value: e.value,
+        })),
+      });
+    }
+
+    if (error?.name === "SequelizeUniqueConstraintError") {
+      return res.status(409).json({
+        success: false,
+        message: "Duplicate item code or SKU code already exists",
+        errors: error.errors?.map((e) => ({
+          field: e.path,
+          message: e.message,
+          value: e.value,
+        })),
+      });
+    }
+
+    if (error?.name === "SequelizeForeignKeyConstraintError") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid reference data",
+        error: error?.parent?.detail || error.message,
+      });
+    }
+
+    if (error?.name === "SequelizeDatabaseError") {
+      return res.status(500).json({
+        success: false,
+        message: "Database error while adding stock inward",
+        error: error?.parent?.detail || error?.parent?.message || error.message,
+      });
+    }
 
     return res.status(500).json({
       success: false,
-      message:
-        "Failed to add stock inward",
+      message: "Failed to add stock inward",
       error: error.message,
     });
   }
 };
+
+
 const clean = (value) => {
   if (value === undefined || value === null) return "";
   return String(value).replace(/\s+/g, " ").trim();
@@ -1610,453 +1831,6 @@ const normalizeMetalType = (itemName) => {
   if (text.includes("silver")) return "Silver";
   return "Gold";
 };
-
-const generateCode = (storeCode, prefix, i) => {
-  return `${prefix}-${storeCode}-${Date.now()}-${i}`;
-};
-
-const isPdfFile = (file) => {
-  const fileName = file.originalname.toLowerCase();
-
-  return file.mimetype === "application/pdf" || fileName.endsWith(".pdf");
-};
-
-const isExcelFile = (file) => {
-  const fileName = file.originalname.toLowerCase();
-
-  return (
-    file.mimetype ===
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-    file.mimetype === "application/vnd.ms-excel" ||
-    fileName.endsWith(".xlsx") ||
-    fileName.endsWith(".xls")
-  );
-};
-
-/* =========================================================
-   PDF PARSER - DELIVERY CHALLAN ITEM TABLE ONLY
-========================================================= */
-
-const PDF_STANDARD_FONT_PATH = pathToFileURL(
-  path.join(process.cwd(), "node_modules", "pdfjs-dist", "standard_fonts")
-).href + "/";
-
-const cleanPdf = (value = "") =>
-  String(value)
-    .replace(/\s+/g, " ")
-    .replace(/₹/g, "")
-    .trim();
-
-const pdfNum = (value) => {
-  if (value === undefined || value === null || value === "") return 0;
-
-  const num = Number(
-    String(value)
-      .replace(/₹/g, "")
-      .replace(/,/g, "")
-      .replace(/[^\d.-]/g, "")
-      .trim()
-  );
-
-  return Number.isFinite(num) ? num : 0;
-};
-
-const getPdfCategory = (itemName = "") => {
-  const value = cleanPdf(itemName);
-  if (!value.includes("/")) return "General";
-
-  return cleanPdf(value.split("/").pop()) || "General";
-};
-
-const isValidProductCode = (value = "") => {
-  return /^[A-Z]{2,}(?:-[A-Z0-9]+){3,}-\d{3,}$/i.test(cleanPdf(value));
-};
-
-const isValidHsn = (value = "") => {
-  return /^\d{6,10}$/.test(cleanPdf(value));
-};
-
-const isValidPurity = (value = "") => {
-  return /^(18|20|22|24)\s*(kt|k)?\s*\/?\s*\d{3}$/i.test(cleanPdf(value));
-};
-const isValidHuid = (value = "") => {
-  return /^HUID[A-Z0-9]+$/i.test(cleanPdf(value));
-};
-
-const groupByY = (items, tolerance = 2.5) => {
-  const lines = [];
-
-  for (const item of items) {
-    const text = cleanPdf(item.str);
-    if (!text) continue;
-
-    const x = item.transform[4];
-    const y = item.transform[5];
-
-    let line = lines.find((l) => Math.abs(l.y - y) <= tolerance);
-
-    if (!line) {
-      line = { y, items: [] };
-      lines.push(line);
-    }
-
-    line.items.push({ x, y, text });
-  }
-
-  return lines
-    .sort((a, b) => b.y - a.y)
-    .map((line) => ({
-      y: line.y,
-      items: line.items.sort((a, b) => a.x - b.x),
-      text: line.items
-        .sort((a, b) => a.x - b.x)
-        .map((i) => i.text)
-        .join(" "),
-    }));
-};
-
-const getCellText = (line, minX, maxX) => {
-  return cleanPdf(
-    line.items
-      .filter((i) => i.x >= minX && i.x < maxX)
-      .map((i) => i.text)
-      .join(" ")
-  );
-};
-
-const parsePdfRows = async (buffer) => {
-  try {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-    const pdf = await pdfjsLib.getDocument({
-      data: new Uint8Array(buffer),
-      standardFontDataUrl: PDF_STANDARD_FONT_PATH,
-      disableWorker: true,
-      disableFontFace: true,
-    }).promise;
-
-    const rows = [];
-
-    for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
-      const page = await pdf.getPage(pageNo);
-      const textContent = await page.getTextContent();
-
-      const lines = groupByY(textContent.items, 3);
-
-      for (const line of lines) {
-        const item_name = getCellText(line, 65, 136);
-        const product_code = getCellText(line, 136, 205);
-        const qty = getCellText(line, 228, 250);
-        const hsn_code = getCellText(line, 255, 288);
-        const purity = getCellText(line, 288, 318);
-        const net_weight = getCellText(line, 365, 390);
-        const rate = getCellText(line, 400, 425);
-        const making_charge = getCellText(line, 435, 458);
-        const huid_code = getCellText(line, 458, 505);
-        const base_value = getCellText(line, 525, 560);
-
-        if (!isValidProductCode(product_code)) continue;
-        if (!isValidHsn(hsn_code)) continue;
-        if (!isValidPurity(purity)) continue;
-
-        rows.push({
-          source_row_no: rows.length + 1,
-
-          item_name,
-          product_code,
-
-          qty: pdfNum(qty) || 1,
-          hsn_code,
-          purity,
-
-          net_weight: pdfNum(net_weight),
-          gross_weight: pdfNum(net_weight),
-
-          rate: pdfNum(rate),
-          making_charge: pdfNum(making_charge),
-
-          huid_code: isValidHuid(huid_code) ? huid_code : "",
-          amount: pdfNum(base_value),
-          base_value: pdfNum(base_value),
-
-          unit: "g",
-          metal_type: normalizeMetalType(item_name),
-          category: getPdfCategory(item_name),
-        });
-      }
-    }
-
-    const uniqueRows = [];
-    const seenProductCodes = new Set();
-
-    for (const row of rows) {
-      if (!row.product_code) continue;
-      if (seenProductCodes.has(row.product_code)) continue;
-
-      seenProductCodes.add(row.product_code);
-
-      uniqueRows.push({
-        ...row,
-        source_row_no: uniqueRows.length + 1,
-      });
-    }
-
-    console.log("PDF PARSED ROWS:", uniqueRows);
-
-    if (!uniqueRows.length) {
-      return {
-        success: false,
-        message: "No valid item rows found in PDF challan",
-        rows: [],
-      };
-    }
-
-    return {
-      success: true,
-      rows: uniqueRows,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      message: `PDF parse failed: ${err.message}`,
-      rows: [],
-    };
-  }
-};
-
-/* =========================================================
-   EXCEL PARSER
-========================================================= */
-
-const parseExcelRows = (buffer) => {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheetName = workbook.SheetNames[0];
-
-  if (!sheetName) {
-    return {
-      success: false,
-      message: "No sheet found in uploaded file",
-      rows: [],
-    };
-  }
-
-  const sheet = workbook.Sheets[sheetName];
-
-  const rawRows = XLSX.utils.sheet_to_json(sheet, {
-    header: 1,
-    defval: "",
-    raw: false,
-  });
-
-  let headerIndex = rawRows.findIndex((row) => {
-    const rowText = row.map(clean).join(" ").toLowerCase();
-
-    return (
-      rowText.includes("material description") &&
-      rowText.includes("product code") &&
-      rowText.includes("hsn")
-    );
-  });
-
-  if (headerIndex === -1) {
-    headerIndex = rawRows.findIndex((row) =>
-      row.some((cell) => clean(cell).toUpperCase() === "PARTICULAR")
-    );
-  }
-
-  if (headerIndex === -1) {
-    return {
-      success: false,
-      message: "Invalid challan format",
-      rows: [],
-    };
-  }
-
-  const headerRow = rawRows[headerIndex].map((cell) =>
-    clean(cell).toLowerCase()
-  );
-
-  const findCol = (...names) => {
-    return headerRow.findIndex((header) =>
-      names.some((name) => header.includes(name))
-    );
-  };
-
-  const hasDeliveryChallanHeader = headerRow.some((header) =>
-    header.includes("material description")
-  );
-
-  /**
-   * Old PARTICULAR format
-   */
-  if (!hasDeliveryChallanHeader) {
-    const dataRows = rawRows.slice(headerIndex + 1);
-
-    const rows = dataRows
-      .map((row, index) => {
-        const item_name = clean(row[1]);
-        if (!item_name) return null;
-
-        const unit = normalizeUnit(row[3]);
-        const qty = toNumber(row[4]);
-
-        return {
-          source_row_no: headerIndex + index + 2,
-
-          item_name,
-          product_code: "",
-
-          hsn_code: clean(row[2]),
-          unit,
-          qty,
-
-          rate: toNumber(row[5]),
-          amount: toNumber(row[6]),
-          base_value: toNumber(row[6]),
-
-          purity: "NA",
-          net_weight: unit === "g" ? qty : 0,
-          gross_weight: unit === "g" ? qty : 0,
-
-          making_charge: 0,
-          huid_code: "",
-
-          metal_type: normalizeMetalType(item_name),
-          category: "General",
-        };
-      })
-      .filter(Boolean);
-
-    return {
-      success: true,
-      rows,
-    };
-  }
-
-  /**
-   * Delivery Challan format
-   */
-  const colItem = findCol("material description", "description", "particular");
-  const colProduct = findCol("product code", "sku", "article");
-  const colQty = findCol("qty", "quantity");
-  const colHsn = findCol("hsn");
-  const colPurity = findCol("purity", "karat");
-  const colNetWeight = findCol("net weight", "weight");
-  const colRate = findCol("rate");
-  const colMaking = findCol("making");
-  const colHuid = findCol("huid");
-  const colBaseValue = findCol("base value", "amount", "value");
-
-  const requiredCols = [
-    { name: "Material Description", index: colItem },
-    { name: "Product Code", index: colProduct },
-    { name: "Qty", index: colQty },
-    { name: "HSN Code", index: colHsn },
-    { name: "Purity/Karat", index: colPurity },
-    { name: "Net Weight", index: colNetWeight },
-  ];
-
-  const missingCol = requiredCols.find((col) => col.index === -1);
-
-  if (missingCol) {
-    return {
-      success: false,
-      message: `${missingCol.name} column missing in Excel challan`,
-      rows: [],
-    };
-  }
-
-  const dataRows = rawRows.slice(headerIndex + 1);
-
-  const rows = dataRows
-    .map((row, index) => {
-      const item_name = clean(row[colItem]);
-      const product_code = clean(row[colProduct]);
-
-      if (!item_name && !product_code) return null;
-
-      const netWeight = toNumber(row[colNetWeight]);
-
-      return {
-        source_row_no: headerIndex + index + 2,
-
-        item_name,
-        product_code,
-
-        qty: toNumber(row[colQty]) || 1,
-        hsn_code: clean(row[colHsn]),
-        purity: clean(row[colPurity]) || "NA",
-
-        net_weight: netWeight,
-        gross_weight: netWeight,
-
-        rate: colRate !== -1 ? toNumber(row[colRate]) : 0,
-        making_charge: colMaking !== -1 ? toNumber(row[colMaking]) : 0,
-        huid_code: colHuid !== -1 ? clean(row[colHuid]) : "",
-        amount: colBaseValue !== -1 ? toNumber(row[colBaseValue]) : 0,
-        base_value: colBaseValue !== -1 ? toNumber(row[colBaseValue]) : 0,
-
-        unit: "g",
-        metal_type: normalizeMetalType(item_name),
-        category: getPdfCategory(item_name),
-      };
-    })
-    .filter(Boolean);
-
-  if (!rows.length) {
-    return {
-      success: false,
-      message: "No item rows found in Excel challan",
-      rows: [],
-    };
-  }
-
-  return {
-    success: true,
-    rows,
-  };
-};
-
-/* =========================================================
-   MAIN CONTROLLER
-========================================================= */
-// const clean = (value) => {
-//   if (value === undefined || value === null) return "";
-//   return String(value).replace(/\s+/g, " ").trim();
-// };
-
-// const toNumber = (value, fallback = 0) => {
-//   if (value === undefined || value === null || value === "") return fallback;
-
-//   const cleaned = String(value)
-//     .replace(/₹/g, "")
-//     .replace(/,/g, "")
-//     .replace(/[^\d.-]/g, "")
-//     .trim();
-
-//   const num = Number(cleaned);
-//   return Number.isFinite(num) ? num : fallback;
-// };
-
-// const normalizeUnit = (unit) => {
-//   const u = clean(unit).toLowerCase();
-
-//   if (["g", "gm", "gms", "gram", "grams"].includes(u)) return "g";
-//   if (["kg", "kilogram", "kilograms"].includes(u)) return "kg";
-//   if (["mg", "milligram", "milligrams"].includes(u)) return "mg";
-//   if (["piece", "pieces", "pcs", "pc", "nos"].includes(u)) return "pcs";
-//   if (["pair", "pairs"].includes(u)) return "pair";
-//   if (["set", "sets"].includes(u)) return "set";
-
-//   return u || "pcs";
-// };
-
-// const normalizeMetalType = (itemName) => {
-//   const text = clean(itemName).toLowerCase();
-
-//   if (text.includes("silver")) return "Silver";
-//   return "Gold";
-// };
 
 const generateCode = (storeCode, prefix, i) => {
   return `${prefix}-${storeCode}-${Date.now()}-${i}`;
@@ -2536,6 +2310,10 @@ const parseExcelRows = (buffer) => {
     rows,
   };
 };
+
+/* =========================================================
+   MAIN CONTROLLER
+========================================================= */
 
 export const uploadStockInItems = async (req, res) => {
   const t = await sequelize.transaction();
@@ -3049,104 +2827,7 @@ export const uploadStockInItems = async (req, res) => {
   }
 };
 
-export const getItemQR = async (req, res) => {
-  try {
-    const { itemId } = req.params;
-    const user = req.user;
 
-    const where = { id: itemId };
-
-    if (user?.role !== "super_admin") {
-      where.organization_id = user.organization_id;
-    }
-
-    const item = await Item.findOne({
-      where,
-      attributes: [
-        "id",
-        "item_name",
-        "article_code",
-        "sku_code",
-        "qr_code_value",
-        "qr_code_url",
-      ],
-    });
-
-    if (!item) {
-      return res.status(404).json({
-        success: false,
-        message: "Item not found",
-      });
-    }
-
-    if (!item.qr_code_url) {
-      return res.status(404).json({
-        success: false,
-        message: "QR not generated for this item",
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      message: "QR fetched successfully",
-      data: {
-        item_id: item.id,
-        item_name: item.item_name,
-        article_code: item.article_code,
-        sku_code: item.sku_code,
-        qr_code_value: item.qr_code_value,
-        qr_code_url: item.qr_code_url,
-      },
-    });
-  } catch (error) {
-    console.error("getItemQR error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch item QR",
-      error: error.message,
-    });
-  }
-};
-
-export const getMyStoreItemQRs = async (req, res) => {
-  try {
-    const user = req.user;
-
-    const where = {};
-
-    if (user?.role !== "super_admin") {
-      where.organization_id = user.organization_id;
-    }
-
-    const items = await Item.findAll({
-      where,
-      attributes: [
-        "id",
-        "item_name",
-        "article_code",
-        "sku_code",
-        "qr_code_value",
-        "qr_code_url",
-        "current_status",
-      ],
-      order: [["id", "DESC"]],
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "QR list fetched successfully",
-      count: items.length,
-      data: items,
-    });
-  } catch (error) {
-    console.error("getMyStoreItemQRs error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch QR list",
-      error: error.message,
-    });
-  }
-};
 export const getItemQR = async (req, res) => {
   try {
     const { itemId } = req.params;

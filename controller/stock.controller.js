@@ -2025,18 +2025,18 @@ const parseExcelRows = (buffer) => {
 //   return String(value).replace(/\s+/g, " ").trim();
 // };
 
-const toNumber = (value, fallback = 0) => {
-  if (value === undefined || value === null || value === "") return fallback;
+// const toNumber = (value, fallback = 0) => {
+//   if (value === undefined || value === null || value === "") return fallback;
 
-  const cleaned = String(value)
-    .replace(/₹/g, "")
-    .replace(/,/g, "")
-    .replace(/[^\d.-]/g, "")
-    .trim();
+//   const cleaned = String(value)
+//     .replace(/₹/g, "")
+//     .replace(/,/g, "")
+//     .replace(/[^\d.-]/g, "")
+//     .trim();
 
-  const num = Number(cleaned);
-  return Number.isFinite(num) ? num : fallback;
-};
+//   const num = Number(cleaned);
+//   return Number.isFinite(num) ? num : fallback;
+// };
 
 const normalizeUnit = (unit) => {
   const u = clean(unit).toLowerCase();

@@ -23,6 +23,7 @@ import staff from "./routes/staffroutes.js"
 import { getGoldRate } from "./service/goldService.js";
 import profile from "./routes/profileRoute.js"
 import ledger from "./routes/headladger.js"
+import itemtracker from "./routes/itemtracker.js"
 import { getDashboardSummary } from "./controller/dashboardController.js";
 import { getDistrictDashboard } from "./controller/districtController.js";
 
@@ -36,16 +37,23 @@ const corsOptions = {
     "http://localhost:5173",
     "https://erp-dash-board.vercel.app",
   ],
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "store_code",
+    "x-store-code",
+    "organization_id",
+    "x-organization-id",
+  ],
   credentials: true,
 };
-
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const sequelize = new Sequelize(process.env.DATABASE_URL, {
+                                                                                               
   dialect: "postgres",
   protocol: "postgres",
   logging: false,
@@ -73,6 +81,7 @@ app.use("/track", tracklocation);
 app.use('/Profile',profile)
 app.use('/headstore/manage',storemanage);
 app.use('/staff',staff)
+app.use('/itemtrack',itemtracker)
 app.use('/headledger',ledger)
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -126,7 +135,7 @@ async function startServer() {
       cors: corsOptions,
     });
 
-    // IMPORTANT: controller me global.io.emit use karne ke liye
+    //  IMPORTANT: controller me global.io.emit use karne ke liye
     global.io = io;
 
     io.on("connection", async (socket) => {
@@ -161,7 +170,7 @@ async function startServer() {
 
       socket.on("join-dashboard", async (userData) => {
         try {
-          socket.data.user = userData;
+          socket.data.user = userData; 
 
           await emitDashboardData(socket, userData);
 

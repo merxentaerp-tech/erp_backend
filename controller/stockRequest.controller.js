@@ -1,6 +1,6 @@
 import fs from "fs";
 import sequelize from "../config/db.js";
-import { Op, where, cast, col } from "sequelize";
+import { Op, where, cast, col, QueryTypes } from "sequelize";
 
 import Store from "../model/Store.js";
 import StockTransfer from "../model/stockTransfer.js";
@@ -16,6 +16,9 @@ import StockRequestItem from "../model/stockRequestItem.js";
 import District from "../model/District.js";
 import cloudinary from "../utils/cloudinary.js";
 import User from "../model/user.js";
+import { generateDeliveryChallanPdf } from "../service/deliveryChallan.helper.js";
+import { InventoryTrackingService } from "../service/inventoryTracking.service.js";
+
 // import Store from "../model/Store.js";
 // import { uploadToCloudinary } from "../utils/cloudinaryUpload.js";
 const generateTransferNo = () => {
@@ -183,67 +186,56 @@ const normalizeItemRow = (row = {}) => {
   };
 };
 
-const parseItemsFromBody = (body) => {
-  // 1) direct array
-  if (Array.isArray(body.items)) {
-    return body.items.map(normalizeItemRow);
+const parseItemsFromBody = (body = {}) => {
+  const normalizeItem = (item = {}) => ({
+    item_id: toNumber(item.item_id),
+    parent_batch_id: toNumber(item.parent_batch_id || item.batch_id),
+    batch_id: toNumber(item.batch_id || item.parent_batch_id),
+    qty: toNumber(item.qty || item.approved_qty),
+    weight: toNumber(item.weight || item.approved_weight),
+    rate: toNumber(item.rate),
+    remarks: item.remarks || null,
+  });
+
+  const rawItems = body.items;
+
+  if (Array.isArray(rawItems)) {
+    return rawItems.map(normalizeItem);
   }
 
-  if (Array.isArray(body.approved_items)) {
-    return body.approved_items.map(normalizeItemRow);
-  }
+  if (typeof rawItems === "string") {
+    const text = rawItems.trim();
 
-  // 2) JSON string in items / approved_items
-  if (typeof body.items === "string" && body.items.trim()) {
-    const parsed = tryJsonParse(body.items);
-    if (Array.isArray(parsed)) {
-      return parsed.map(normalizeItemRow);
+    if (!text) return [];
+
+    try {
+      const parsed = JSON.parse(text);
+
+      if (!Array.isArray(parsed)) return [];
+
+      return parsed.map(normalizeItem);
+    } catch (error) {
+      console.error("parseItemsFromBody JSON parse error:", error.message);
+      return [];
     }
   }
 
-  if (typeof body.approved_items === "string" && body.approved_items.trim()) {
-    const parsed = tryJsonParse(body.approved_items);
-    if (Array.isArray(parsed)) {
-      return parsed.map(normalizeItemRow);
-    }
-  }
+  const indexedItems = [];
 
-  // 3) multipart style: items[0][item_id] OR items[0].item_id
-  const grouped = {};
+  Object.keys(body || {}).forEach((key) => {
+    const match = key.match(/^items\[(\d+)\]\[(.+)\]$/);
 
-  for (const [key, value] of Object.entries(body)) {
-    let match = key.match(/^items\[(\d+)\]\[(\w+)\]$/);
-    if (!match) {
-      match = key.match(/^items\[(\d+)\]\.(\w+)$/);
-    }
-    if (!match) {
-      match = key.match(/^approved_items\[(\d+)\]\[(\w+)\]$/);
-    }
-    if (!match) {
-      match = key.match(/^approved_items\[(\d+)\]\.(\w+)$/);
-    }
+    if (!match) return;
 
-    if (match) {
-      const index = Number(match[1]);
-      const field = match[2];
+    const index = Number(match[1]);
+    const field = match[2];
 
-      if (!grouped[index]) {
-        grouped[index] = {};
-      }
-      grouped[index][field] = value;
-    }
-  }
+    if (!indexedItems[index]) indexedItems[index] = {};
 
-  const result = Object.keys(grouped)
-    .sort((a, b) => Number(a) - Number(b))
-    .map((idx) => normalizeItemRow(grouped[idx]))
-    .filter((row) => row.item_id);
+    indexedItems[index][field] = body[key];
+  });
 
-  if (result.length > 0) {
-    return result;
-  }
-
-  return [];
+  return indexedItems.filter(Boolean).map(normalizeItem);
 };
 
 export const getAvailableStockForRequest = async (req, res) => {
@@ -372,7 +364,6 @@ export const getAvailableStockForRequest = async (req, res) => {
 // helper
 
 
-
 export const createStockRequest = async (req, res) => {
   const transaction = await sequelize.transaction();
 
@@ -380,6 +371,7 @@ export const createStockRequest = async (req, res) => {
     const user = req.user;
     const { store_id, items, priority, category, notes } = req.body;
 
+    // ================= VALIDATION =================
     if (!store_id || !Array.isArray(items) || items.length === 0) {
       await transaction.rollback();
       return res.status(400).json({
@@ -388,8 +380,9 @@ export const createStockRequest = async (req, res) => {
       });
     }
 
+    // ================= GET STORE =================
     const store = await Store.findOne({
-      where: { id: store_id },
+      where: { id: store_id, is_active: true },
       transaction,
     });
 
@@ -401,24 +394,44 @@ export const createStockRequest = async (req, res) => {
       });
     }
 
-    const district = await District.findOne({
-      where: { id: store.district_id },
-      transaction,
-    });
+    // ================= FINAL DISTRICT RESOLUTION =================
+    let district = null;
 
-    if (!district) {
-      await transaction.rollback();
-      return res.status(404).json({
-        success: false,
-        message: "District not found",
+    // 1st priority → district_id
+    if (store.district_id) {
+      district = await District.findOne({
+        where: { id: store.district_id },
+        transaction,
       });
     }
 
+    // 2nd priority → district_name fallback
+    if (!district && store.district_name) {
+      district = await District.findOne({
+        where: { name: store.district_name },
+        transaction,
+      });
+    }
+
+    if (!district) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Cannot resolve district for this store",
+      });
+    }
+
+    // ================= VALID ITEMS =================
     const validItems = items
-      .filter((i) => i.item_id && Number(i.request_qty) > 0)
-      .map((i) => ({
-        item_id: Number(i.item_id),
-        request_qty: Number(i.request_qty),
+      .filter(
+        (item) =>
+          item.item_id &&
+          Number.isFinite(Number(item.request_qty)) &&
+          Number(item.request_qty) > 0
+      )
+      .map((item) => ({
+        item_id: Number(item.item_id),
+        request_qty: Number(item.request_qty),
         approved_qty: 0,
         status: "pending",
       }));
@@ -431,20 +444,39 @@ export const createStockRequest = async (req, res) => {
       });
     }
 
+    // ================= MERGE ITEMS =================
+    const itemMap = new Map();
+
+    for (const item of validItems) {
+      if (itemMap.has(item.item_id)) {
+        itemMap.get(item.item_id).request_qty += item.request_qty;
+      } else {
+        itemMap.set(item.item_id, item);
+      }
+    }
+
+    const finalItems = Array.from(itemMap.values());
+
+    // ================= REQUEST NO =================
     const request_no = `REQ-${user.organization_id}-${Date.now()}`;
 
-    const districtName =
-      district.name || district.district || district.district_name || "Unknown";
+    // 👉 THIS IS YOUR FINAL DECISION
+    const finalDistrictId = district.id;
+    const finalDistrictName = district.name;
 
+    // ================= CREATE REQUEST =================
     const stockRequest = await StockRequest.create(
       {
         request_no,
+
         from_organization_id: user.organization_id,
         from_store_code: store.store_code,
         from_store_name: store.store_name,
-        to_organization_id: district.id,
-        to_district_code: String(district.id),
-        to_district_name: districtName,
+
+        to_organization_id: finalDistrictId,
+        to_district_code: String(finalDistrictId),
+        to_district_name: finalDistrictName,
+
         priority: priority || "medium",
         category: category || null,
         notes: notes || null,
@@ -454,84 +486,42 @@ export const createStockRequest = async (req, res) => {
       { transaction }
     );
 
-    const requestItemsPayload = validItems.map((item) => ({
+    // ================= ITEMS =================
+    const requestItemsPayload = finalItems.map((item) => ({
       request_id: stockRequest.id,
       item_id: item.item_id,
       request_qty: item.request_qty,
-      approved_qty: item.approved_qty,
-      status: item.status,
+      approved_qty: 0,
+      status: "pending",
     }));
 
-    await StockRequestItem.bulkCreate(requestItemsPayload, { transaction });
+    await StockRequestItem.bulkCreate(requestItemsPayload, {
+      transaction,
+    });
 
-    // ================= TASK (FOR RECEIVER - DISTRICT) =================
+    // ================= TASK =================
     await Task.create(
       {
         title: "Stock request approval required",
-        description: `${store.store_name} submitted stock request ${stockRequest.request_no}`,
+        description: `${store.store_name} sent request ${stockRequest.request_no} to ${finalDistrictName}`,
         priority: priority || "medium",
         status: "pending",
         task_type: "stock_request_approval",
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
 
-        // 👉 Receiver scope
-        district_code: String(district.id),
-        store_code: null,
-        store_name: null,
+        district_code: String(finalDistrictId),
+        store_code: store.store_code,
+        store_name: store.store_name,
 
-        assigned_to: null,
         created_by: user.id,
-      },
-      { transaction }
-    );
-
-    // ================= ACTIVITY LOG (FOR REQUESTER) =================
-    await ActivityLog.create(
-      {
-        organization_id: user.organization_id,
-        user_id: user.id,
-        action: "stock_request_created",
-        module_name: "stock_request",
-
-        reference_id: stockRequest.id,
-        reference_no: stockRequest.request_no,
-
-        title: "Stock request created",
-        description: `You created stock request ${stockRequest.request_no} for ${districtName}`,
-
-        meta: {
-          total_items: requestItemsPayload.length,
-          store_name: store.store_name,
-          district_name: districtName,
-        },
-
-        icon: "request",
-        color: "blue",
-      },
-      { transaction }
-    );
-
-    // ================= SYSTEM ACTIVITY (GLOBAL / ADMIN VIEW) =================
-    await SystemActivity.create(
-      {
-        title: "New stock request submitted",
-        description: `${store.store_name} submitted request ${stockRequest.request_no} to district ${districtName}`,
-        activity_type: "stock_request_created",
-        module_name: "stock_request",
-        reference_id: stockRequest.id,
-        reference_no: stockRequest.request_no,
-        district_code: String(district.id),
-        store_code: store.store_code || null,
-        store_name: store.store_name || null,
-        created_by: user.id,
-        created_at: new Date(),
       },
       { transaction }
     );
 
     await transaction.commit();
 
+    // ================= FINAL RESPONSE =================
     return res.status(201).json({
       success: true,
       message: "Stock request created successfully",
@@ -539,11 +529,16 @@ export const createStockRequest = async (req, res) => {
         request_id: stockRequest.id,
         request_no: stockRequest.request_no,
         total_items: requestItemsPayload.length,
+
+        // 👉 IMPORTANT (DEBUG / FRONTEND USE)
+        district: {
+          id: finalDistrictId,
+          name: finalDistrictName,
+        },
       },
     });
   } catch (error) {
     await transaction.rollback();
-    console.error("createStockRequest error:", error);
 
     return res.status(500).json({
       success: false,
@@ -1063,6 +1058,7 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
 
   try {
     const { requestId } = req.params;
+
     const {
       remarks,
       driver_name,
@@ -1173,7 +1169,6 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
       lock: transaction.LOCK.UPDATE,
     });
 
-    // ✅ Only change: common API = retail + district, head API wrapper = head
     const allowedLevels = req.allowedApproveLevels || ["retail", "district"];
 
     if (!canApproveDispatch(user, allowedLevels)) {
@@ -1223,12 +1218,21 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
+      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
 
       if (!item_id || qty < 0) {
         await transaction.rollback();
         return res.status(400).json({
           success: false,
           message: "Each item must have valid item_id and qty",
+        });
+      }
+
+      if (qty > 0 && !parent_batch_id) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `parent_batch_id is required for item ${item_id}`,
         });
       }
 
@@ -1305,19 +1309,25 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
       {
         transfer_no: generateTransferNo(),
         request_id: request.id,
+
         from_organization_id: user.organization_id,
         to_organization_id: request.from_organization_id,
+
         transfer_date: new Date(),
         dispatch_date: new Date(),
         status: "in_transit",
+
         approved_by: user.id,
         dispatched_by: user.id,
         created_by: user.id,
+
         remarks: remarks || null,
+
         driver_name: driver_name || null,
         driver_phone: driver_phone || null,
         vehicle_number: vehicle_number || null,
         tracking_number: tracking_number || null,
+
         driver_photo_url: driver_photo_url || null,
         dispatch_image_url:
           dispatch_image_urls.length > 0
@@ -1325,6 +1335,7 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
             : null,
         dispatch_video_url: dispatch_video_url || null,
         e_way_bill_url: e_way_bill_url || null,
+
         pickup_address: pickup_address || null,
         delivery_address: delivery_address || null,
         expected_delivery_date: expected_delivery_date || null,
@@ -1340,11 +1351,15 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
     let estimatedValue = 0;
     let approvedItemsCount = 0;
 
+    const dispatchedBatches = [];
+    const challanItems = [];
+
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
       const weight = toNumber(row.weight);
       const rate = toNumber(row.rate);
+      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
 
       const requestItem = requestItemMap.get(item_id);
       const requestedQty = toNumber(requestItem.request_qty);
@@ -1362,6 +1377,104 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
           { transaction }
         );
         continue;
+      }
+
+      const itemDetails = await Item.findOne({
+        where: {
+          id: item_id,
+          organization_id: user.organization_id,
+          is_active: true,
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      if (!itemDetails) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: `Item not found for item_id ${item_id}`,
+        });
+      }
+
+      const batchRows = await sequelize.query(
+        `
+        SELECT
+          id,
+          batch_no,
+          item_id,
+          organization_id,
+          current_organization_id,
+          available_qty,
+          available_weight,
+          status
+        FROM public.inventory_batches
+        WHERE id = :parent_batch_id
+        FOR UPDATE
+        `,
+        {
+          replacements: { parent_batch_id },
+          type: QueryTypes.SELECT,
+          transaction,
+        }
+      );
+
+      const parentBatch = batchRows?.[0];
+
+      if (!parentBatch) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: `Parent batch not found for item ${item_id}`,
+        });
+      }
+
+      if (Number(parentBatch.item_id) !== Number(item_id)) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} does not belong to item ${item_id}`,
+        });
+      }
+
+      const parentBatchOrgId = Number(
+        parentBatch.current_organization_id || parentBatch.organization_id || 0
+      );
+
+      if (parentBatchOrgId !== Number(user.organization_id)) {
+        await transaction.rollback();
+        return res.status(403).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} does not belong to your organization`,
+        });
+      }
+
+      if (
+        ["sold", "damaged", "dead"].includes(
+          String(parentBatch.status || "").toLowerCase()
+        )
+      ) {
+        await transaction.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} is already ${parentBatch.status}`,
+        });
+      }
+
+      if (Number(parentBatch.available_qty || 0) < qty) {
+        await transaction.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Insufficient batch qty for item ${item_id}`,
+        });
+      }
+
+      if (weight > 0 && Number(parentBatch.available_weight || 0) < weight) {
+        await transaction.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Insufficient batch weight for item ${item_id}`,
+        });
       }
 
       approvedItemsCount += 1;
@@ -1399,10 +1512,11 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
         });
       }
 
-      await StockTransferItem.create(
+      const transferItem = await StockTransferItem.create(
         {
           transfer_id: transfer.id,
           item_id,
+          parent_batch_id,
           qty,
           weight,
           rate,
@@ -1466,6 +1580,57 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
         remarks: `Dispatched via ${transfer.transfer_no}`,
         created_by: user.id,
         transaction,
+      });
+
+      const childBatch = await InventoryTrackingService.distributeBatch(
+        {
+          parent_batch_id,
+          to_organization_id: request.from_organization_id,
+
+          quantity: qty,
+          weight,
+
+          reference_type: "STOCK_TRANSFER",
+          reference_id: transfer.id,
+
+          remarks: `Dispatched via ${transfer.transfer_no}`,
+          handled_by: user.id,
+
+          batch_status: "in_transit",
+        },
+        { transaction }
+      );
+
+      await transferItem.update(
+        {
+          child_batch_id: childBatch.id,
+        },
+        { transaction }
+      );
+
+      dispatchedBatches.push({
+        item_id,
+        parent_batch_id,
+        parent_batch_no: parentBatch.batch_no,
+        child_batch_id: childBatch.id,
+        child_batch_no: childBatch.batch_no,
+        dispatched_qty: Number(childBatch.total_qty || 0),
+        dispatched_weight: Number(childBatch.total_weight || 0),
+        status: childBatch.status,
+      });
+
+      challanItems.push({
+        item_id,
+        item_name: itemDetails.item_name,
+        product_code: itemDetails.article_code || itemDetails.sku_code,
+        hsn_code: itemDetails.hsn_code,
+        purity: itemDetails.purity,
+        qty,
+        weight,
+        rate,
+        making_charge: itemDetails.making_charge || 0,
+        huid_code: itemDetails.huid_code || "-",
+        base_value: weight > 0 ? weight * rate : qty * rate,
       });
     }
 
@@ -1554,14 +1719,63 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
         dispatch_image_urls,
         dispatch_video_url,
         e_way_bill_url,
+        dispatched_batches: dispatchedBatches,
       },
       transaction,
     });
+
+    const fromStore = await Store.findOne({
+      where: { id: user.organization_id },
+      transaction,
+    });
+
+    const toStore = await Store.findOne({
+      where: { id: request.from_organization_id },
+      transaction,
+    });
+
+    const challanPdf =
+      finalStatus === "rejected"
+        ? null
+        : await generateDeliveryChallanPdf({
+            transfer,
+            request,
+            fromStore,
+            toStore,
+            challanItems,
+            driver: {
+              driver_name,
+              driver_phone,
+              vehicle_number,
+              pickup_address,
+              delivery_address,
+            },
+          });
+
+    if (challanPdf) {
+      await transfer.update(
+        {
+          delivery_challan_url: challanPdf.publicPath,
+          delivery_challan_file: challanPdf.fileName,
+        },
+        { transaction }
+      );
+    }
 
     await transaction.commit();
 
     for (const filePath of uploadedLocalPaths) {
       safeUnlink(filePath);
+    }
+
+    if (challanPdf && String(req.query.download_challan || "") === "true") {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${challanPdf.fileName}"`
+      );
+
+      return res.sendFile(challanPdf.filePath);
     }
 
     return res.status(200).json({
@@ -1575,7 +1789,17 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
           ...transfer.toJSON(),
           dispatch_image_url: dispatch_image_urls,
           e_way_bill_url,
+          delivery_challan_url: challanPdf?.publicPath || null,
+          delivery_challan_file: challanPdf?.fileName || null,
         },
+        delivery_challan: challanPdf
+          ? {
+              file_name: challanPdf.fileName,
+              url: challanPdf.publicPath,
+              download_url: challanPdf.publicPath,
+            }
+          : null,
+        dispatched_batches: dispatchedBatches,
         uploaded_files: {
           driver_photo_url,
           dispatch_image_urls,
@@ -1616,9 +1840,11 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
 export const approveAndDispatchRequest = async (req, res) => {
   const transaction = await sequelize.transaction();
   const uploadedLocalPaths = [];
+  let challanPdf = null;
 
   try {
     const { requestId } = req.params;
+
     const {
       remarks,
       driver_name,
@@ -1635,7 +1861,10 @@ export const approveAndDispatchRequest = async (req, res) => {
     const user = req.user;
     const parsedItems = parseItemsFromBody(req.body);
 
-    console.log("approveAndDispatchRequest req.body keys:", Object.keys(req.body || {}));
+    console.log(
+      "approveAndDispatchRequest req.body keys:",
+      Object.keys(req.body || {})
+    );
     console.log("approveAndDispatchRequest raw items:", req.body?.items);
     console.log("approveAndDispatchRequest parsedItems:", parsedItems);
     console.log("approveAndDispatchRequest files:", {
@@ -1766,12 +1995,21 @@ export const approveAndDispatchRequest = async (req, res) => {
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
+      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
 
       if (!item_id || qty < 0) {
         await transaction.rollback();
         return res.status(400).json({
           success: false,
           message: "Each item must have valid item_id and qty",
+        });
+      }
+
+      if (qty > 0 && !parent_batch_id) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `parent_batch_id is required for item ${item_id}`,
         });
       }
 
@@ -1883,11 +2121,15 @@ export const approveAndDispatchRequest = async (req, res) => {
     let estimatedValue = 0;
     let approvedItemsCount = 0;
 
+    const challanItems = [];
+    const dispatchedBatches = [];
+
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
       const weight = toNumber(row.weight);
       const rate = toNumber(row.rate);
+      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
 
       const requestItem = requestItemMap.get(item_id);
       const requestedQty = toNumber(requestItem.request_qty);
@@ -1905,6 +2147,104 @@ export const approveAndDispatchRequest = async (req, res) => {
           { transaction }
         );
         continue;
+      }
+
+      const itemDetails = await Item.findOne({
+        where: {
+          id: item_id,
+          organization_id: user.organization_id,
+          is_active: true,
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      if (!itemDetails) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: `Item not found for item_id ${item_id}`,
+        });
+      }
+
+      const batchRows = await sequelize.query(
+        `
+        SELECT
+          id,
+          batch_no,
+          item_id,
+          organization_id,
+          current_organization_id,
+          available_qty,
+          available_weight,
+          status
+        FROM public.inventory_batches
+        WHERE id = :parent_batch_id
+        FOR UPDATE
+        `,
+        {
+          replacements: { parent_batch_id },
+          type: QueryTypes.SELECT,
+          transaction,
+        }
+      );
+
+      const parentBatch = batchRows?.[0];
+
+      if (!parentBatch) {
+        await transaction.rollback();
+        return res.status(404).json({
+          success: false,
+          message: `Parent batch not found for item ${item_id}`,
+        });
+      }
+
+      if (Number(parentBatch.item_id) !== Number(item_id)) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} does not belong to item ${item_id}`,
+        });
+      }
+
+      const parentBatchOrgId = Number(
+        parentBatch.current_organization_id || parentBatch.organization_id || 0
+      );
+
+      if (parentBatchOrgId !== Number(user.organization_id)) {
+        await transaction.rollback();
+        return res.status(403).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} does not belong to your organization`,
+        });
+      }
+
+      if (
+        ["sold", "damaged", "dead"].includes(
+          String(parentBatch.status || "").toLowerCase()
+        )
+      ) {
+        await transaction.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} is already ${parentBatch.status}`,
+        });
+      }
+
+      if (Number(parentBatch.available_qty || 0) < qty) {
+        await transaction.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Insufficient batch qty for item ${item_id}`,
+        });
+      }
+
+      if (weight > 0 && Number(parentBatch.available_weight || 0) < weight) {
+        await transaction.rollback();
+        return res.status(409).json({
+          success: false,
+          message: `Insufficient batch weight for item ${item_id}`,
+        });
       }
 
       approvedItemsCount += 1;
@@ -2010,6 +2350,46 @@ export const approveAndDispatchRequest = async (req, res) => {
         created_by: user.id,
         transaction,
       });
+
+      const childBatch = await InventoryTrackingService.distributeBatch(
+        {
+          parent_batch_id,
+          to_organization_id: request.from_organization_id,
+          quantity: qty,
+          weight,
+          reference_type: "STOCK_TRANSFER",
+          reference_id: transfer.id,
+          remarks: `Dispatched via ${transfer.transfer_no}`,
+          handled_by: user.id,
+          batch_status: "in_transit",
+        },
+        { transaction }
+      );
+
+      dispatchedBatches.push({
+        item_id,
+        parent_batch_id,
+        parent_batch_no: parentBatch.batch_no,
+        child_batch_id: childBatch.id,
+        child_batch_no: childBatch.batch_no,
+        dispatched_qty: Number(childBatch.total_qty || 0),
+        dispatched_weight: Number(childBatch.total_weight || 0),
+        status: childBatch.status,
+      });
+
+      challanItems.push({
+        item_id,
+        item_name: itemDetails.item_name,
+        product_code: itemDetails.article_code || itemDetails.sku_code,
+        hsn_code: itemDetails.hsn_code,
+        purity: itemDetails.purity,
+        qty,
+        weight,
+        rate,
+        making_charge: itemDetails.making_charge || 0,
+        huid_code: itemDetails.huid_code || "-",
+        base_value: weight > 0 ? weight * rate : qty * rate,
+      });
     }
 
     let finalStatus = "approved";
@@ -2088,14 +2468,52 @@ export const approveAndDispatchRequest = async (req, res) => {
         dispatch_image_urls,
         dispatch_video_url,
         e_way_bill_url,
+        dispatched_batches: dispatchedBatches,
       },
       transaction,
     });
+
+    if (finalStatus !== "rejected") {
+      const fromStore = await Store.findOne({
+        where: { id: user.organization_id },
+        transaction,
+      });
+
+      const toStore = await Store.findOne({
+        where: { id: request.from_organization_id },
+        transaction,
+      });
+
+      challanPdf = await generateDeliveryChallanPdf({
+        transfer,
+        request,
+        fromStore,
+        toStore,
+        challanItems,
+        driver: {
+          driver_name,
+          driver_phone,
+          vehicle_number,
+          pickup_address,
+          delivery_address,
+        },
+      });
+    }
 
     await transaction.commit();
 
     for (const filePath of uploadedLocalPaths) {
       safeUnlink(filePath);
+    }
+
+    if (challanPdf && String(req.query.download_challan || "") === "true") {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${challanPdf.fileName}"`
+      );
+
+      return res.sendFile(challanPdf.filePath);
     }
 
     return res.status(200).json({
@@ -2561,100 +2979,348 @@ const loadTransferMeta = async (transfers = []) => {
 
 // ==========================================
 // INCOMING TRANSFERS
-// ==========================================
-const TRANSFER_CARD_STATUSES = [
-  "approved",
-  "dispatched",
-  "in_transit",
-  "received",
-];
-const getOverallTransferWhereCondition = (user) => {
-  return {
-    status: {
-      [Op.in]: TRANSFER_CARD_STATUSES,
-    },
-    [Op.or]: [
-      { from_organization_id: user.organization_id },
-      { to_organization_id: user.organization_id },
-    ],
-  };
+
+
+/* =====================================================
+   COMMON HELPERS
+===================================================== */
+
+const normalizeRole = (role = "") =>
+  String(role || "").trim().toLowerCase();
+
+const normalizeLevel = (level = "") =>
+  String(level || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+
+const normalizeStatus = (status = "") =>
+  String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+
+const TRANSFER_STATUS = Object.freeze({
+  APPROVED: "approved",
+  DISPATCHED: "dispatched",
+  IN_TRANSIT: "in_transit",
+  RECEIVED: "received",
+});
+
+const ACTIVE_TRANSFER_STATUSES = Object.freeze([
+  TRANSFER_STATUS.APPROVED,
+  TRANSFER_STATUS.DISPATCHED,
+  TRANSFER_STATUS.IN_TRANSIT,
+  TRANSFER_STATUS.RECEIVED,
+]);
+
+/**
+ * UI card mapping:
+ * Shipments     = approved + dispatched
+ * In Transit    = in_transit
+ * Goods Receipt = received
+ */
+const SHIPMENT_STATUSES = Object.freeze([
+  TRANSFER_STATUS.APPROVED,
+  TRANSFER_STATUS.DISPATCHED,
+]);
+
+const IN_TRANSIT_STATUSES = Object.freeze([
+  TRANSFER_STATUS.IN_TRANSIT,
+]);
+
+const GOODS_RECEIPT_STATUSES = Object.freeze([
+  TRANSFER_STATUS.RECEIVED,
+]);
+
+const RECEIVED_STATUSES = Object.freeze([
+  TRANSFER_STATUS.RECEIVED,
+]);
+
+const getCurrentOrganizationId = (user) => {
+  const id = user?.organization_id || user?.organizationId;
+  const parsed = Number(id);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
-// const addTransferDirection = (rows = [], user) => {
-//   return rows.map((row) => {
-//     const item = row.toJSON ? row.toJSON() : row;
+const getPositiveNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
 
-//     const isOutgoing =
-//       Number(item.from_organization_id) === Number(user.organization_id);
+const isGlobalUser = (user) => {
+  const role = normalizeRole(user?.role);
 
-//     const isIncoming =
-//       Number(item.to_organization_id) === Number(user.organization_id);
+  /**
+   * Agar admin ko bhi scoped rakhna hai,
+   * to yahan sirf ["super_admin"] rakho.
+   */
+  return ["super_admin", "admin"].includes(role);
+};
 
-//     let transfer_direction = "unknown";
+const isHeadUser = (user) => {
+  const level = normalizeLevel(user?.organization_level);
+  return ["head", "head_office"].includes(level);
+};
 
-//     if (isOutgoing && isIncoming) {
-//       transfer_direction = "self_transfer";
-//     } else if (isOutgoing) {
-//       transfer_direction = "outgoing";
-//     } else if (isIncoming) {
-//       transfer_direction = "incoming";
-//     }
 
-//     return {
-//       ...item,
-//       transfer_direction,
-//       is_outgoing: isOutgoing,
-//       is_incoming: isIncoming,
-//     };
-//   });
-// };
-// ==========================================
-// INCOMING TRANSFERS
-// ==========================================
-const getIncomingTransferWhereCondition = (user) => ({
-  to_organization_id: user.organization_id,
-  status: {
-    [Op.in]: TRANSFER_CARD_STATUSES,
-  },
-});
 
-const getOutgoingTransferWhereCondition = (user) => ({
-  from_organization_id: user.organization_id,
-  status: {
-    [Op.in]: TRANSFER_CARD_STATUSES,
-  },
-});
+const isRetailUser = (user) => {
+  const level = normalizeLevel(user?.organization_level);
+  return level === "retail";
+};
+
+const getRequestedStoreId = (query = {}, direction = "incoming") => {
+  if (direction === "outgoing") {
+    return (
+      getPositiveNumber(query.store_id) ||
+      getPositiveNumber(query.organization_id) ||
+      getPositiveNumber(query.from_organization_id)
+    );
+  }
+
+  return (
+    getPositiveNumber(query.store_id) ||
+    getPositiveNumber(query.organization_id) ||
+    getPositiveNumber(query.to_organization_id)
+  );
+};
+
+const buildCardSummary = (transfers = [], totalKey = "incoming") => {
+  const summary = {
+    [totalKey]: 0,
+
+    in_transit: 0,
+    shipment: 0,
+    goods_receipt: 0,
+
+    pending_receive: 0,
+    received: 0,
+
+    totalIncoming: 0,
+    totalOutgoing: 0,
+    inTransit: 0,
+    shipments: 0,
+    goodsReceipt: 0,
+    pendingReceive: 0,
+    receivedTransfers: 0,
+  };
+
+  for (const transfer of transfers) {
+    const status = normalizeStatus(transfer?.status);
+
+    if (!ACTIVE_TRANSFER_STATUSES.includes(status)) {
+      continue;
+    }
+
+    summary[totalKey] += 1;
+
+    if (IN_TRANSIT_STATUSES.includes(status)) {
+      summary.in_transit += 1;
+    }
+
+    if (SHIPMENT_STATUSES.includes(status)) {
+      summary.shipment += 1;
+    }
+
+    if (GOODS_RECEIPT_STATUSES.includes(status)) {
+      summary.goods_receipt += 1;
+      summary.received += 1;
+    }
+
+    if (!RECEIVED_STATUSES.includes(status)) {
+      summary.pending_receive += 1;
+    }
+  }
+
+  summary.totalIncoming = totalKey === "incoming" ? summary.incoming : 0;
+  summary.totalOutgoing = totalKey === "outgoing" ? summary.outgoing : 0;
+
+  summary.inTransit = summary.in_transit;
+  summary.shipments = summary.shipment;
+  summary.goodsReceipt = summary.goods_receipt;
+  summary.pendingReceive = summary.pending_receive;
+  summary.receivedTransfers = summary.received;
+
+  return summary;
+};
+
+/* =====================================================
+   INCOMING HELPERS
+   Incoming means:
+   to_organization_id = logged-in user's organization
+===================================================== */
+
+const getIncomingTransferWhereCondition = (user, query = {}) => {
+  const loginOrganizationId = getCurrentOrganizationId(user);
+  const requestedStoreId = getRequestedStoreId(query, "incoming");
+
+  if (!loginOrganizationId && !isGlobalUser(user)) {
+    return { id: null };
+  }
+
+  const where = {};
+
+  if (isGlobalUser(user)) {
+    if (requestedStoreId) {
+      where.to_organization_id = requestedStoreId;
+    }
+
+    return where;
+  }
+
+  if (isHeadUser(user)) {
+    where.to_organization_id = requestedStoreId || loginOrganizationId;
+    return where;
+  }
+
+  if (isDistrictUser(user) || isRetailUser(user)) {
+    where.to_organization_id = loginOrganizationId;
+
+    if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
+      return { id: null };
+    }
+
+    return where;
+  }
+
+  where.to_organization_id = loginOrganizationId;
+
+  if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
+    return { id: null };
+  }
+
+  return where;
+};
+
+const getIncomingListWhereCondition = (user, query = {}) => {
+  const where = getIncomingTransferWhereCondition(user, query);
+  const status = normalizeStatus(query?.status);
+
+  if (status) {
+    where.status = status;
+  } else {
+    where.status = {
+      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+    };
+  }
+
+  return where;
+};
+
+/* =====================================================
+   OUTGOING HELPERS
+   Outgoing means:
+   from_organization_id = logged-in user's organization
+===================================================== */
+
+const getOutgoingTransferWhereCondition = (user, query = {}) => {
+  const loginOrganizationId = getCurrentOrganizationId(user);
+  const requestedStoreId = getRequestedStoreId(query, "outgoing");
+
+  if (!loginOrganizationId && !isGlobalUser(user)) {
+    return { id: null };
+  }
+
+  const where = {};
+
+  if (isGlobalUser(user)) {
+    if (requestedStoreId) {
+      where.from_organization_id = requestedStoreId;
+    }
+
+    return where;
+  }
+
+  if (isHeadUser(user)) {
+    where.from_organization_id = requestedStoreId || loginOrganizationId;
+    return where;
+  }
+
+  if (isDistrictUser(user) || isRetailUser(user)) {
+    where.from_organization_id = loginOrganizationId;
+
+    if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
+      return { id: null };
+    }
+
+    return where;
+  }
+
+  where.from_organization_id = loginOrganizationId;
+
+  if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
+    return { id: null };
+  }
+
+  return where;
+};
+
+const getOutgoingListWhereCondition = (user, query = {}) => {
+  const where = getOutgoingTransferWhereCondition(user, query);
+  const status = normalizeStatus(query?.status);
+
+  if (status) {
+    where.status = status;
+  } else {
+    where.status = {
+      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+    };
+  }
+
+  return where;
+};
+
+/* =====================================================
+   INCOMING TRANSFERS
+===================================================== */
 
 export const getIncomingTransfers = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!user?.organization_id) {
+    if (!user?.organization_id && !user?.organizationId && !isGlobalUser(user)) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const [transfers, overallTransfers] = await Promise.all([
+    const listWhere = getIncomingListWhereCondition(user, req.query);
+
+    /**
+     * Summary me store_id filter apply hoga,
+     * lekin status filter apply nahi hoga.
+     * Isse cards selected store ke overall incoming counts dikhayenge.
+     */
+    const summaryWhere = getIncomingTransferWhereCondition(user, req.query);
+
+    summaryWhere.status = {
+      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+    };
+
+    const [transfers, summaryTransfers] = await Promise.all([
       StockTransfer.findAll({
-        where: getIncomingTransferWhereCondition(user),
+        where: listWhere,
         include: [
           {
             model: StockTransferItem,
             as: "transfer_items",
+            required: false,
           },
         ],
         order: [["created_at", "DESC"]],
       }),
 
       StockTransfer.findAll({
-        where: getOverallTransferWhereCondition(user),
-        include: [
-          {
-            model: StockTransferItem,
-            as: "transfer_items",
-          },
+        where: summaryWhere,
+        attributes: [
+          "id",
+          "status",
+          "from_organization_id",
+          "to_organization_id",
+          "created_at",
         ],
         order: [["created_at", "DESC"]],
       }),
@@ -2665,17 +3331,17 @@ export const getIncomingTransfers = async (req, res) => {
     const responseData = buildTransferResponse(transfers, storeMap, userMap);
     const data = addTransferDirection(responseData, user);
 
-    // ✅ cards overall data se banenge
-    const summary = buildTransferSummary(overallTransfers);
+    const summary = buildCardSummary(summaryTransfers, "incoming");
 
     return res.status(200).json({
       success: true,
       summary,
-      count: overallTransfers.length,
+      count: summary.incoming,
       data,
     });
   } catch (error) {
     console.error("getIncomingTransfers error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch incoming transfers",
@@ -2684,39 +3350,55 @@ export const getIncomingTransfers = async (req, res) => {
   }
 };
 
-// ==========================================
-// OUTGOING TRANSFERS
-// ==========================================
+/* =====================================================
+   OUTGOING TRANSFERS
+===================================================== */
+
 export const getOutgoingTransfers = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!user?.organization_id) {
+    if (!user?.organization_id && !user?.organizationId && !isGlobalUser(user)) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const [transfers, overallTransfers] = await Promise.all([
+    const listWhere = getOutgoingListWhereCondition(user, req.query);
+
+    /**
+     * Summary me store_id filter apply hoga,
+     * lekin status filter apply nahi hoga.
+     * Isse cards selected store ke overall outgoing counts dikhayenge.
+     */
+    const summaryWhere = getOutgoingTransferWhereCondition(user, req.query);
+
+    summaryWhere.status = {
+      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+    };
+
+    const [transfers, summaryTransfers] = await Promise.all([
       StockTransfer.findAll({
-        where: getOutgoingTransferWhereCondition(user),
+        where: listWhere,
         include: [
           {
             model: StockTransferItem,
             as: "transfer_items",
+            required: false,
           },
         ],
         order: [["created_at", "DESC"]],
       }),
 
       StockTransfer.findAll({
-        where: getOverallTransferWhereCondition(user),
-        include: [
-          {
-            model: StockTransferItem,
-            as: "transfer_items",
-          },
+        where: summaryWhere,
+        attributes: [
+          "id",
+          "status",
+          "from_organization_id",
+          "to_organization_id",
+          "created_at",
         ],
         order: [["created_at", "DESC"]],
       }),
@@ -2727,17 +3409,17 @@ export const getOutgoingTransfers = async (req, res) => {
     const responseData = buildTransferResponse(transfers, storeMap, userMap);
     const data = addTransferDirection(responseData, user);
 
-    // ✅ cards overall data se banenge
-    const summary = buildTransferSummary(overallTransfers);
+    const summary = buildCardSummary(summaryTransfers, "outgoing");
 
     return res.status(200).json({
       success: true,
       summary,
-      count: overallTransfers.length,
+      count: summary.outgoing,
       data,
     });
   } catch (error) {
     console.error("getOutgoingTransfers error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch outgoing transfers",
@@ -3532,6 +4214,8 @@ to_district_name:
     });
   }
 };
+
+
 export const getHeadStore = async (req, res) => {
   try {
     const data = await Store.findOne({
@@ -3561,49 +4245,242 @@ export const getHeadStore = async (req, res) => {
   }
 };
 
+// import Store from "../models/Store.js";
+
 export const getRetailStoresUnderDistrict = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!user?.organization_id || user.organization_level !== "district") {
-      return res.status(403).json({
+    if (!user) {
+      return res.status(401).json({
         success: false,
-        message: "Only district user allowed",
+        message: "Unauthorized user",
       });
     }
 
-    const data = await Store.findAll({
+    const organizationId = Number(
+      user.organization_id || user.organizationId || 0
+    );
+
+    const storeCode = String(user.store_code || "")
+      .trim()
+      .toUpperCase();
+
+    if (!organizationId && !storeCode) {
+      return res.status(400).json({
+        success: false,
+        message: "District organization_id or store_code missing in token",
+      });
+    }
+
+    const districtWhere = {
+      is_active: true,
+
+      /**
+       * IMPORTANT:
+       * organization_level is PostgreSQL ENUM.
+       * Do NOT use Op.iLike here.
+       * ENUM column par ILIKE direct use karne se error aata hai:
+       * operator does not exist: enum_stores_organization_level ~~* unknown
+       */
+      organization_level: "District",
+    };
+
+    if (organizationId) {
+      districtWhere.id = organizationId;
+    } else {
+      districtWhere.store_code = storeCode;
+    }
+
+    const districtStore = await Store.findOne({
+      where: districtWhere,
+      attributes: [
+        "id",
+        "store_code",
+        "store_name",
+        "organization_level",
+        "district_id",
+        "is_active",
+      ],
+      raw: true,
+    });
+
+    if (!districtStore) {
+      return res.status(404).json({
+        success: false,
+        message: "District store not found or inactive",
+        debug: {
+          token_organization_id: organizationId || null,
+          token_store_code: storeCode || null,
+          expected_organization_level: "District",
+        },
+      });
+    }
+
+    /**
+     * Tumhare DB mapping ke according:
+     *
+     * District Office:
+     * id = 44
+     * store_code = DST004
+     * district_id = 7
+     *
+     * Retail Store:
+     * STR006
+     * district_id = 7
+     *
+     * Isliye retail fetch districtStore.id se nahi,
+     * districtStore.district_id se hoga.
+     */
+    const linkedDistrictId = Number(districtStore.district_id);
+
+    if (!linkedDistrictId) {
+      return res.status(400).json({
+        success: false,
+        message: "District mapping missing. district_id is null for this district office",
+        district: {
+          id: districtStore.id,
+          store_code: districtStore.store_code,
+          store_name: districtStore.store_name,
+          organization_level: districtStore.organization_level,
+          district_id: districtStore.district_id,
+        },
+      });
+    }
+
+    const retailStores = await Store.findAll({
       where: {
-        organization_level: "Retail",
-        district_id: user.organization_id, // 🔥 important
         is_active: true,
+        organization_level: "Retail",
+        district_id: linkedDistrictId,
       },
       attributes: [
         "id",
-        "store_name",
         "store_code",
+        "store_name",
+        "organization_level",
         "district_id",
+        "is_active",
       ],
       order: [["store_name", "ASC"]],
+      raw: true,
     });
 
     return res.status(200).json({
       success: true,
-      count: data.length,
-      data,
+      message: "Retail stores fetched successfully",
+      count: retailStores.length,
+      data: retailStores,
+      district: {
+        id: districtStore.id,
+        store_code: districtStore.store_code,
+        store_name: districtStore.store_name,
+        organization_level: districtStore.organization_level,
+        district_id: districtStore.district_id,
+      },
     });
-  } catch (err) {
+  } catch (error) {
+    console.error("getRetailStoresUnderDistrict error:", error);
+
     return res.status(500).json({
       success: false,
-      error: err.message,
+      message: "Failed to fetch retail stores",
+      error: error.message,
     });
   }
 };
 
 
 
+
+
+
 const makeForwardRequestNo = (headOrgId, districtOrgId) => {
   return `REQ-FWD-${headOrgId}-${districtOrgId}-${Date.now()}`;
+};
+
+const getStoreLevel = (store) => {
+  return String(
+    store?.organizationlevel ||
+      store?.organization_level ||
+      ""
+  ).trim();
+};
+
+const resolveDistrictStoreByCode = async ({ storeCode, transaction }) => {
+  const cleanStoreCode = String(storeCode || "").trim().toUpperCase();
+
+  if (!cleanStoreCode) return null;
+
+  /**
+   * CASE 1:
+   * Actual district store_code.
+   * Example: DST004, DST007, DST015
+   */
+  const directStore = await Store.findOne({
+    where: {
+      store_code: cleanStoreCode,
+      is_active: true,
+    },
+    raw: true,
+    transaction,
+  });
+
+  if (directStore && getStoreLevel(directStore) === "District") {
+    return directStore;
+  }
+
+  /**
+   * CASE 2:
+   * Legacy/user district code.
+   * Example: DIST-7 means districts.id = 7.
+   * Actual district store may be DST004 with district_id = 7.
+   */
+  const legacyMatch = cleanStoreCode.match(/^DIST-(\d+)$/i);
+
+  if (legacyMatch?.[1]) {
+    const legacyDistrictId = Number(legacyMatch[1]);
+
+    if (Number.isInteger(legacyDistrictId) && legacyDistrictId > 0) {
+      const mappedDistrictStore = await Store.findOne({
+        where: {
+          district_id: legacyDistrictId,
+          organizationlevel: "District",
+          is_active: true,
+        },
+        raw: true,
+        transaction,
+      });
+
+      if (mappedDistrictStore) {
+        return mappedDistrictStore;
+      }
+    }
+  }
+
+  return null;
+};
+
+const getLegacyDistrictOrgId = (districtStore) => {
+  /**
+   * Existing DB flow:
+   * stock_requests.to_organization_id uses districts.id / legacy district id.
+   *
+   * Example:
+   * districtStore.id = 44
+   * districtStore.store_code = DST004
+   * districtStore.district_id = 7
+   *
+   * Save:
+   * to_organization_id = 7
+   */
+  const legacyDistrictId = Number(districtStore?.district_id || 0);
+
+  if (Number.isInteger(legacyDistrictId) && legacyDistrictId > 0) {
+    return legacyDistrictId;
+  }
+
+  return Number(districtStore.id);
 };
 
 export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
@@ -3612,7 +4489,7 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
   try {
     const user = req.user;
     const { requestId } = req.params;
-    const { district_organization_id, notes } = req.body;
+    const { store_code, notes } = req.body;
 
     if (!user?.organization_id) {
       await t.rollback();
@@ -3626,36 +4503,38 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       await t.rollback();
       return res.status(403).json({
         success: false,
-        message: "Only head office can assign request to district",
+        message: "Only head office can transfer request to district",
       });
     }
 
-    if (!district_organization_id) {
+    const cleanRequestId = Number(requestId);
+    const selectedStoreCode = String(store_code || "").trim().toUpperCase();
+
+    if (!Number.isInteger(cleanRequestId) || cleanRequestId <= 0) {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "district_organization_id is required",
+        message: "Valid requestId is required",
       });
     }
 
+    if (!selectedStoreCode) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Valid store_code is required",
+      });
+    }
+
+    /**
+     * Original request must be received by Head Office.
+     * Do not use include with FOR UPDATE.
+     */
     const originalRequest = await StockRequest.findOne({
       where: {
-        id: requestId,
+        id: cleanRequestId,
         to_organization_id: user.organization_id,
       },
-      include: [
-        {
-          model: StockRequestItem,
-          as: "request_items",
-          include: [
-            {
-              model: Item,
-              as: "item",
-              required: false,
-            },
-          ],
-        },
-      ],
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
@@ -3668,15 +4547,45 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       });
     }
 
-    if (originalRequest.request_source === "forwarded") {
+    const requestItems = await StockRequestItem.findAll({
+      where: {
+        request_id: originalRequest.id,
+      },
+      include: [
+        {
+          model: Item,
+          as: "item",
+          required: false,
+        },
+      ],
+      transaction: t,
+    });
+
+    const originalStatus = String(originalRequest.status || "").toLowerCase();
+
+    if (
+      ["cancelled", "rejected", "received", "completed", "dispatched"].includes(
+        originalStatus
+      )
+    ) {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: "Forwarded request cannot be forwarded again",
+        message: `Request cannot be transferred because current status is ${originalRequest.status}`,
       });
     }
 
-    if (!originalRequest.request_items || originalRequest.request_items.length === 0) {
+    if (
+      String(originalRequest.request_source || "").toLowerCase() === "forwarded"
+    ) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Forwarded request cannot be transferred again",
+      });
+    }
+
+    if (!requestItems || requestItems.length === 0) {
       await t.rollback();
       return res.status(400).json({
         success: false,
@@ -3684,14 +4593,15 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       });
     }
 
-    const selectedDistrict = await Store.findOne({
-      where: {
-        id: district_organization_id,
-        organization_level: {
-          [Op.in]: ["district", "District", "DISTRICT"],
-        },
-        is_active: true,
-      },
+    /**
+     * Selected District B.
+     *
+     * Supports:
+     * 1. Actual district store_code: DST004
+     * 2. Legacy/user district code: DIST-7
+     */
+    const selectedDistrict = await resolveDistrictStoreByCode({
+      storeCode: selectedStoreCode,
       transaction: t,
     });
 
@@ -3699,14 +4609,47 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       await t.rollback();
       return res.status(404).json({
         success: false,
-        message: "Selected district not found or inactive",
+        message: "Selected district store_code not found or inactive",
+        data: {
+          received_store_code: selectedStoreCode,
+          expected_examples: ["DST004", "DST007", "DST015", "DIST-7"],
+        },
       });
     }
 
+    const selectedOrganizationLevel = getStoreLevel(selectedDistrict);
+
+    if (selectedOrganizationLevel !== "District") {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Selected store_code belongs to ${
+          selectedOrganizationLevel || "UNKNOWN"
+        }, not District`,
+        data: {
+          id: selectedDistrict.id,
+          store_code: selectedDistrict.store_code,
+          store_name: selectedDistrict.store_name,
+          organization_level: selectedOrganizationLevel || null,
+          is_active: selectedDistrict.is_active,
+        },
+      });
+    }
+
+    /**
+     * This is the important matching fix.
+     * Existing received API/user mapping expects to_organization_id = districts.id.
+     */
+    const targetDistrictOrgId = getLegacyDistrictOrgId(selectedDistrict);
+
+    /**
+     * Original requester store.
+     */
     const requesterStore = await Store.findOne({
       where: {
         id: originalRequest.from_organization_id,
       },
+      raw: true,
       transaction: t,
     });
 
@@ -3718,10 +4661,39 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       });
     }
 
+    /**
+     * Same district check must compare legacy district id also.
+     *
+     * Example:
+     * original requester from_organization_id = 7
+     * selected district store id = 44
+     * selected district district_id = 7
+     */
+    if (Number(targetDistrictOrgId) === Number(originalRequest.from_organization_id)) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot transfer request to the same district that created the original request",
+      });
+    }
+
+    if (Number(targetDistrictOrgId) === Number(user.organization_id)) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Cannot transfer request to head office itself",
+      });
+    }
+
+    /**
+     * Avoid duplicate transfer to same district.
+     * Must use targetDistrictOrgId, not selectedDistrict.id.
+     */
     const alreadyForwarded = await StockRequest.findOne({
       where: {
         parent_request_id: originalRequest.id,
-        to_organization_id: selectedDistrict.id,
+        to_organization_id: targetDistrictOrgId,
         request_source: "forwarded",
       },
       transaction: t,
@@ -3731,7 +4703,7 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       await t.rollback();
       return res.status(409).json({
         success: false,
-        message: "This request is already assigned to selected district",
+        message: "This request is already transferred to selected district",
         data: {
           forwarded_request_id: alreadyForwarded.id,
           forwarded_request_no: alreadyForwarded.request_no,
@@ -3739,20 +4711,48 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       });
     }
 
+    const headStore = await Store.findOne({
+      where: {
+        id: user.organization_id,
+      },
+      raw: true,
+      transaction: t,
+    });
+
     const forwardedRequest = await StockRequest.create(
       {
-        request_no: makeForwardRequestNo(user.organization_id, selectedDistrict.id),
+        request_no: makeForwardRequestNo(
+          user.organization_id,
+          targetDistrictOrgId
+        ),
 
-        // Head → District B
+        /**
+         * Head Office -> District B
+         */
         from_organization_id: user.organization_id,
-        from_store_code: user.store_code || null,
-        from_store_name: user.store_name || "Head Office",
+        from_store_code: headStore?.store_code || user.store_code || null,
+        from_store_name:
+          headStore?.store_name || user.store_name || "Head Office",
 
-        to_organization_id: selectedDistrict.id,
+        /**
+         * IMPORTANT:
+         * Existing DB matched flow:
+         * to_organization_id = districts.id / district legacy id.
+         */
+        to_organization_id: targetDistrictOrgId,
+
+        /**
+         * Keep actual selected district store details here.
+         */
+        to_district_code: selectedDistrict.store_code,
+        to_district_name: selectedDistrict.store_name,
+
         to_store_code: selectedDistrict.store_code,
         to_store_name: selectedDistrict.store_name,
 
-        // important link
+        /**
+         * Parent-child relation.
+         */
         parent_request_id: originalRequest.id,
         request_source: "forwarded",
 
@@ -3760,7 +4760,10 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
         forwarded_at: new Date(),
         forward_note: notes || null,
 
-        // District B को actual delivery District A करनी है
+        /**
+         * Final delivery location.
+         * District B will deliver to original requester.
+         */
         final_to_organization_id: requesterStore.id,
         final_to_store_code: requesterStore.store_code,
         final_to_store_name: requesterStore.store_name,
@@ -3775,7 +4778,7 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
         category: originalRequest.category || null,
         notes:
           notes ||
-          `Assigned by Head. Deliver directly to ${requesterStore.store_name}.`,
+          `Transferred by Head Office. Deliver directly to ${requesterStore.store_name}.`,
 
         status: "pending",
         created_by: user.id,
@@ -3783,15 +4786,21 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
       { transaction: t }
     );
 
-    const childItems = originalRequest.request_items.map((item) => ({
+    const childItems = requestItems.map((item) => ({
       request_id: forwardedRequest.id,
       item_id: item.item_id,
       request_qty: item.request_qty,
-      request_weight: item.request_weight,
-      approved_qty: null,
-      approved_weight: null,
+      request_weight: item.request_weight || null,
+
+      /**
+       * approved_qty cannot be null in your DB.
+       */
+      approved_qty: item.approved_qty ?? 0,
+      approved_weight: item.approved_weight ?? 0,
+
       rate: item.rate || null,
       remarks: item.remarks || null,
+      status: "pending",
     }));
 
     await StockRequestItem.bulkCreate(childItems, { transaction: t });
@@ -3800,25 +4809,35 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
     originalRequest.forwarded_by = user.id;
     originalRequest.forwarded_at = new Date();
     originalRequest.forward_note = notes || null;
+
     await originalRequest.save({ transaction: t });
 
     await ActivityLog.create(
       {
         organization_id: user.organization_id,
         user_id: user.id,
-        action: "STOCK_REQUEST_ASSIGNED_DIRECT_DELIVERY",
+        action: "HEAD_TO_DISTRICT_REQUEST_TRANSFERRED",
         module_name: "stock_request",
         reference_id: forwardedRequest.id,
         reference_no: forwardedRequest.request_no,
-        title: "Stock request assigned to district",
-        description: `${originalRequest.request_no} assigned to ${selectedDistrict.store_name} for direct delivery to ${requesterStore.store_name}`,
+        title: "Request transferred to district",
+        description: `${originalRequest.request_no} transferred to ${selectedDistrict.store_name} for direct delivery to ${requesterStore.store_name}`,
         meta: {
           original_request_id: originalRequest.id,
           original_request_no: originalRequest.request_no,
           forwarded_request_id: forwardedRequest.id,
           forwarded_request_no: forwardedRequest.request_no,
-          assigned_to_organization_id: selectedDistrict.id,
+
+          /**
+           * Keep both ids for debugging/future migration.
+           */
+          assigned_to_organization_id: targetDistrictOrgId,
+          assigned_to_actual_store_id: selectedDistrict.id,
+          assigned_to_store_code: selectedDistrict.store_code,
+
           final_to_organization_id: requesterStore.id,
+          final_to_store_code: requesterStore.store_code,
+          total_items: childItems.length,
         },
         icon: "transfer",
         color: "blue",
@@ -3828,20 +4847,38 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
 
     await SystemActivity.create(
       {
-        title: "Stock request assigned for direct delivery",
-        description: `Head assigned ${originalRequest.request_no} to ${selectedDistrict.store_name}. Delivery to ${requesterStore.store_name}.`,
-        activity_type: "stock_request_assigned_direct_delivery",
+        title: "Head transferred request to district",
+        description: `Head transferred ${originalRequest.request_no} to ${selectedDistrict.store_name}. Final delivery to ${requesterStore.store_name}.`,
+        activity_type: "head_to_district_request_transferred",
         module_name: "stock_request",
         reference_id: forwardedRequest.id,
         reference_no: forwardedRequest.request_no,
         state_code: selectedDistrict.state_code || null,
-        district_code: selectedDistrict.district_code || null,
+        district_code:
+          selectedDistrict.district_code ||
+          selectedDistrict.store_code ||
+          null,
         store_code: selectedDistrict.store_code || null,
+        store_name: selectedDistrict.store_name || null,
         created_by: user.id,
+
+        /**
+         * If your SystemActivity model has column `meta`,
+         * replace metadata with meta.
+         */
         metadata: {
           original_request_id: originalRequest.id,
+          original_request_no: originalRequest.request_no,
           forwarded_request_id: forwardedRequest.id,
+          forwarded_request_no: forwardedRequest.request_no,
+
+          assigned_to_organization_id: targetDistrictOrgId,
+          assigned_to_actual_store_id: selectedDistrict.id,
+
+          final_delivery_store_id: requesterStore.id,
+          final_delivery_store_code: requesterStore.store_code,
           final_delivery_store_name: requesterStore.store_name,
+          total_items: childItems.length,
         },
       },
       { transaction: t }
@@ -3851,7 +4888,7 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Request assigned to district for direct delivery successfully",
+      message: "Head to district request transferred successfully",
       data: {
         original_request: {
           id: originalRequest.id,
@@ -3863,17 +4900,34 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
           request_no: forwardedRequest.request_no,
           parent_request_id: forwardedRequest.parent_request_id,
           request_source: forwardedRequest.request_source,
+
           from_organization_id: forwardedRequest.from_organization_id,
           from_store_code: forwardedRequest.from_store_code,
           from_store_name: forwardedRequest.from_store_name,
+
+          /**
+           * This will now match old received API/user mapping.
+           * Example: North Delhi = 7
+           */
           to_organization_id: forwardedRequest.to_organization_id,
-          to_store_code: forwardedRequest.to_store_code,
-          to_store_name: forwardedRequest.to_store_name,
+
+          /**
+           * Actual district office details.
+           * Example: DST004 / District Office North Delhi
+           */
+          actual_district_store_id: selectedDistrict.id,
+          to_store_code:
+            forwardedRequest.to_store_code || forwardedRequest.to_district_code,
+          to_store_name:
+            forwardedRequest.to_store_name || forwardedRequest.to_district_name,
+
           final_to_organization_id: forwardedRequest.final_to_organization_id,
           final_to_store_code: forwardedRequest.final_to_store_code,
           final_to_store_name: forwardedRequest.final_to_store_name,
           final_to_address: forwardedRequest.final_to_address,
+
           status: forwardedRequest.status,
+          total_items: childItems.length,
         },
       },
     });
@@ -3884,7 +4938,354 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to assign request to district",
+      message: "Failed to transfer request to district",
+      error: error.message,
+    });
+  }
+};
+
+
+
+const dtRetailForwardNo = (districtOrgId, retailOrgId) => {
+  return `REQ-DIST-FWD-${districtOrgId}-${retailOrgId}-${Date.now()}`;
+};
+
+const dtRetailStoreCode = (value) => {
+  return String(value || "").trim().toUpperCase();
+};
+
+const dtRetailClean = (value) => {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+};
+
+const dtRetailIsDistrictUser = (user) => {
+  const level = dtRetailClean(user?.organization_level);
+  const role = dtRetailClean(user?.role);
+
+  return (
+    level === "district" ||
+    level === "district_office" ||
+    ["district_manager", "district_tl", "admin", "super_admin"].includes(role)
+  );
+};
+
+const dtRetailRollback = async (transaction, res, statusCode, payload) => {
+  await transaction.rollback();
+  return res.status(statusCode).json(payload);
+};
+
+const dtRetailIsFinalStatus = (status) => {
+  return [
+    "cancelled",
+    "rejected",
+    "received",
+    "completed",
+    "dispatched",
+    "forwarded",
+  ].includes(dtRetailClean(status));
+};
+
+export const transferDistrictRequestToRetail = async (req, res) => {
+  const t = await sequelize.transaction();
+
+  const clean = (v) =>
+    String(v || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+
+  const toInt = (v) =>
+    Number.isFinite(Number(v)) ? Number(v) : null;
+
+  const rollback = async (msg, code = 400, extra = {}) => {
+    try {
+      await t.rollback();
+    } catch {}
+    return res.status(code).json({
+      success: false,
+      message: msg,
+      ...extra,
+    });
+  };
+
+  try {
+    const user = req.user;
+
+    const requestId = toInt(req.params.requestId);
+    const retailStoreCode = String(req.body.retail_store_code || "")
+      .trim()
+      .toUpperCase();
+
+    const notes = req.body.notes || null;
+
+    // ---------------- AUTH ----------------
+    if (!user?.store_code) {
+      return rollback("Unauthorized user", 401);
+    }
+
+    if (clean(user.organization_level) !== "district") {
+      return rollback("Only district users allowed", 403);
+    }
+
+    if (!requestId) {
+      return rollback("Invalid request id", 400);
+    }
+
+    // ---------------- DISTRICT STORE ----------------
+    const districtStore = await Store.findOne({
+      where: {
+        store_code: user.store_code,
+        is_active: true,
+      },
+      transaction: t,
+    });
+
+    if (!districtStore) {
+      return rollback("District store not found", 404);
+    }
+
+    // ---------------- RETAIL STORE ----------------
+    const retailStore = await Store.findOne({
+      where: {
+        store_code: retailStoreCode,
+        is_active: true,
+      },
+      transaction: t,
+    });
+
+    if (!retailStore) {
+      return rollback("Retail store not found", 404);
+    }
+
+    // ---------------- DISTRICT VALIDATION ----------------
+    const districtId = districtStore.district_id;
+    const retailDistrictId = retailStore.district_id;
+
+    if (!districtId || !retailDistrictId) {
+      return rollback("District mapping missing for store");
+    }
+
+    if (districtId !== retailDistrictId) {
+      return rollback("Retail store not in same district", 400, {
+        district_id: districtId,
+        retail_district_id: retailDistrictId,
+      });
+    }
+
+    // ---------------- REQUEST ----------------
+    const request = await StockRequest.findOne({
+      where: {
+        id: requestId,
+        to_organization_id: districtId,
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!request) {
+      return rollback("Request not found", 404);
+    }
+
+    if (clean(request.status) === "forwarded") {
+      return rollback("Request already forwarded");
+    }
+
+    if (request.parent_request_id) {
+      return rollback("Already forwarded request cannot be re-forwarded");
+    }
+
+    // ---------------- ITEMS ----------------
+    const items = await StockRequestItem.findAll({
+      where: { request_id: request.id },
+      transaction: t,
+    });
+
+    if (!items.length) {
+      return rollback("No items found in request");
+    }
+
+    // ---------------- DUPLICATE CHECK ----------------
+    const alreadyForwarded = await StockRequest.findOne({
+      where: {
+        parent_request_id: request.id,
+        request_source: "district_to_retail_forwarded",
+        to_organization_id: districtId,
+      },
+      transaction: t,
+    });
+
+    if (alreadyForwarded) {
+      return rollback("Request already forwarded to this retail store", 409);
+    }
+
+    // ---------------- CREATE FORWARDED REQUEST ----------------
+    const forwardedRequest = await StockRequest.create(
+      {
+        request_no: `REQ-FWD-${Date.now()}`,
+
+        from_organization_id: districtId,
+        from_store_code: districtStore.store_code,
+        from_store_name: districtStore.store_name,
+
+        // ✅ REQUIRED FIELDS (FIXED)
+        to_organization_id: districtId,
+        to_district_code: String(districtId), // 🔥 FIXED CRITICAL ERROR
+
+        to_store_name: retailStore.store_name,
+
+        parent_request_id: request.id,
+        request_source: "district_to_retail_forwarded",
+
+        status: "pending",
+
+        notes: notes || "Forwarded from district",
+
+        created_by: user.id,
+        forwarded_by: user.id,
+        forwarded_at: new Date(),
+      },
+      { transaction: t }
+    );
+
+    // ---------------- COPY ITEMS ----------------
+    const childItems = items.map((i) => ({
+      request_id: forwardedRequest.id,
+      item_id: i.item_id,
+      request_qty: i.request_qty,
+      approved_qty: 0,
+      status: "pending",
+    }));
+
+    await StockRequestItem.bulkCreate(childItems, { transaction: t });
+
+    await t.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "Request transferred successfully",
+      data: {
+        request_no: forwardedRequest.request_no,
+        from: districtStore.store_name,
+        to: retailStore.store_name,
+        total_items: childItems.length,
+      },
+    });
+  } catch (err) {
+    await t.rollback();
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
+
+
+export const downloadDeliveryChallanByTransfer = async (req, res) => {
+  try {
+    const transferId = Number(req.params.transferId);
+
+    if (!Number.isInteger(transferId) || transferId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid transferId is required",
+      });
+    }
+
+    const transfer = await StockTransfer.findByPk(transferId);
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: "Transfer not found",
+      });
+    }
+
+    const request = await StockRequest.findByPk(transfer.request_id);
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Linked stock request not found",
+      });
+    }
+
+    const transferItems = await StockTransferItem.findAll({
+      where: {
+        transfer_id: transfer.id,
+      },
+      include: [
+        {
+          model: Item,
+          as: "item",
+          required: false,
+        },
+      ],
+    });
+
+    const fromStore = await Store.findOne({
+      where: { id: transfer.from_organization_id },
+    });
+
+    const toStore = await Store.findOne({
+      where: { id: transfer.to_organization_id },
+    });
+
+    const challanItems = transferItems.map((row) => {
+      const item = row.item || {};
+
+      const qty = Number(row.qty || 0);
+      const weight = Number(row.weight || 0);
+      const rate = Number(row.rate || 0);
+
+      return {
+        item_id: row.item_id,
+        item_name: item.item_name || "-",
+        product_code: item.article_code || item.sku_code || "-",
+        hsn_code: item.hsn_code || "-",
+        purity: item.purity || "-",
+        qty,
+        weight,
+        rate,
+        making_charge: item.making_charge || 0,
+        huid_code: item.huid_code || "-",
+        base_value: weight > 0 ? weight * rate : qty * rate,
+      };
+    });
+
+    const challanPdf = await generateDeliveryChallanPdf({
+      transfer,
+      request,
+      fromStore,
+      toStore,
+      challanItems,
+      driver: {
+        driver_name: transfer.driver_name,
+        driver_phone: transfer.driver_phone,
+        vehicle_number: transfer.vehicle_number,
+        pickup_address: transfer.pickup_address,
+        delivery_address: transfer.delivery_address,
+      },
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${challanPdf.fileName}"`
+    );
+
+    return res.sendFile(challanPdf.filePath);
+  } catch (error) {
+    console.error("downloadDeliveryChallanByTransfer error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to download delivery challan",
       error: error.message,
     });
   }

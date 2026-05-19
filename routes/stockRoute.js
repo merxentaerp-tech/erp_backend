@@ -23,7 +23,7 @@ router.get("/:id", auth, getSingleStock);
 router.put("/:id/status", auth, updateStockStatus);
 router.post(
   "/stock-in",auth,
-  upload2.array("images"),
+  upload.array("images"),
   addStockIn
 );
 

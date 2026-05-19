@@ -696,108 +696,267 @@ export const approveAndDispatchHeadRequest = async (req, res) => {
 
 
 export const createHeadStockRequest = async (req, res) => {
-  const transaction = await sequelize.transaction();
+  let transaction;
+
+  const ORG_LEVEL = Object.freeze({
+    DISTRICT: "District",
+    RETAIL: "Retail",
+  });
+
+  const TARGET_TYPE = Object.freeze({
+    DISTRICT: "district",
+    RETAIL: "retail",
+  });
+
+  const STATUS = Object.freeze({
+    PENDING: "pending",
+  });
+
+  const DEFAULT_PRIORITY = "medium";
+
+  const normalizeString = (value) => String(value || "").trim();
+
+  const rollbackAndRespond = async (statusCode, payload) => {
+    if (transaction && !transaction.finished) {
+      await transaction.rollback();
+    }
+
+    return res.status(statusCode).json(payload);
+  };
 
   try {
     const user = req.user;
 
     const {
-      target_type,       // "district" OR "retail"
-      to_store_id,       // receiver store id
-      to_store_code,     // receiver store code
+      target_type, // "district" OR "retail"
+      to_store_id, // receiver store id
+      to_store_code, // receiver store code
       items,
       priority,
       category,
       notes,
     } = req.body;
 
-    const userLevel = String(user.organization_level || "").toLowerCase();
+    /**
+     * =====================================================
+     * 1. BASIC VALIDATION
+     * Transaction start karne se pehle validation
+     * =====================================================
+     */
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized user",
+      });
+    }
+
+    const userLevel = normalizeString(user.organization_level).toLowerCase();
+    const receiverType = normalizeString(target_type).toLowerCase();
+    const receiverStoreCode = normalizeString(to_store_code);
 
     if (!["head", "head_office"].includes(userLevel)) {
-      await transaction.rollback();
       return res.status(403).json({
         success: false,
         message: "Only head office can create this stock request",
       });
     }
 
-    const receiverType = String(target_type || "").toLowerCase();
+    if (!user.organization_id) {
+      return res.status(401).json({
+        success: false,
+        message: "organization_id missing in token",
+      });
+    }
 
-    if (!["district", "retail"].includes(receiverType)) {
-      await transaction.rollback();
+    if (!Object.values(TARGET_TYPE).includes(receiverType)) {
       return res.status(400).json({
         success: false,
         message: "target_type must be district or retail",
       });
     }
 
-    if (!to_store_id || !to_store_code) {
-      await transaction.rollback();
+    if (!to_store_id || !receiverStoreCode) {
       return res.status(400).json({
         success: false,
         message: "to_store_id and to_store_code are required",
       });
     }
 
+    const parsedToStoreId = Number(to_store_id);
+
+    if (!Number.isInteger(parsedToStoreId) || parsedToStoreId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid to_store_id",
+      });
+    }
+
     if (!Array.isArray(items) || items.length === 0) {
-      await transaction.rollback();
       return res.status(400).json({
         success: false,
         message: "items are required",
       });
     }
 
+    /**
+     * =====================================================
+     * 2. ITEMS STRICT VALIDATION + DUPLICATE MERGE
+     * Input format same hai.
+     * Invalid item silently ignore nahi hoga.
+     * Duplicate item_id merge hoga.
+     * =====================================================
+     */
+
+    const itemQtyMap = new Map();
+
+    for (const item of items) {
+      const itemId = Number(item?.item_id);
+      const requestQty = Number(item?.request_qty);
+
+      if (!Number.isInteger(itemId) || itemId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid item_id found in items",
+        });
+      }
+
+      if (!Number.isFinite(requestQty) || requestQty <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request_qty found in items",
+        });
+      }
+
+      itemQtyMap.set(itemId, Number((itemQtyMap.get(itemId) || 0) + requestQty));
+    }
+
+    const validItems = Array.from(itemQtyMap.entries()).map(
+      ([item_id, request_qty]) => ({
+        item_id,
+        request_qty,
+        approved_qty: 0,
+        status: STATUS.PENDING,
+      })
+    );
+
+    const itemIds = validItems.map((item) => item.item_id);
+
+    /**
+     * =====================================================
+     * 3. TRANSACTION START
+     * =====================================================
+     */
+
+    transaction = await sequelize.transaction();
+
+    /**
+     * =====================================================
+     * 4. HEAD STORE VALIDATION
+     * Business flow same rakha hai.
+     * Store token ke organization_id se fetch hoga.
+     * Extra safety ke liye is_active/store_code check conditional hai.
+     * =====================================================
+     */
+
+    const headStoreWhere = {
+      id: Number(user.organization_id),
+    };
+
+    if (user.store_code) {
+      headStoreWhere.store_code = normalizeString(user.store_code);
+    }
+
     const headStore = await Store.findOne({
-      where: {
-        id: user.organization_id,
-      },
+      where: headStoreWhere,
       transaction,
     });
 
     if (!headStore) {
-      await transaction.rollback();
-      return res.status(404).json({
+      return rollbackAndRespond(404, {
         success: false,
         message: "Head office store not found",
       });
     }
 
+    /**
+     * Optional safety:
+     * Agar tumhare Store table me is_active compulsory hai aur head office active hona chahiye,
+     * toh neeche wala check production me safe hai.
+     */
+
+    if (headStore.is_active === false) {
+      return rollbackAndRespond(404, {
+        success: false,
+        message: "Head office store not found",
+      });
+    }
+
+    /**
+     * =====================================================
+     * 5. RECEIVER STORE VALIDATION
+     * =====================================================
+     */
+
     const receiverStore = await Store.findOne({
       where: {
-        id: Number(to_store_id),
-        store_code: String(to_store_code).trim(),
-       organization_level: receiverType === "district" ? "District" : "Retail",
+        id: parsedToStoreId,
+        store_code: receiverStoreCode,
+        organization_level:
+          receiverType === TARGET_TYPE.DISTRICT
+            ? ORG_LEVEL.DISTRICT
+            : ORG_LEVEL.RETAIL,
         is_active: true,
       },
       transaction,
     });
 
     if (!receiverStore) {
-      await transaction.rollback();
-      return res.status(404).json({
+      return rollbackAndRespond(404, {
         success: false,
         message: "Invalid store_id or store_code mismatch",
       });
     }
 
-    const validItems = items
-      .filter((i) => i.item_id && Number(i.request_qty) > 0)
-      .map((i) => ({
-        item_id: Number(i.item_id),
-        request_qty: Number(i.request_qty),
-        approved_qty: 0,
-        status: "pending",
-      }));
+    /**
+     * =====================================================
+     * 6. ITEM EXISTENCE CHECK
+     * Agar Item model/table me is_active column nahi hai,
+     * toh is_active: true remove kar dena.
+     * =====================================================
+     */
 
-    if (validItems.length === 0) {
-      await transaction.rollback();
-      return res.status(400).json({
+    const existingItems = await Item.findAll({
+      where: {
+        id: { [Op.in]: itemIds },
+        is_active: true,
+      },
+      attributes: ["id"],
+      transaction,
+    });
+
+    const existingItemIds = new Set(existingItems.map((item) => Number(item.id)));
+
+    const invalidItemIds = itemIds.filter(
+      (itemId) => !existingItemIds.has(Number(itemId))
+    );
+
+    if (invalidItemIds.length > 0) {
+      return rollbackAndRespond(400, {
         success: false,
-        message: "No valid items found",
+        message: "Some items are invalid or inactive",
+        invalid_item_ids: invalidItemIds,
       });
     }
 
-    const itemIds = validItems.map((i) => i.item_id);
+    /**
+     * =====================================================
+     * 7. STOCK AVAILABILITY CHECK
+     * Business flow same rakha hai:
+     * original code ki tarah receiverStore.id pe stock check hoga.
+     * Lock add kiya hai concurrency safety ke liye.
+     * =====================================================
+     */
 
     const receiverStocks = await Stock.findAll({
       where: {
@@ -806,6 +965,7 @@ export const createHeadStockRequest = async (req, res) => {
       },
       attributes: ["item_id", "available_qty"],
       transaction,
+      lock: transaction.LOCK.UPDATE,
     });
 
     const stockMap = new Map();
@@ -816,9 +976,9 @@ export const createHeadStockRequest = async (req, res) => {
 
     const unavailableItems = validItems
       .map((item) => {
-        const availableQty = stockMap.get(item.item_id) || 0;
+        const availableQty = stockMap.get(Number(item.item_id)) || 0;
 
-        if (availableQty < item.request_qty) {
+        if (availableQty < Number(item.request_qty)) {
           return {
             item_id: item.item_id,
             requested_qty: item.request_qty,
@@ -831,13 +991,18 @@ export const createHeadStockRequest = async (req, res) => {
       .filter(Boolean);
 
     if (unavailableItems.length > 0) {
-      await transaction.rollback();
-      return res.status(400).json({
+      return rollbackAndRespond(400, {
         success: false,
         message: "Selected store does not have enough stock for requested items",
         unavailable_items: unavailableItems,
       });
     }
+
+    /**
+     * =====================================================
+     * 8. CREATE STOCK REQUEST
+     * =====================================================
+     */
 
     const request_no = `REQ-HEAD-${user.organization_id}-${Date.now()}`;
 
@@ -854,18 +1019,24 @@ export const createHeadStockRequest = async (req, res) => {
         to_store_name: receiverStore.store_name,
 
         to_district_code:
-          receiverType === "district" ? receiverStore.store_code : null,
+          receiverType === TARGET_TYPE.DISTRICT ? receiverStore.store_code : null,
         to_district_name:
-          receiverType === "district" ? receiverStore.store_name : null,
+          receiverType === TARGET_TYPE.DISTRICT ? receiverStore.store_name : null,
 
-        priority: priority || "medium",
+        priority: priority || DEFAULT_PRIORITY,
         category: category || null,
         notes: notes || null,
-        status: "pending",
+        status: STATUS.PENDING,
         created_by: user.id,
       },
       { transaction }
     );
+
+    /**
+     * =====================================================
+     * 9. CREATE STOCK REQUEST ITEMS
+     * =====================================================
+     */
 
     const requestItemsPayload = validItems.map((item) => ({
       request_id: stockRequest.id,
@@ -877,21 +1048,28 @@ export const createHeadStockRequest = async (req, res) => {
 
     await StockRequestItem.bulkCreate(requestItemsPayload, { transaction });
 
+    /**
+     * =====================================================
+     * 10. CREATE TASK
+     * =====================================================
+     */
+
     await Task.create(
       {
         title: "Stock request approval required",
         description: `${headStore.store_name} submitted stock request ${stockRequest.request_no} to ${receiverStore.store_name}`,
-        priority: priority || "medium",
-        status: "pending",
+        priority: priority || DEFAULT_PRIORITY,
+        status: STATUS.PENDING,
         task_type:
-          receiverType === "district"
+          receiverType === TARGET_TYPE.DISTRICT
             ? "head_to_district_stock_request"
             : "head_to_retail_stock_request",
+
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
 
         district_code:
-          receiverType === "district" ? receiverStore.store_code : null,
+          receiverType === TARGET_TYPE.DISTRICT ? receiverStore.store_code : null,
         store_code: receiverStore.store_code,
         store_name: receiverStore.store_name,
 
@@ -900,6 +1078,12 @@ export const createHeadStockRequest = async (req, res) => {
       },
       { transaction }
     );
+
+    /**
+     * =====================================================
+     * 11. CREATE ACTIVITY LOG
+     * =====================================================
+     */
 
     await ActivityLog.create(
       {
@@ -929,6 +1113,12 @@ export const createHeadStockRequest = async (req, res) => {
       { transaction }
     );
 
+    /**
+     * =====================================================
+     * 12. CREATE SYSTEM ACTIVITY
+     * =====================================================
+     */
+
     await SystemActivity.create(
       {
         title: "New head office stock request submitted",
@@ -938,7 +1128,7 @@ export const createHeadStockRequest = async (req, res) => {
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
         district_code:
-          receiverType === "district" ? receiverStore.store_code : null,
+          receiverType === TARGET_TYPE.DISTRICT ? receiverStore.store_code : null,
         store_code: receiverStore.store_code || null,
         store_name: receiverStore.store_name || null,
         created_by: user.id,
@@ -947,7 +1137,19 @@ export const createHeadStockRequest = async (req, res) => {
       { transaction }
     );
 
+    /**
+     * =====================================================
+     * 13. COMMIT
+     * =====================================================
+     */
+
     await transaction.commit();
+
+    /**
+     * IMPORTANT:
+     * Success response original jaisa hi rakha hai.
+     * Response shape change nahi kiya.
+     */
 
     return res.status(201).json({
       success: true,
@@ -959,13 +1161,24 @@ export const createHeadStockRequest = async (req, res) => {
       },
     });
   } catch (error) {
-    await transaction.rollback();
-    console.error("createHeadStockRequest error:", error);
+    if (transaction && !transaction.finished) {
+      await transaction.rollback();
+    }
+
+    console.error("createHeadStockRequest error:", {
+      message: error.message,
+      stack: error.stack,
+      user_id: req.user?.id,
+      organization_id: req.user?.organization_id,
+      store_code: req.user?.store_code,
+    });
 
     return res.status(500).json({
       success: false,
       message: "Server error",
-      error: error.message,
+      ...(process.env.NODE_ENV !== "production" && {
+        error: error.message,
+      }),
     });
   }
 };
@@ -979,7 +1192,76 @@ export const createHeadStockRequest = async (req, res) => {
 // ==========================================
 // HEAD / SUPER ADMIN - ALL TRANSFERS
 // ==========================================
-export const getHeadAllTransfers = async (req, res) => {
+
+const normalize = (value = "") =>
+  String(value).trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+
+const normalizeCode = (value = "") => String(value).trim().toUpperCase();
+
+const isHeadOfficeUser = (user) => {
+  const role = normalize(user?.role);
+  const level = normalize(user?.organization_level);
+
+  return (
+    role === "super_admin" ||
+    role === "admin" ||
+    role === "head" ||
+    role === "head_office" ||
+    level === "head" ||
+    level === "head_office" ||
+    user?.branches?.includes?.("ALL")
+  );
+};
+
+const getStoreLevel = (store) => {
+  const level = normalize(
+    store?.organization_level ||
+      store?.organizationlevel ||
+      store?.level ||
+      store?.store_type ||
+      store?.type ||
+      ""
+  );
+
+  if (level.includes("district")) return "district";
+  if (level.includes("retail")) return "retail";
+  if (level.includes("head")) return "head";
+
+  const code = normalizeCode(store?.store_code || "");
+
+  if (code.startsWith("DST") || code.startsWith("DIST")) return "district";
+  if (code.startsWith("STR") || code.startsWith("RTL")) return "retail";
+  if (code.startsWith("HO")) return "head";
+
+  return level || null;
+};
+
+const pickStoreName = (store) => {
+  return (
+    store?.store_name ||
+    store?.name ||
+    store?.organization_name ||
+    store?.branch_name ||
+    null
+  );
+};
+
+const getSelectedStoreId = (store) => {
+  return Number(store?.id || 0);
+};
+
+const transferHasSelectedStore = (transfer, selectedStore) => {
+  if (!selectedStore) return true;
+
+  const selectedStoreId = getSelectedStoreId(selectedStore);
+
+  return (
+    Number(transfer.from_organization_id) === selectedStoreId ||
+    Number(transfer.to_organization_id) === selectedStoreId
+  );
+};
+
+export const  getHeadAllTransfers = async (req, res) => {
   try {
     const user = req.user;
 
@@ -990,23 +1272,108 @@ export const getHeadAllTransfers = async (req, res) => {
       });
     }
 
-    const role = String(user.role || "").toLowerCase();
-    const level = String(user.organization_level || "").toLowerCase();
-
-    const isHeadUser =
-      role === "super_admin" ||
-      role === "admin" ||
-      level === "head" ||
-      level === "head_office";
-
-    if (!isHeadUser) {
+    if (!isHeadOfficeUser(user)) {
       return res.status(403).json({
         success: false,
         message: "Only head office users can access all transfers",
       });
     }
 
+    const {
+      page = 1,
+      limit = 10,
+      status,
+      search,
+
+      // dropdown selected values
+      district_store_code,
+      retail_store_code,
+
+      // optional exact side filters
+      from_store_code,
+      to_store_code,
+    } = req.query;
+
+    const pageNo = Math.max(Number(page) || 1, 1);
+    const limitNo = Math.max(Number(limit) || 10, 1);
+    const offset = (pageNo - 1) * limitNo;
+
+    const transferWhere = {};
+
+    if (status && status !== "all") {
+      transferWhere.status = status;
+    }
+
+    if (search) {
+      transferWhere[Op.or] = [
+        { transfer_no: { [Op.iLike]: `%${search}%` } },
+        { tracking_number: { [Op.iLike]: `%${search}%` } },
+        { remarks: { [Op.iLike]: `%${search}%` } },
+        { driver_name: { [Op.iLike]: `%${search}%` } },
+        { vehicle_number: { [Op.iLike]: `%${search}%` } },
+      ];
+    }
+
+    const selectedDistrictCode =
+      district_store_code && district_store_code !== "all"
+        ? normalizeCode(district_store_code)
+        : null;
+
+    const selectedRetailCode =
+      retail_store_code && retail_store_code !== "all"
+        ? normalizeCode(retail_store_code)
+        : null;
+
+    const selectedFromCode =
+      from_store_code && from_store_code !== "all"
+        ? normalizeCode(from_store_code)
+        : null;
+
+    const selectedToCode =
+      to_store_code && to_store_code !== "all"
+        ? normalizeCode(to_store_code)
+        : null;
+
+    const selectedCodes = [
+      selectedDistrictCode,
+      selectedRetailCode,
+      selectedFromCode,
+      selectedToCode,
+    ].filter(Boolean);
+
+    const selectedStores = selectedCodes.length
+      ? await Store.findAll({
+          where: {
+            store_code: {
+              [Op.in]: selectedCodes,
+            },
+          },
+          raw: true,
+        })
+      : [];
+
+    const selectedStoreByCode = new Map(
+      selectedStores.map((s) => [normalizeCode(s.store_code), s])
+    );
+
+    const selectedDistrictStore = selectedDistrictCode
+      ? selectedStoreByCode.get(selectedDistrictCode)
+      : null;
+
+    const selectedRetailStore = selectedRetailCode
+      ? selectedStoreByCode.get(selectedRetailCode)
+      : null;
+
+    const selectedFromStore = selectedFromCode
+      ? selectedStoreByCode.get(selectedFromCode)
+      : null;
+
+    const selectedToStore = selectedToCode
+      ? selectedStoreByCode.get(selectedToCode)
+      : null;
+
     const transfers = await StockTransfer.findAll({
+      where: transferWhere,
       include: [
         {
           model: StockTransferItem,
@@ -1017,32 +1384,186 @@ export const getHeadAllTransfers = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const data = transfers.map((tr) => {
-      const t = tr.toJSON();
+    const plainTransfers = transfers.map((tr) => tr.get({ plain: true }));
+
+    const transferStoreIds = [
+      ...new Set(
+        plainTransfers
+          .flatMap((tr) => [
+            Number(tr.from_organization_id),
+            Number(tr.to_organization_id),
+          ])
+          .filter(Boolean)
+      ),
+    ];
+
+    const stores = transferStoreIds.length
+      ? await Store.findAll({
+          where: {
+            id: {
+              [Op.in]: transferStoreIds,
+            },
+          },
+          raw: true,
+        })
+      : [];
+
+    const storeMap = new Map(stores.map((s) => [Number(s.id), s]));
+
+    let data = plainTransfers.map((tr) => {
+      const fromStore = storeMap.get(Number(tr.from_organization_id));
+      const toStore = storeMap.get(Number(tr.to_organization_id));
+
+      const fromStoreLevel = getStoreLevel(fromStore);
+      const toStoreLevel = getStoreLevel(toStore);
+
+      let transferType = "other";
+
+      if (
+        (fromStoreLevel === "head" || fromStoreLevel === "head_office") &&
+        toStoreLevel === "district"
+      ) {
+        transferType = "head_to_district";
+      } else if (
+        (fromStoreLevel === "head" || fromStoreLevel === "head_office") &&
+        toStoreLevel === "retail"
+      ) {
+        transferType = "head_to_retail";
+      } else if (fromStoreLevel === "district" && toStoreLevel === "retail") {
+        transferType = "district_to_retail";
+      } else if (fromStoreLevel === "retail" && toStoreLevel === "district") {
+        transferType = "retail_to_district";
+      } else if (fromStoreLevel === "district" && toStoreLevel === "district") {
+        transferType = "district_to_district";
+      } else if (fromStoreLevel === "retail" && toStoreLevel === "retail") {
+        transferType = "retail_to_retail";
+      }
 
       return {
-        ...t,
+        ...tr,
+
         direction: "all",
         direction_label: "All Transfer",
-        transfer_items: t.transfer_items || [],
+
+        transfer_type: transferType,
+        transfer_type_label: transferType.replaceAll("_", " → "),
+
+        from_store_code: fromStore?.store_code || null,
+        from_store_name: pickStoreName(fromStore),
+        from_store_level: fromStoreLevel,
+
+        to_store_code: toStore?.store_code || null,
+        to_store_name: pickStoreName(toStore),
+        to_store_level: toStoreLevel,
+
+        transfer_items: tr.transfer_items || [],
       };
     });
 
+    // district dropdown filter
+    if (selectedDistrictCode) {
+      if (!selectedDistrictStore) {
+        return res.status(404).json({
+          success: false,
+          message: "Selected district store not found",
+        });
+      }
+
+      data = data.filter((tr) =>
+        transferHasSelectedStore(tr, selectedDistrictStore)
+      );
+    }
+
+    // retail dropdown filter
+    if (selectedRetailCode) {
+      if (!selectedRetailStore) {
+        return res.status(404).json({
+          success: false,
+          message: "Selected retail store not found",
+        });
+      }
+
+      data = data.filter((tr) =>
+        transferHasSelectedStore(tr, selectedRetailStore)
+      );
+    }
+
+    // exact from side filter
+    if (selectedFromCode) {
+      if (!selectedFromStore) {
+        return res.status(404).json({
+          success: false,
+          message: "Selected from store not found",
+        });
+      }
+
+      const selectedFromStoreId = getSelectedStoreId(selectedFromStore);
+
+      data = data.filter(
+        (tr) => Number(tr.from_organization_id) === selectedFromStoreId
+      );
+    }
+
+    // exact to side filter
+    if (selectedToCode) {
+      if (!selectedToStore) {
+        return res.status(404).json({
+          success: false,
+          message: "Selected to store not found",
+        });
+      }
+
+      const selectedToStoreId = getSelectedStoreId(selectedToStore);
+
+      data = data.filter(
+        (tr) => Number(tr.to_organization_id) === selectedToStoreId
+      );
+    }
+
+    const summarySource = data;
+
     const summary = {
-      total: transfers.length,
-      draft: transfers.filter((t) => t.status === "draft").length,
-      approved: transfers.filter((t) => t.status === "approved").length,
-      dispatched: transfers.filter((t) => t.status === "dispatched").length,
-      in_transit: transfers.filter((t) => t.status === "in_transit").length,
-      received: transfers.filter((t) => t.status === "received").length,
-      cancelled: transfers.filter((t) => t.status === "cancelled").length,
+      total: summarySource.length,
+
+      draft: summarySource.filter((t) => t.status === "draft").length,
+      approved: summarySource.filter((t) => t.status === "approved").length,
+      dispatched: summarySource.filter((t) => t.status === "dispatched").length,
+      in_transit: summarySource.filter((t) => t.status === "in_transit").length,
+      received: summarySource.filter((t) => t.status === "received").length,
+      cancelled: summarySource.filter((t) => t.status === "cancelled").length,
+
+      inTransit: summarySource.filter((t) => t.status === "in_transit").length,
+
+      shipments: summarySource.filter((t) =>
+        ["approved", "dispatched", "in_transit"].includes(t.status)
+      ).length,
+
+      goodsReceipt: summarySource.filter((t) => t.status === "received").length,
+
+      districtTransfers: summarySource.filter(
+        (t) =>
+          normalize(t.from_store_level) === "district" ||
+          normalize(t.to_store_level) === "district"
+      ).length,
+
+      retailTransfers: summarySource.filter(
+        (t) =>
+          normalize(t.from_store_level) === "retail" ||
+          normalize(t.to_store_level) === "retail"
+      ).length,
     };
+
+    const totalCount = data.length;
+    const paginatedData = data.slice(offset, offset + limitNo);
 
     return res.status(200).json({
       success: true,
       summary,
-      count: transfers.length,
-      data,
+      count: paginatedData.length,
+      total_count: totalCount,
+      current_page: pageNo,
+      total_pages: Math.ceil(totalCount / limitNo),
+      data: paginatedData,
     });
   } catch (error) {
     console.error("getHeadAllTransfers error:", error);
@@ -1054,7 +1575,6 @@ export const getHeadAllTransfers = async (req, res) => {
     });
   }
 };
-
 export const getAvailableStoresForHeadRequest = async (req, res) => {
   try {
     const user = req.user;
@@ -1245,16 +1765,16 @@ const canViewAnyTransfer = (user) => {
   );
 };
 
-const pickStoreName = (store) => {
-  if (!store) return null;
-  return (
-    store.store_name ||
-    store.name ||
-    store.organization_name ||
-    store.branch_name ||
-    null
-  );
-};
+// const pickStoreName = (store) => {
+//   if (!store) return null;
+//   return (
+//     store.store_name ||
+//     store.name ||
+//     store.organization_name ||
+//     store.branch_name ||
+//     null
+//   );
+// };
 
 const pickUserName = (user) => {
   if (!user) return null;

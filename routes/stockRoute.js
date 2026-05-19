@@ -10,6 +10,7 @@ import {
 } from "../controller/stock.controller.js";
 import { uploadInventoryFile } from "../middlewares/uploadchallan.js";
 import { auth } from "../middlewares/authMiddleware.js"
+import multer from "multer";
 
 const router = express.Router();
 //esme retail wala ka data aatega
@@ -20,7 +21,11 @@ router.get("/getdistrict",auth,getDistrictInventory)
 router.get("/summary", auth, stockSummary);
 router.get("/:id", auth, getSingleStock);
 router.put("/:id/status", auth, updateStockStatus);
-router.post("/stock-in", auth, addStockIn);
+router.post(
+  "/stock-in",auth,
+  upload2.array("images"),
+  addStockIn
+);
 
 //this is for finding the by category according data 
 router.get("/category/:category", auth, getStockItemsByCategory);

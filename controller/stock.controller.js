@@ -2051,12 +2051,12 @@ const parseExcelRows = (buffer) => {
 //   return u || "pcs";
 // };
 
-const normalizeMetalType = (itemName) => {
-  const text = clean(itemName).toLowerCase();
+// const normalizeMetalType = (itemName) => {
+//   const text = clean(itemName).toLowerCase();
 
-  if (text.includes("silver")) return "Silver";
-  return "Gold";
-};
+//   if (text.includes("silver")) return "Silver";
+//   return "Gold";
+// };
 
 const generateCode = (storeCode, prefix, i) => {
   return `${prefix}-${storeCode}-${Date.now()}-${i}`;

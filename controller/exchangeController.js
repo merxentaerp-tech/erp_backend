@@ -10,13 +10,21 @@ export const getInvoiceForExchange = async (req, res) => {
   try {
     const { invoice_number } = req.params;
 
+    if (!invoice_number || !String(invoice_number).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "invoice_number is required",
+      });
+    }
+
     const data = await sequelize.query(
       `
       SELECT 
-        i.id,
+        i.id AS invoice_id,
         i.invoice_number,
-        c.name,
-        c.phone,
+
+        c.name AS customer_name,
+        c.phone AS customer_phone,
 
         e.old_product_code,
         e.old_product_name,
@@ -35,67 +43,93 @@ export const getInvoiceForExchange = async (req, res) => {
         ii.total_amount
 
       FROM invoices i
-      LEFT JOIN customers c ON i.customer_id = c.id
+
+      LEFT JOIN customers c 
+        ON i.customer_id = c.id
 
       LEFT JOIN LATERAL (
-        SELECT * FROM exchange_logs 
-        WHERE invoice_id = i.id 
-        ORDER BY id DESC LIMIT 1
+        SELECT *
+        FROM exchange_logs 
+        WHERE invoice_id = i.id
+        ORDER BY id DESC
+        LIMIT 1
       ) e ON true
 
-      LEFT JOIN invoice_items ii ON ii.invoice_id = i.id
+      LEFT JOIN invoice_items ii
+        ON ii.invoice_id = i.id
 
       WHERE i.invoice_number = :invoice_number
-     
+
+      ORDER BY ii.id ASC
       `,
       {
-        replacements: { invoice_number },
-        type: QueryTypes.SELECT
+        replacements: {
+          invoice_number: String(invoice_number).trim(),
+        },
+        type: QueryTypes.SELECT,
       }
     );
 
     if (!data.length) {
-      return res.status(404).json({ message: "Invoice not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Invoice not found",
+      });
     }
 
-    const item = data[0];
+    const invoice = data[0];
 
-    const original_product = item.old_product_code
+    const items = data
+      .filter((row) => row.product_code)
+      .map((row) => ({
+        invoice_id: row.invoice_id,
+        product_code: row.product_code,
+        product_name: row.description,
+        purity: row.purity,
+        gross_weight: row.gross_weight,
+        net_weight: row.net_weight,
+        stone_weight: row.stone_weight,
+        value: row.total_amount,
+      }));
+
+    const latest_exchange_product = invoice.old_product_code
       ? {
-          product_code: item.old_product_code,
-          product_name: item.old_product_name,
-          purity: item.old_purity,
-          gross_weight: item.old_gross_weight,
-          net_weight: item.old_net_weight,
-          stone_weight: item.old_stone_weight,
-          value: item.old_value
+          product_code: invoice.old_product_code,
+          product_name: invoice.old_product_name,
+          purity: invoice.old_purity,
+          gross_weight: invoice.old_gross_weight,
+          net_weight: invoice.old_net_weight,
+          stone_weight: invoice.old_stone_weight,
+          value: invoice.old_value,
         }
-      : {
-          product_code: item.product_code,
-          product_name: item.description,
-          purity: item.purity,
-          gross_weight: item.gross_weight,
-          net_weight: item.net_weight,
-          stone_weight: item.stone_weight,
-          value: item.total_amount
-        };
+      : null;
 
-    return res.json({
+    return res.status(200).json({
       success: true,
+      message: "Invoice fetched successfully",
       data: {
-        invoice_id: item.id,
-        invoice_number: item.invoice_number,
-        customer_name: item.name,
-        phone: item.phone,
-        original_product
-      }
-    });
+        invoice_id: invoice.invoice_id,
+        invoice_number: invoice.invoice_number,
+        customer_name: invoice.customer_name,
+        phone: invoice.customer_phone,
 
+        total_items: items.length,
+
+        items,
+
+        latest_exchange_product,
+      },
+    });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("getInvoiceForExchange error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch invoice for exchange",
+      error: err.message,
+    });
   }
 };
-
 
 
 export const createExchange = async (req, res) => {
@@ -104,8 +138,8 @@ export const createExchange = async (req, res) => {
   try {
     const {
       invoice_number,
-      original_product,
-      new_product,
+      original_products = [],
+      new_products = [],
       making_charge = 0,
       stone_amount = 0,
     } = req.body;
@@ -121,13 +155,23 @@ export const createExchange = async (req, res) => {
       });
     }
 
+    if (!original_products.length || !new_products.length) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Products are required for exchange",
+      });
+    }
+
+    // ================= FETCH INVOICE =================
     const invoice = await sequelize.query(
       `
       SELECT *
       FROM invoices
       WHERE invoice_number = :invoice_number
       AND store_code = :store_code
-      LIMIT 1 FOR UPDATE
+      LIMIT 1
+      FOR UPDATE
       `,
       {
         replacements: { invoice_number, store_code: storeCode },
@@ -146,20 +190,10 @@ export const createExchange = async (req, res) => {
 
     const inv = invoice[0];
 
-    const customer = await sequelize.query(
-      `SELECT id, name, phone FROM customers WHERE id = :customer_id`,
-      {
-        replacements: { customer_id: inv.customer_id },
-        type: QueryTypes.SELECT,
-        transaction: t,
-      }
-    );
-
-    const customerData = customer[0] || {};
-
+    // ================= FETCH ITEMS =================
     const items = await sequelize.query(
       `
-      SELECT id, product_code, description, total_amount, item_id
+      SELECT id, product_code, description, total_amount
       FROM invoice_items
       WHERE invoice_id = :invoice_id AND is_active = true
       `,
@@ -181,34 +215,47 @@ export const createExchange = async (req, res) => {
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
-    const matchedItem = items.find((item) => {
-      return (
-        normalize(item.product_code) ===
-        normalize(original_product.product_code)
-      );
-    });
+    // ================= MATCH + CALCULATE OLD VALUE =================
+    let oldValue = 0;
+    let matchedItems = [];
 
-    if (!matchedItem) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Invalid product details for this invoice",
-      });
+    for (const original of original_products) {
+      const matched = items.find(
+        (item) =>
+          normalize(item.product_code) === normalize(original.product_code)
+      );
+
+      if (!matched) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Invalid product in invoice: ${original.product_code}`,
+        });
+      }
+
+      matchedItems.push({ matched, original });
+      oldValue += parseFloat(original.value || 0);
     }
 
+    // ================= NEW VALUE =================
+    let newValue = 0;
+
+    for (const np of new_products) {
+      newValue += parseFloat(np.value || 0);
+    }
+
+    // ================= CALCULATIONS =================
     const diffDays = Math.floor(
       (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
     );
 
     const isFree = diffDays <= 7;
 
-    const oldValue = parseFloat(original_product.value || 0);
-    const newValue = parseFloat(new_product.value || 0);
-
     const makingCharges = isFree ? 0 : making_charge + stone_amount;
     const difference = newValue - oldValue;
     const finalAmount = newValue + makingCharges;
 
+    // ================= UPDATE INVOICE =================
     await sequelize.query(
       `
       UPDATE invoices
@@ -233,323 +280,146 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    await sequelize.query(
-      `UPDATE invoice_items SET is_active = false WHERE id = :item_id`,
-      {
-        replacements: { item_id: matchedItem.id },
-        transaction: t,
-      }
-    );
+    // ================= DEACTIVATE OLD ITEMS =================
+    for (const m of matchedItems) {
+      await sequelize.query(
+        `
+        UPDATE invoice_items
+        SET is_active = false
+        WHERE id = :item_id
+        `,
+        {
+          replacements: { item_id: m.matched.id },
+          transaction: t,
+        }
+      );
+    }
 
-    await sequelize.query(
-      `
-      INSERT INTO invoice_items (
-        invoice_id,
-        product_code,
-        description,
-        purity,
-        gross_weight,
-        net_weight,
-        stone_weight,
-        rate,
-        total_amount,
-        is_active,
-        item_id,
-        "createdAt",
-        "updatedAt"
-      )
-      VALUES (
-        :invoice_id,
-        :product_code,
-        :description,
-        :purity,
-        :gross_weight,
-        :net_weight,
-        :stone_weight,
-        :rate,
-        :total_amount,
-        true,
-        (SELECT id FROM items WHERE article_code = :product_code LIMIT 1),
-        NOW(),
-        NOW()
-      )
-      `,
-      {
-        replacements: {
-          invoice_id: inv.id,
-          product_code: new_product.product_code,
-          description: new_product.product_name,
-          purity: new_product.purity,
-          gross_weight: new_product.gross_weight,
-          net_weight: new_product.net_weight,
-          stone_weight: new_product.stone_weight || 0,
-          rate: new_product.net_weight
-            ? parseFloat((newValue / new_product.net_weight).toFixed(2))
-            : 0,
-          total_amount: finalAmount,
-        },
-        transaction: t,
-      }
-    );
+    // ================= INSERT NEW ITEMS =================
+    for (const newItem of new_products) {
+      await sequelize.query(
+        `
+        INSERT INTO invoice_items (
+          invoice_id,
+          product_code,
+          description,
+          purity,
+          gross_weight,
+          net_weight,
+          stone_weight,
+          rate,
+          total_amount,
+          is_active,
+          item_id,
+          "createdAt",
+          "updatedAt"
+        )
+        VALUES (
+          :invoice_id,
+          :product_code,
+          :description,
+          :purity,
+          :gross_weight,
+          :net_weight,
+          :stone_weight,
+          :rate,
+          :total_amount,
+          true,
+          (SELECT id FROM items WHERE article_code = :product_code LIMIT 1),
+          NOW(),
+          NOW()
+        )
+        `,
+        {
+          replacements: {
+            invoice_id: inv.id,
+            product_code: newItem.product_code,
+            description: newItem.product_name,
+            purity: newItem.purity,
+            gross_weight: newItem.gross_weight,
+            net_weight: newItem.net_weight,
+            stone_weight: newItem.stone_weight || 0,
+            total_amount: parseFloat(newItem.value || 0),
+            rate: newItem.net_weight
+              ? parseFloat((newItem.value / newItem.net_weight).toFixed(2))
+              : 0,
+          },
+          transaction: t,
+        }
+      );
+    }
 
-    const countData = await sequelize.query(
-      `SELECT COUNT(*) as count FROM exchange_logs WHERE invoice_id = :invoice_id`,
-      {
-        replacements: { invoice_id: inv.id },
-        type: QueryTypes.SELECT,
-        transaction: t,
-      }
-    );
+    // ================= EXCHANGE LOGS =================
+    for (let i = 0; i < matchedItems.length; i++) {
+      const old = matchedItems[i].original;
+      const newP = new_products[i] || {};
 
-    const exchangeNumber = String(parseInt(countData[0].count) + 1).padStart(
-      2,
-      "0"
-    );
-
-    const exchangeInvoiceNumber = `EX-${inv.invoice_number.replace(
-      "BILL-",
-      ""
-    )}-${exchangeNumber}`;
-
-    await sequelize.query(
-      `
-      INSERT INTO invoices (
-        invoice_number,
-        customer_id,
-        total_amount,
-        received_amount,
-        pending_amount,
-        status,
-        invoice_date,
-        store_code,
-        created_by,
-        "createdAt",
-        "updatedAt"
-      )
-      VALUES (
-        :invoice_number,
-        :customer_id,
-        :total_amount,
-        0,
-        :pending_amount,
-        'UNPAID',
-        NOW(),
-        :store_code,
-        :created_by,
-        NOW(),
-        NOW()
-      )
-      `,
-      {
-        replacements: {
-          invoice_number: exchangeInvoiceNumber,
-          customer_id: inv.customer_id,
-          total_amount: Math.abs(difference),
-          pending_amount: Math.abs(difference),
-          store_code: storeCode,
-          created_by: req.user?.id || null,
-        },
-        transaction: t,
-      }
-    );
-
-    await sequelize.query(
-      `
-      INSERT INTO exchange_logs (
-        invoice_id,
-        old_product_code,
-        old_product_name,
-        old_purity,
-        old_gross_weight,
-        old_net_weight,
-        old_stone_weight,
-        old_value,
-        new_product_code,
-        new_product_name,
-        new_purity,
-        new_gross_weight,
-        new_net_weight,
-        new_stone_weight,
-        new_value,
-        difference,
-        making_charges,
-        createdat,
-        updatedat
-      )
-      VALUES (
-        :invoice_id,
-        :old_product_code,
-        :old_product_name,
-        :old_purity,
-        :old_gross_weight,
-        :old_net_weight,
-        :old_stone_weight,
-        :old_value,
-        :new_product_code,
-        :new_product_name,
-        :new_purity,
-        :new_gross_weight,
-        :new_net_weight,
-        :new_stone_weight,
-        :new_value,
-        :difference,
-        :making_charges,
-        NOW(),
-        NOW()
-      )
-      `,
-      {
-        replacements: {
-          invoice_id: inv.id,
-          old_product_code: original_product.product_code,
-          old_product_name: original_product.product_name,
-          old_purity: original_product.purity,
-          old_gross_weight: original_product.gross_weight,
-          old_net_weight: original_product.net_weight,
-          old_stone_weight: original_product.stone_weight,
-          old_value: oldValue,
-          new_product_code: new_product.product_code,
-          new_product_name: new_product.product_name,
-          new_purity: new_product.purity,
-          new_gross_weight: new_product.gross_weight,
-          new_net_weight: new_product.net_weight,
-          new_stone_weight: new_product.stone_weight,
-          new_value: newValue,
+      await sequelize.query(
+        `
+        INSERT INTO exchange_logs (
+          invoice_id,
+          old_product_code,
+          old_product_name,
+          old_value,
+          new_product_code,
+          new_product_name,
+          new_value,
           difference,
-          making_charges: makingCharges,
-        },
-        transaction: t,
-      }
-    );
-
-    const entryType = difference > 0 ? "DEBIT" : "CREDIT";
-
-    await sequelize.query(
-      `
-      INSERT INTO ledger_entries (
-        customer_id,
-        type,
-        amount,
-        reference_type,
-        reference_id,
-        description,
-        "createdAt",
-        "updatedAt"
-      )
-      VALUES (
-        :customer_id,
-        :type,
-        :amount,
-        'EXCHANGE',
-        :invoice_id,
-        :desc,
-        NOW(),
-        NOW()
-      )
-      `,
-      {
-        replacements: {
-          customer_id: inv.customer_id,
-          type: entryType,
-          amount: Math.abs(difference),
-          invoice_id: inv.id,
-          desc: `Exchange for invoice ${inv.invoice_number}`,
-        },
-        transaction: t,
-      }
-    );
-
-    // ================= SYSTEM ACTIVITY =================
-    await SystemActivity.create(
-      {
-        title: "Product exchange completed",
-        description: `Exchange completed for invoice ${inv.invoice_number}`,
-        activity_type: "exchange_created",
-        module_name: "exchange",
-        reference_id: inv.id,
-        reference_no: exchangeInvoiceNumber,
-        store_code: storeCode || null,
-        store_name: req.user?.store_name || null,
-        created_by: req.user?.id || null,
-        created_at: new Date(),
-      },
-      { transaction: t }
-    );
-
-    // ================= ACTIVITY LOG =================
-    await ActivityLog.create(
-      {
-        organization_id: req.user?.organization_id || null,
-        user_id: req.user?.id || null,
-        action: "exchange_created",
-        module_name: "exchange",
-        reference_id: inv.id,
-        reference_no: exchangeInvoiceNumber,
-        title: "Product exchange completed",
-        description: `Exchange completed for invoice ${inv.invoice_number}`,
-        meta: {
-          invoice_id: inv.id,
-          invoice_number: inv.invoice_number,
-          exchange_invoice_number: exchangeInvoiceNumber,
-          customer_id: inv.customer_id,
-          customer_name: customerData.name || null,
-          old_product_code: original_product.product_code,
-          old_product_name: original_product.product_name,
-          old_value: oldValue,
-          new_product_code: new_product.product_code,
-          new_product_name: new_product.product_name,
-          new_value: newValue,
-          difference,
-          making_charges: makingCharges,
-          final_amount: finalAmount,
-          store_code: storeCode,
-        },
-        icon: "activity",
-        color: "green",
-      },
-      { transaction: t }
-    );
+          making_charges,
+          createdat,
+          updatedat
+        )
+        VALUES (
+          :invoice_id,
+          :old_product_code,
+          :old_product_name,
+          :old_value,
+          :new_product_code,
+          :new_product_name,
+          :new_value,
+          :difference,
+          :making_charges,
+          NOW(),
+          NOW()
+        )
+        `,
+        {
+          replacements: {
+            invoice_id: inv.id,
+            old_product_code: old.product_code,
+            old_product_name: old.product_name,
+            old_value: old.value,
+            new_product_code: newP.product_code,
+            new_product_name: newP.product_name,
+            new_value: newP.value,
+            difference: (newP.value || 0) - (old.value || 0),
+            making_charges: makingCharges,
+          },
+          transaction: t,
+        }
+      );
+    }
 
     await t.commit();
 
     return res.json({
       success: true,
-      message: "Exchange Done",
+      message: "Multiple Exchange Done Successfully",
       data: {
         invoice_number: inv.invoice_number,
-        customer: {
-          id: customerData.id,
-          name: customerData.name,
-          phone: customerData.phone,
-        },
-        old_product: {
-          name: original_product.product_name,
-          condition: original_product.condition || "OLD",
-          value: oldValue,
-        },
-        new_product: {
-          name: new_product.product_name,
-          condition: new_product.condition || "NEW",
-          value: newValue,
-        },
-        calculation: {
-          making_charges: makingCharges,
-          final_amount: finalAmount,
-          difference: difference,
-        },
-        original_invoice: {
-          invoice_number: inv.invoice_number,
-          total_amount: oldValue,
-        },
-        exchange_invoice: {
-          invoice_number: exchangeInvoiceNumber,
-          total_amount: Math.abs(difference),
-        },
+        total_old_value: oldValue,
+        total_new_value: newValue,
+        making_charges: makingCharges,
+        final_amount: finalAmount,
+        difference,
       },
     });
   } catch (err) {
     await t.rollback();
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
 };
 export const getExchangeDashboard = async (req, res) => {
@@ -699,3 +569,4 @@ export const getExchangeDashboard = async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 };
+

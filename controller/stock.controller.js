@@ -1292,20 +1292,12 @@ export const addStockIn = async (req, res) => {
 
   try {
     /**
-     * MULTIPLE ITEMS SUPPORT
+     * SAME RESPONSE STRUCTURE
+     * SINGLE + MULTIPLE BOTH SUPPORT
      */
     const payloads = Array.isArray(req.body)
       ? req.body
       : [req.body];
-
-    if (!payloads.length) {
-      await t.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: "Stock payload is required",
-      });
-    }
 
     const user = req.user;
 
@@ -1333,545 +1325,417 @@ export const addStockIn = async (req, res) => {
       });
     }
 
-    const results = [];
-    const failed = [];
+    const responseData = [];
 
-    for (let index = 0; index < payloads.length; index++) {
-      try {
-        const data = payloads[index];
+    for (const body of payloads) {
+      const {
+        item_id,
+        item_name,
+        item_code,
 
-        const {
-          item_id,
-          item_name,
-          item_code,
+        metal_type,
+        category,
 
-          metal_type,
-          category,
+        qty = 1,
+        purchase_price = 0,
+        selling_price = 0,
+        making_charge = 0,
+        purity,
+        net_weight = 0,
+        stone_weight = 0,
+        remarks,
+      } = body;
 
-          qty = 1,
-          purchase_price = 0,
-          selling_price = 0,
-          making_charge = 0,
-          purity,
-          net_weight = 0,
-          stone_weight = 0,
-          remarks,
-        } = data;
+      const incomingQty = Number(qty);
+      const incomingWeight = Number(net_weight);
+      const incomingStoneWeight = Number(
+        stone_weight || 0
+      );
 
-        const incomingQty = Number(qty);
-        const incomingWeight = Number(net_weight);
-        const incomingStoneWeight = Number(
-          stone_weight || 0
-        );
+      const purchaseRate = Number(
+        purchase_price || 0
+      );
 
-        const purchaseRate = Number(
-          purchase_price || 0
-        );
+      const saleRate = Number(
+        selling_price || 0
+      );
 
-        const saleRate = Number(
-          selling_price || 0
-        );
+      const makingChargeValue = Number(
+        making_charge || 0
+      );
 
-        const makingChargeValue = Number(
-          making_charge || 0
-        );
+      const cleanItemId = item_id
+        ? Number(item_id)
+        : null;
 
-        const cleanItemId = item_id
-          ? Number(item_id)
-          : null;
+      let item;
 
-        if (
-          !Number.isFinite(incomingQty) ||
-          incomingQty <= 0
-        ) {
-          failed.push({
-            row: index + 1,
-            item_name,
-            reason:
-              "Quantity must be greater than 0",
-          });
+      /**
+       * =========================================
+       * EXISTING ITEM
+       * =========================================
+       */
 
-          continue;
-        }
-
-        let item;
-        let isNewItem = false;
-        let isDuplicateItemStockIn = false;
-
-        /**
-         * ===================================================
-         * EXISTING ITEM
-         * ===================================================
-         */
-
-        if (cleanItemId) {
-          item = await Item.findOne({
-            where: {
-              id: cleanItemId,
-              ...(user.role !==
-                "super_admin" && {
-                organization_id:
-                  user.organization_id,
-              }),
-            },
-            transaction: t,
-            lock: t.LOCK.UPDATE,
-          });
-
-          if (!item) {
-            failed.push({
-              row: index + 1,
-              item_name,
-              reason: "Item not found",
-            });
-
-            continue;
-          }
-        }
-
-        /**
-         * ===================================================
-         * NEW ITEM
-         * ===================================================
-         */
-
-        else {
-          if (!item_name) {
-            failed.push({
-              row: index + 1,
-              reason: "item_name required",
-            });
-
-            continue;
-          }
-
-          if (!metal_type) {
-            failed.push({
-              row: index + 1,
-              item_name,
-              reason: "metal_type required",
-            });
-
-            continue;
-          }
-
-          if (!category) {
-            failed.push({
-              row: index + 1,
-              item_name,
-              reason: "category required",
-            });
-
-            continue;
-          }
-
-          if (!purity) {
-            failed.push({
-              row: index + 1,
-              item_name,
-              reason: "purity required",
-            });
-
-            continue;
-          }
-
-          /**
-           * UNIQUE ARTICLE CODE
-           */
-
-          const articleCode = item_code
-            ? String(item_code)
-                .trim()
-                .toUpperCase()
-            : `ART-${cleanStoreCode}-${Date.now()}-${Math.floor(
-                1000 +
-                  Math.random() * 9000
-              )}`;
-
-          /**
-           * DUPLICATE CHECK
-           */
-
-          const duplicateItem =
-            await Item.findOne({
-              where: {
-                article_code: articleCode,
-                organization_id:
-                  user.organization_id,
-              },
-              transaction: t,
-            });
-
-          if (duplicateItem) {
-            failed.push({
-              row: index + 1,
-              item_name,
-              reason:
-                "Duplicate article_code",
-            });
-
-            continue;
-          }
-
-          const skuCode = `SKU-${cleanStoreCode}-${Date.now()}-${Math.floor(
-            1000 + Math.random() * 9000
-          )}`;
-
-          isNewItem = true;
-
-          item = await Item.create(
-            {
-              item_name:
-                String(item_name).trim(),
-
-              article_code: articleCode,
-              sku_code: skuCode,
-
-              metal_type,
-              category,
-
-              purchase_rate: purchaseRate,
-              sale_rate: saleRate,
-              making_charge:
-                makingChargeValue,
-
-              purity,
-
-              net_weight: incomingWeight,
-
-              gross_weight:
-                incomingWeight +
-                incomingStoneWeight,
-
-              stone_weight:
-                incomingStoneWeight,
-
-              current_status: "in_stock",
-
+      if (cleanItemId) {
+        item = await Item.findOne({
+          where: {
+            id: cleanItemId,
+            ...(user.role !==
+              "super_admin" && {
               organization_id:
                 user.organization_id,
-
-              storeCode: cleanStoreCode,
-
-              storeName:
-                user.store_name ||
-                user.storeName ||
-                null,
-            },
-            { transaction: t }
-          );
-
-          /**
-           * QR GENERATION
-           */
-
-          const qr = await generateItemQR(
-            item
-          );
-
-          await item.update(
-            {
-              qr_code_value:
-                qr.qr_code_value,
-
-              qr_code_url:
-                qr.qr_code_url,
-            },
-            { transaction: t }
-          );
-        }
-
-        /**
-         * ===================================================
-         * STOCK FIND / CREATE
-         * ===================================================
-         */
-
-        let stock = await Stock.findOne({
-          where: {
-            item_id: item.id,
-            organization_id:
-              item.organization_id,
+            }),
           },
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
 
-        if (!stock) {
-          stock = await Stock.create(
-            {
+        if (!item) {
+          await t.rollback();
+
+          return res.status(404).json({
+            success: false,
+            message: "Item not found",
+          });
+        }
+      }
+
+      /**
+       * =========================================
+       * NEW ITEM
+       * =========================================
+       */
+
+      else {
+        const articleCode = item_code
+          ? String(item_code)
+              .trim()
+              .toUpperCase()
+          : `ART-${cleanStoreCode}-${Date.now()}-${Math.floor(
+              1000 +
+                Math.random() * 9000
+            )}`;
+
+        /**
+         * DUPLICATE CHECK
+         */
+
+        const duplicateItem =
+          await Item.findOne({
+            where: {
+              article_code:
+                articleCode,
               organization_id:
-                item.organization_id,
-
-              item_id: item.id,
-
-              store_code:
-                cleanStoreCode,
-
-              available_qty: 0,
-              available_weight: 0,
-
-              reserved_qty: 0,
-              transit_qty: 0,
-              damaged_qty: 0,
+                user.organization_id,
             },
-            { transaction: t }
-          );
+            transaction: t,
+          });
+
+        if (duplicateItem) {
+          await t.rollback();
+
+          return res.status(409).json({
+            success: false,
+            message:
+              "Duplicate item code or SKU code already exists",
+            errors: [
+              {
+                field:
+                  "article_code",
+                message:
+                  "article_code must be unique",
+                value:
+                  articleCode,
+              },
+            ],
+          });
         }
 
-        const previousAvailableQty =
-          Number(stock.available_qty || 0);
+        const skuCode = `SKU-${cleanStoreCode}-${Date.now()}-${Math.floor(
+          1000 + Math.random() * 9000
+        )}`;
 
-        const previousAvailableWeight =
-          Number(
-            stock.available_weight || 0
-          );
-
-        const newAvailableQty =
-          previousAvailableQty +
-          incomingQty;
-
-        const newAvailableWeight =
-          previousAvailableWeight +
-          incomingWeight;
-
-        await stock.update(
+        item = await Item.create(
           {
-            available_qty:
-              newAvailableQty,
+            item_name:
+              String(item_name).trim(),
 
-            available_weight:
-              newAvailableWeight,
+            article_code:
+              articleCode,
 
-            store_code:
-              cleanStoreCode,
-          },
-          { transaction: t }
-        );
+            sku_code: skuCode,
 
-        /**
-         * ===================================================
-         * STOCK MOVEMENT
-         * ===================================================
-         */
+            metal_type,
+            category,
 
-        await StockMovement.create(
-          {
-            item_id: item.id,
+            purchase_rate:
+              purchaseRate,
 
-            organization_id:
-              item.organization_id,
+            sale_rate: saleRate,
 
-            store_code:
-              cleanStoreCode,
+            making_charge:
+              makingChargeValue,
 
-            movement_type: "purchase",
+            purity,
 
-            qty: incomingQty,
+            net_weight:
+              incomingWeight,
 
-            weight: incomingWeight,
+            gross_weight:
+              incomingWeight +
+              incomingStoneWeight,
 
-            previous_status:
-              item.current_status,
+            stone_weight:
+              incomingStoneWeight,
 
-            new_status: "in_stock",
-
-            reference_type:
-              "manual_stock_in",
-
-            reference_id: item.id,
-
-            reference_no:
-              item.article_code,
-
-            remarks:
-              remarks ||
-              "Stock inward completed",
-
-            created_by:
-              user?.id || null,
-          },
-          { transaction: t }
-        );
-
-        /**
-         * ===================================================
-         * ITEM STATUS UPDATE
-         * ===================================================
-         */
-
-        await item.update(
-          {
             current_status:
               "in_stock",
-          },
-          { transaction: t }
-        );
 
-        /**
-         * ===================================================
-         * ACTIVITY LOG
-         * ===================================================
-         */
-
-        await ActivityLog.create(
-          {
             organization_id:
-              item.organization_id,
+              user.organization_id,
 
-            user_id:
-              user?.id || null,
-
-            action: isNewItem
-              ? "ITEM_CREATED_STOCK_IN"
-              : "STOCK_IN",
-
-            module_name: "inventory",
-
-            reference_id: item.id,
-
-            reference_no:
-              item.article_code,
-
-            title: isNewItem
-              ? "New item added"
-              : "Stock inward completed",
-
-            description: `${item.item_name} stock added`,
-
-            meta: {
-              item_id: item.id,
-
-              item_name:
-                item.item_name,
-
-              article_code:
-                item.article_code,
-
-              qty: incomingQty,
-
-              previous_qty:
-                previousAvailableQty,
-
-              new_qty:
-                newAvailableQty,
-
-              store_code:
-                cleanStoreCode,
-            },
-
-            icon: "package-plus",
-
-            color: "green",
-          },
-          { transaction: t }
-        );
-
-        /**
-         * ===================================================
-         * SYSTEM ACTIVITY
-         * ===================================================
-         */
-
-        await SystemActivity.create(
-          {
-            title: isNewItem
-              ? "New Item Added"
-              : "Stock Added",
-
-            description: `${item.item_name} stock updated`,
-
-            activity_type:
-              "stock_in",
-
-            module_name:
-              "inventory",
-
-            reference_id: item.id,
-
-            reference_no:
-              item.article_code,
-
-            state_code:
-              user?.state_code ||
-              null,
-
-            district_code:
-              user?.district_code ||
-              null,
-
-            store_code:
+            storeCode:
               cleanStoreCode,
 
-            store_name:
+            storeName:
               user.store_name ||
               user.storeName ||
               null,
-
-            created_by:
-              user?.id || null,
           },
           { transaction: t }
         );
 
-        results.push({
-          row: index + 1,
+        /**
+         * QR GENERATE
+         */
 
+        const qr =
+          await generateItemQR(item);
+
+        await item.update(
+          {
+            qr_code_value:
+              qr.qr_code_value,
+
+            qr_code_url:
+              qr.qr_code_url,
+          },
+          { transaction: t }
+        );
+      }
+
+      /**
+       * =========================================
+       * STOCK
+       * =========================================
+       */
+
+      let stock = await Stock.findOne({
+        where: {
           item_id: item.id,
+          organization_id:
+            item.organization_id,
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
 
-          item_name: item.item_name,
+      if (!stock) {
+        stock = await Stock.create(
+          {
+            organization_id:
+              item.organization_id,
 
-          article_code:
-            item.article_code,
+            item_id: item.id,
 
-          sku_code: item.sku_code,
+            store_code:
+              cleanStoreCode,
 
-          qty_added: incomingQty,
+            available_qty: 0,
+            available_weight: 0,
 
+            reserved_qty: 0,
+            transit_qty: 0,
+            damaged_qty: 0,
+          },
+          { transaction: t }
+        );
+      }
+
+      const previousAvailableQty =
+        Number(stock.available_qty || 0);
+
+      const previousAvailableWeight =
+        Number(
+          stock.available_weight || 0
+        );
+
+      const newAvailableQty =
+        previousAvailableQty +
+        incomingQty;
+
+      const newAvailableWeight =
+        previousAvailableWeight +
+        incomingWeight;
+
+      await stock.update(
+        {
           available_qty:
             newAvailableQty,
 
           available_weight:
             newAvailableWeight,
-        });
-      } catch (err) {
-        failed.push({
-          row: index + 1,
-          reason: err.message,
-        });
-      }
+
+          store_code:
+            cleanStoreCode,
+        },
+        { transaction: t }
+      );
+
+      /**
+       * =========================================
+       * ITEM STATUS
+       * =========================================
+       */
+
+      await item.update(
+        {
+          current_status:
+            "in_stock",
+        },
+        { transaction: t }
+      );
+
+      /**
+       * =========================================
+       * STOCK MOVEMENT
+       * =========================================
+       */
+
+      await StockMovement.create(
+        {
+          item_id: item.id,
+
+          organization_id:
+            item.organization_id,
+
+          store_code:
+            cleanStoreCode,
+
+          movement_type:
+            "purchase",
+
+          qty: incomingQty,
+
+          weight:
+            incomingWeight,
+
+          previous_status:
+            item.current_status,
+
+          new_status:
+            "in_stock",
+
+          reference_type:
+            "manual_stock_in",
+
+          reference_id:
+            item.id,
+
+          reference_no:
+            item.article_code,
+
+          remarks:
+            remarks ||
+            "Stock inward completed",
+
+          created_by:
+            user?.id || null,
+        },
+        { transaction: t }
+      );
+
+      /**
+       * =========================================
+       * RESPONSE SAME AS BEFORE
+       * =========================================
+       */
+
+      responseData.push({
+        item,
+        stock: {
+          ...stock.toJSON(),
+          available_qty:
+            newAvailableQty,
+
+          available_weight:
+            newAvailableWeight,
+
+          store_code:
+            cleanStoreCode,
+        },
+      });
     }
 
     await t.commit();
 
     return res.status(200).json({
       success: true,
-
       message:
-        "Bulk stock inward completed",
+        "Stock inward successful",
 
-      total_items: payloads.length,
-
-      success_count: results.length,
-
-      failed_count: failed.length,
-
-      success_items: results,
-
-      failed_items: failed,
+      data:
+        payloads.length === 1
+          ? responseData[0]
+          : responseData,
     });
   } catch (error) {
     await t.rollback();
 
     console.error(
-      "bulk addStockIn error:",
+      "addStockIn error:",
       error
     );
+
+    if (
+      error?.name ===
+      "SequelizeValidationError"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Validation failed",
+        errors: error.errors?.map(
+          (e) => ({
+            field: e.path,
+            message: e.message,
+            value: e.value,
+          })
+        ),
+      });
+    }
+
+    if (
+      error?.name ===
+      "SequelizeUniqueConstraintError"
+    ) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Duplicate item code or SKU code already exists",
+        errors: error.errors?.map(
+          (e) => ({
+            field: e.path,
+            message: e.message,
+            value: e.value,
+          })
+        ),
+      });
+    }
 
     return res.status(500).json({
       success: false,
       message:
-        "Failed to process bulk stock inward",
+        "Failed to add stock inward",
       error: error.message,
     });
   }

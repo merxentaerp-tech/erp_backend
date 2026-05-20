@@ -3684,8 +3684,8 @@ export const getIncomingTransfers = async (
     return res.status(200).json({
       success: true,
       summary,
-        id: plain.id,
-  transfer_no: plain.transfer_no,
+  //       id: plain.id,
+  // transfer_no: plain.transfer_no,
       count: summary.incoming,
       data,
     });

@@ -2840,67 +2840,167 @@ const pickUserName = (user) => {
   );
 };
 
-const buildTransferResponse = (transfers, storeMap, userMap) => {
+const buildDeliveryDetails = (plain, storeMap) => {
+  const toStore = storeMap?.get(
+    Number(plain.to_organization_id)
+  );
+
+  const lat =
+    plain.delivery_latitude ||
+    toStore?.latitude ||
+    null;
+
+  const lng =
+    plain.delivery_longitude ||
+    toStore?.longitude ||
+    null;
+
+  return {
+    delivery_address:
+      plain.delivery_address ||
+      toStore?.address ||
+      toStore?.store_address ||
+      null,
+
+    latitude: lat,
+    longitude: lng,
+
+    destination_name:
+      toStore?.store_name ||
+      toStore?.organization_name ||
+      null,
+
+    google_map_url:
+      lat && lng
+        ? `https://www.google.com/maps?q=${lat},${lng}`
+        : null,
+  };
+};
+
+const buildTransferResponse = (
+  transfers,
+  storeMap,
+  userMap
+) => {
   return transfers.map((t) => {
-    const plain = typeof t.toJSON === "function" ? t.toJSON() : t;
+    const plain =
+      typeof t.toJSON === "function"
+        ? t.toJSON()
+        : t;
 
     return {
       id: plain.id,
       transfer_no: plain.transfer_no,
-      tracking_number: plain.tracking_number || plain.transfer_no,
+      tracking_number:
+        plain.tracking_number ||
+        plain.transfer_no,
       request_id: plain.request_id,
 
-      from_organization_id: plain.from_organization_id,
+      from_organization_id:
+        plain.from_organization_id,
       from_organization_name:
-        pickStoreName(storeMap.get(Number(plain.from_organization_id))) || null,
+        pickStoreName(
+          storeMap.get(
+            Number(
+              plain.from_organization_id
+            )
+          )
+        ) || null,
 
-      to_organization_id: plain.to_organization_id,
+      to_organization_id:
+        plain.to_organization_id,
       to_organization_name:
-        pickStoreName(storeMap.get(Number(plain.to_organization_id))) || null,
+        pickStoreName(
+          storeMap.get(
+            Number(
+              plain.to_organization_id
+            )
+          )
+        ) || null,
+
+      /* ✅ NEW ADDITION */
+      delivery_details:
+        buildDeliveryDetails(
+          plain,
+          storeMap
+        ),
 
       transfer_date: plain.transfer_date,
       dispatch_date: plain.dispatch_date,
       receive_date: plain.receive_date,
-      expected_delivery_date: plain.expected_delivery_date || null,
-      expected_delivery_time: plain.expected_delivery_time || null,
+      expected_delivery_date:
+        plain.expected_delivery_date ||
+        null,
+      expected_delivery_time:
+        plain.expected_delivery_time ||
+        null,
 
       status: plain.status,
       remarks: plain.remarks,
 
       approved_by: plain.approved_by,
       approved_by_name:
-        pickUserName(userMap.get(Number(plain.approved_by))) || null,
+        pickUserName(
+          userMap.get(
+            Number(plain.approved_by)
+          )
+        ) || null,
 
-      dispatched_by: plain.dispatched_by,
+      dispatched_by:
+        plain.dispatched_by,
       dispatched_by_name:
-        pickUserName(userMap.get(Number(plain.dispatched_by))) || null,
+        pickUserName(
+          userMap.get(
+            Number(plain.dispatched_by)
+          )
+        ) || null,
 
       received_by: plain.received_by,
       received_by_name:
-        pickUserName(userMap.get(Number(plain.received_by))) || null,
+        pickUserName(
+          userMap.get(
+            Number(plain.received_by)
+          )
+        ) || null,
 
       created_by: plain.created_by,
       created_by_name:
-        pickUserName(userMap.get(Number(plain.created_by))) || null,
+        pickUserName(
+          userMap.get(
+            Number(plain.created_by)
+          )
+        ) || null,
 
       driver_details: {
-        driver_name: plain.driver_name || null,
-        driver_phone: plain.driver_phone || null,
-        vehicle_number: plain.vehicle_number || null,
-        tracking_number: plain.tracking_number || null,
-        driver_photo_url: plain.driver_photo_url || null,
+        driver_name:
+          plain.driver_name || null,
+        driver_phone:
+          plain.driver_phone || null,
+        vehicle_number:
+          plain.vehicle_number || null,
+        tracking_number:
+          plain.tracking_number || null,
+        driver_photo_url:
+          plain.driver_photo_url || null,
       },
 
       media: {
-        dispatch_image_url: plain.dispatch_image_url || null,
-        dispatch_video_url: plain.dispatch_video_url || null,
-        receive_image_url: plain.receive_image_url || null,
+        dispatch_image_url:
+          plain.dispatch_image_url ||
+          null,
+        dispatch_video_url:
+          plain.dispatch_video_url ||
+          null,
+        receive_image_url:
+          plain.receive_image_url ||
+          null,
       },
 
       created_at: plain.created_at,
       updated_at: plain.updated_at,
 
-      transfer_items: plain.transfer_items || [],
+      transfer_items:
+        plain.transfer_items || [],
     };
   });
 };
@@ -3014,12 +3114,6 @@ const ACTIVE_TRANSFER_STATUSES = Object.freeze([
   TRANSFER_STATUS.RECEIVED,
 ]);
 
-/**
- * UI card mapping:
- * Shipments     = approved + dispatched
- * In Transit    = in_transit
- * Goods Receipt = received
- */
 const SHIPMENT_STATUSES = Object.freeze([
   TRANSFER_STATUS.APPROVED,
   TRANSFER_STATUS.DISPATCHED,
@@ -3038,56 +3132,112 @@ const RECEIVED_STATUSES = Object.freeze([
 ]);
 
 const getCurrentOrganizationId = (user) => {
-  const id = user?.organization_id || user?.organizationId;
+  const id =
+    user?.organization_id ||
+    user?.organizationId;
+
   const parsed = Number(id);
 
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  return Number.isFinite(parsed) &&
+    parsed > 0
+    ? parsed
+    : null;
 };
 
 const getPositiveNumber = (value) => {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+
+  return Number.isFinite(parsed) &&
+    parsed > 0
+    ? parsed
+    : null;
 };
 
+/* =====================================================
+   ACCESS HELPERS
+===================================================== */
+
+/**
+ * ONLY SUPER ADMIN SHOULD HAVE GLOBAL ACCESS
+ */
 const isGlobalUser = (user) => {
   const role = normalizeRole(user?.role);
 
-  /**
-   * Agar admin ko bhi scoped rakhna hai,
-   * to yahan sirf ["super_admin"] rakho.
-   */
-  return ["super_admin", "admin"].includes(role);
+  return ["super_admin"].includes(role);
 };
 
 const isHeadUser = (user) => {
-  const level = normalizeLevel(user?.organization_level);
-  return ["head", "head_office"].includes(level);
+  const level = normalizeLevel(
+    user?.organization_level
+  );
+
+  return [
+    "head",
+    "head_office",
+    "corporate",
+  ].includes(level);
 };
 
+const isDistrictUser = (user) => {
+  const level = normalizeLevel(
+    user?.organization_level
+  );
 
+  return [
+    "district",
+    "district_office",
+    "district_admin",
+  ].includes(level);
+};
 
 const isRetailUser = (user) => {
-  const level = normalizeLevel(user?.organization_level);
-  return level === "retail";
+  const level = normalizeLevel(
+    user?.organization_level
+  );
+
+  return [
+    "retail",
+    "store",
+    "store_admin",
+    "branch",
+  ].includes(level);
 };
 
-const getRequestedStoreId = (query = {}, direction = "incoming") => {
+const getRequestedStoreId = (
+  query = {},
+  direction = "incoming"
+) => {
   if (direction === "outgoing") {
     return (
       getPositiveNumber(query.store_id) ||
-      getPositiveNumber(query.organization_id) ||
-      getPositiveNumber(query.from_organization_id)
+      getPositiveNumber(
+        query.organization_id
+      ) ||
+      getPositiveNumber(
+        query.from_organization_id
+      )
     );
   }
 
   return (
     getPositiveNumber(query.store_id) ||
-    getPositiveNumber(query.organization_id) ||
-    getPositiveNumber(query.to_organization_id)
+    getPositiveNumber(
+      query.organization_id
+    ) ||
+    getPositiveNumber(
+      query.to_organization_id
+    )
   );
 };
 
-const buildCardSummary = (transfers = [], totalKey = "incoming") => {
+/* =====================================================
+   SUMMARY BUILDER
+===================================================== */
+
+const buildCardSummary = (
+  transfers = [],
+  totalKey = "incoming"
+) => {
   const summary = {
     [totalKey]: 0,
 
@@ -3108,101 +3258,202 @@ const buildCardSummary = (transfers = [], totalKey = "incoming") => {
   };
 
   for (const transfer of transfers) {
-    const status = normalizeStatus(transfer?.status);
+    const status = normalizeStatus(
+      transfer?.status
+    );
 
-    if (!ACTIVE_TRANSFER_STATUSES.includes(status)) {
+    if (
+      !ACTIVE_TRANSFER_STATUSES.includes(
+        status
+      )
+    ) {
       continue;
     }
 
     summary[totalKey] += 1;
 
-    if (IN_TRANSIT_STATUSES.includes(status)) {
+    if (
+      IN_TRANSIT_STATUSES.includes(status)
+    ) {
       summary.in_transit += 1;
     }
 
-    if (SHIPMENT_STATUSES.includes(status)) {
+    if (
+      SHIPMENT_STATUSES.includes(status)
+    ) {
       summary.shipment += 1;
     }
 
-    if (GOODS_RECEIPT_STATUSES.includes(status)) {
+    if (
+      GOODS_RECEIPT_STATUSES.includes(
+        status
+      )
+    ) {
       summary.goods_receipt += 1;
       summary.received += 1;
     }
 
-    if (!RECEIVED_STATUSES.includes(status)) {
+    if (
+      !RECEIVED_STATUSES.includes(status)
+    ) {
       summary.pending_receive += 1;
     }
   }
 
-  summary.totalIncoming = totalKey === "incoming" ? summary.incoming : 0;
-  summary.totalOutgoing = totalKey === "outgoing" ? summary.outgoing : 0;
+  summary.totalIncoming =
+    totalKey === "incoming"
+      ? summary.incoming
+      : 0;
 
-  summary.inTransit = summary.in_transit;
-  summary.shipments = summary.shipment;
-  summary.goodsReceipt = summary.goods_receipt;
-  summary.pendingReceive = summary.pending_receive;
-  summary.receivedTransfers = summary.received;
+  summary.totalOutgoing =
+    totalKey === "outgoing"
+      ? summary.outgoing
+      : 0;
+
+  summary.inTransit =
+    summary.in_transit;
+
+  summary.shipments =
+    summary.shipment;
+
+  summary.goodsReceipt =
+    summary.goods_receipt;
+
+  summary.pendingReceive =
+    summary.pending_receive;
+
+  summary.receivedTransfers =
+    summary.received;
 
   return summary;
 };
 
 /* =====================================================
    INCOMING HELPERS
-   Incoming means:
-   to_organization_id = logged-in user's organization
 ===================================================== */
 
-const getIncomingTransferWhereCondition = (user, query = {}) => {
-  const loginOrganizationId = getCurrentOrganizationId(user);
-  const requestedStoreId = getRequestedStoreId(query, "incoming");
+const getIncomingTransferWhereCondition = (
+  user,
+  query = {}
+) => {
+  const loginOrganizationId =
+    getCurrentOrganizationId(user);
 
-  if (!loginOrganizationId && !isGlobalUser(user)) {
+  const requestedStoreId =
+    getRequestedStoreId(
+      query,
+      "incoming"
+    );
+
+  if (
+    !loginOrganizationId &&
+    !isGlobalUser(user)
+  ) {
     return { id: null };
   }
 
   const where = {};
 
+  /**
+   * SUPER ADMIN
+   * Can see everything
+   */
   if (isGlobalUser(user)) {
     if (requestedStoreId) {
-      where.to_organization_id = requestedStoreId;
+      where.to_organization_id =
+        requestedStoreId;
     }
 
     return where;
   }
 
+  /**
+   * HEAD OFFICE
+   * Can see all
+   * Optional filter support
+   */
   if (isHeadUser(user)) {
-    where.to_organization_id = requestedStoreId || loginOrganizationId;
+    if (requestedStoreId) {
+      where.to_organization_id =
+        requestedStoreId;
+    }
+
     return where;
   }
 
-  if (isDistrictUser(user) || isRetailUser(user)) {
-    where.to_organization_id = loginOrganizationId;
+  /**
+   * DISTRICT USER
+   * Only own organization
+   */
+  if (isDistrictUser(user)) {
+    where.to_organization_id =
+      loginOrganizationId;
 
-    if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
+    /**
+     * Prevent URL tampering
+     */
+    if (
+      requestedStoreId &&
+      requestedStoreId !==
+        loginOrganizationId
+    ) {
       return { id: null };
     }
 
     return where;
   }
 
-  where.to_organization_id = loginOrganizationId;
+  /**
+   * RETAIL USER
+   * Only own organization
+   */
+  if (isRetailUser(user)) {
+    where.to_organization_id =
+      loginOrganizationId;
 
-  if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
-    return { id: null };
+    /**
+     * Prevent URL tampering
+     */
+    if (
+      requestedStoreId &&
+      requestedStoreId !==
+        loginOrganizationId
+    ) {
+      return { id: null };
+    }
+
+    return where;
   }
+
+  /**
+   * Fallback security
+   */
+  where.to_organization_id =
+    loginOrganizationId;
 
   return where;
 };
 
-const getIncomingListWhereCondition = (user, query = {}) => {
-  const where = getIncomingTransferWhereCondition(user, query);
-  const status = normalizeStatus(query?.status);
+const getIncomingListWhereCondition = (
+  user,
+  query = {}
+) => {
+  const where =
+    getIncomingTransferWhereCondition(
+      user,
+      query
+    );
+
+  const status = normalizeStatus(
+    query?.status
+  );
 
   if (status) {
     where.status = status;
   } else {
     where.status = {
-      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+      [Op.in]:
+        ACTIVE_TRANSFER_STATUSES,
     };
   }
 
@@ -3211,98 +3462,171 @@ const getIncomingListWhereCondition = (user, query = {}) => {
 
 /* =====================================================
    OUTGOING HELPERS
-   Outgoing means:
-   from_organization_id = logged-in user's organization
 ===================================================== */
 
-const getOutgoingTransferWhereCondition = (user, query = {}) => {
-  const loginOrganizationId = getCurrentOrganizationId(user);
-  const requestedStoreId = getRequestedStoreId(query, "outgoing");
+const getOutgoingTransferWhereCondition = (
+  user,
+  query = {}
+) => {
+  const loginOrganizationId =
+    getCurrentOrganizationId(user);
 
-  if (!loginOrganizationId && !isGlobalUser(user)) {
+  const requestedStoreId =
+    getRequestedStoreId(
+      query,
+      "outgoing"
+    );
+
+  if (
+    !loginOrganizationId &&
+    !isGlobalUser(user)
+  ) {
     return { id: null };
   }
 
   const where = {};
 
+  /**
+   * SUPER ADMIN
+   */
   if (isGlobalUser(user)) {
     if (requestedStoreId) {
-      where.from_organization_id = requestedStoreId;
+      where.from_organization_id =
+        requestedStoreId;
     }
 
     return where;
   }
 
+  /**
+   * HEAD OFFICE
+   * Can see all
+   */
   if (isHeadUser(user)) {
-    where.from_organization_id = requestedStoreId || loginOrganizationId;
+    if (requestedStoreId) {
+      where.from_organization_id =
+        requestedStoreId;
+    }
+
     return where;
   }
 
-  if (isDistrictUser(user) || isRetailUser(user)) {
-    where.from_organization_id = loginOrganizationId;
+  /**
+   * DISTRICT USER
+   */
+  if (isDistrictUser(user)) {
+    where.from_organization_id =
+      loginOrganizationId;
 
-    if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
+    if (
+      requestedStoreId &&
+      requestedStoreId !==
+        loginOrganizationId
+    ) {
       return { id: null };
     }
 
     return where;
   }
 
-  where.from_organization_id = loginOrganizationId;
+  /**
+   * RETAIL USER
+   */
+  if (isRetailUser(user)) {
+    where.from_organization_id =
+      loginOrganizationId;
 
-  if (requestedStoreId && requestedStoreId !== loginOrganizationId) {
-    return { id: null };
+    if (
+      requestedStoreId &&
+      requestedStoreId !==
+        loginOrganizationId
+    ) {
+      return { id: null };
+    }
+
+    return where;
   }
+
+  /**
+   * Fallback security
+   */
+  where.from_organization_id =
+    loginOrganizationId;
 
   return where;
 };
 
-const getOutgoingListWhereCondition = (user, query = {}) => {
-  const where = getOutgoingTransferWhereCondition(user, query);
-  const status = normalizeStatus(query?.status);
+const getOutgoingListWhereCondition = (
+  user,
+  query = {}
+) => {
+  const where =
+    getOutgoingTransferWhereCondition(
+      user,
+      query
+    );
+
+  const status = normalizeStatus(
+    query?.status
+  );
 
   if (status) {
     where.status = status;
   } else {
     where.status = {
-      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+      [Op.in]:
+        ACTIVE_TRANSFER_STATUSES,
     };
   }
 
   return where;
 };
-
 /* =====================================================
    INCOMING TRANSFERS
 ===================================================== */
 
-export const getIncomingTransfers = async (req, res) => {
+export const getIncomingTransfers = async (
+  req,
+  res
+) => {
   try {
     const user = req.user;
 
-    if (!user?.organization_id && !user?.organizationId && !isGlobalUser(user)) {
+    if (
+      !user?.organization_id &&
+      !user?.organizationId &&
+      !isGlobalUser(user)
+    ) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const listWhere = getIncomingListWhereCondition(user, req.query);
+    const listWhere =
+      getIncomingListWhereCondition(
+        user,
+        req.query
+      );
 
-    /**
-     * Summary me store_id filter apply hoga,
-     * lekin status filter apply nahi hoga.
-     * Isse cards selected store ke overall incoming counts dikhayenge.
-     */
-    const summaryWhere = getIncomingTransferWhereCondition(user, req.query);
+    const summaryWhere =
+      getIncomingTransferWhereCondition(
+        user,
+        req.query
+      );
 
     summaryWhere.status = {
-      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+      [Op.in]:
+        ACTIVE_TRANSFER_STATUSES,
     };
 
-    const [transfers, summaryTransfers] = await Promise.all([
+    const [
+      transfers,
+      summaryTransfers,
+    ] = await Promise.all([
       StockTransfer.findAll({
         where: listWhere,
+
         include: [
           {
             model: StockTransferItem,
@@ -3310,11 +3634,15 @@ export const getIncomingTransfers = async (req, res) => {
             required: false,
           },
         ],
-        order: [["created_at", "DESC"]],
+
+        order: [
+          ["created_at", "DESC"],
+        ],
       }),
 
       StockTransfer.findAll({
         where: summaryWhere,
+
         attributes: [
           "id",
           "status",
@@ -3322,29 +3650,55 @@ export const getIncomingTransfers = async (req, res) => {
           "to_organization_id",
           "created_at",
         ],
-        order: [["created_at", "DESC"]],
+
+        order: [
+          ["created_at", "DESC"],
+        ],
       }),
     ]);
 
-    const { storeMap, userMap } = await loadTransferMeta(transfers);
+    const { storeMap, userMap } =
+      await loadTransferMeta(
+        transfers
+      );
 
-    const responseData = buildTransferResponse(transfers, storeMap, userMap);
-    const data = addTransferDirection(responseData, user);
+    const responseData =
+      buildTransferResponse(
+        transfers,
+        storeMap,
+        userMap
+      );
 
-    const summary = buildCardSummary(summaryTransfers, "incoming");
+    const data =
+      addTransferDirection(
+        responseData,
+        user
+      );
+
+    const summary =
+      buildCardSummary(
+        summaryTransfers,
+        "incoming"
+      );
 
     return res.status(200).json({
       success: true,
       summary,
+        id: plain.id,
+  transfer_no: plain.transfer_no,
       count: summary.incoming,
       data,
     });
   } catch (error) {
-    console.error("getIncomingTransfers error:", error);
+    console.error(
+      "getIncomingTransfers error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch incoming transfers",
+      message:
+        "Failed to fetch incoming transfers",
       error: error.message,
     });
   }
@@ -3354,33 +3708,48 @@ export const getIncomingTransfers = async (req, res) => {
    OUTGOING TRANSFERS
 ===================================================== */
 
-export const getOutgoingTransfers = async (req, res) => {
+export const getOutgoingTransfers = async (
+  req,
+  res
+) => {
   try {
     const user = req.user;
 
-    if (!user?.organization_id && !user?.organizationId && !isGlobalUser(user)) {
+    if (
+      !user?.organization_id &&
+      !user?.organizationId &&
+      !isGlobalUser(user)
+    ) {
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const listWhere = getOutgoingListWhereCondition(user, req.query);
+    const listWhere =
+      getOutgoingListWhereCondition(
+        user,
+        req.query
+      );
 
-    /**
-     * Summary me store_id filter apply hoga,
-     * lekin status filter apply nahi hoga.
-     * Isse cards selected store ke overall outgoing counts dikhayenge.
-     */
-    const summaryWhere = getOutgoingTransferWhereCondition(user, req.query);
+    const summaryWhere =
+      getOutgoingTransferWhereCondition(
+        user,
+        req.query
+      );
 
     summaryWhere.status = {
-      [Op.in]: ACTIVE_TRANSFER_STATUSES,
+      [Op.in]:
+        ACTIVE_TRANSFER_STATUSES,
     };
 
-    const [transfers, summaryTransfers] = await Promise.all([
+    const [
+      transfers,
+      summaryTransfers,
+    ] = await Promise.all([
       StockTransfer.findAll({
         where: listWhere,
+
         include: [
           {
             model: StockTransferItem,
@@ -3388,11 +3757,15 @@ export const getOutgoingTransfers = async (req, res) => {
             required: false,
           },
         ],
-        order: [["created_at", "DESC"]],
+
+        order: [
+          ["created_at", "DESC"],
+        ],
       }),
 
       StockTransfer.findAll({
         where: summaryWhere,
+
         attributes: [
           "id",
           "status",
@@ -3400,29 +3773,54 @@ export const getOutgoingTransfers = async (req, res) => {
           "to_organization_id",
           "created_at",
         ],
-        order: [["created_at", "DESC"]],
+
+        order: [
+          ["created_at", "DESC"],
+        ],
       }),
     ]);
 
-    const { storeMap, userMap } = await loadTransferMeta(transfers);
+    const { storeMap, userMap } =
+      await loadTransferMeta(
+        transfers
+      );
 
-    const responseData = buildTransferResponse(transfers, storeMap, userMap);
-    const data = addTransferDirection(responseData, user);
+    const responseData =
+      buildTransferResponse(
+        transfers,
+        storeMap,
+        userMap
+      );
 
-    const summary = buildCardSummary(summaryTransfers, "outgoing");
+    const data =
+      addTransferDirection(
+        responseData,
+        user
+      );
+
+    const summary =
+      buildCardSummary(
+        summaryTransfers,
+        "outgoing"
+      );
 
     return res.status(200).json({
       success: true,
       summary,
       count: summary.outgoing,
       data,
+      
     });
   } catch (error) {
-    console.error("getOutgoingTransfers error:", error);
+    console.error(
+      "getOutgoingTransfers error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch outgoing transfers",
+      message:
+        "Failed to fetch outgoing transfers",
       error: error.message,
     });
   }

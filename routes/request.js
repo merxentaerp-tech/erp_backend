@@ -11,7 +11,7 @@ import {
   approveAndDispatchRequest,
   receiveTransfer,
   getIncomingTransfers,
-  getOutgoingTransfers,getRetailStoresUnderDistrict,
+  getOutgoingTransfers,
   getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId,estimateDispatchRequestValue,createDistrictStockRequest,getHeadStore,getRetailStoresUnderDistrict,approveAndDispatchRequestfromretail
 } from "../controller/stockRequest.controller.js";
 

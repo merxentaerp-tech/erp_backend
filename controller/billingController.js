@@ -1420,3 +1420,312 @@ export const scanBillingItem = async (req, res) => {
     });
   }
 };
+
+
+export const createManualBillingEntry = async (req, res) => {
+  try {
+    const userScope = resolveUserScope(req.user);
+
+    let organization_id = userScope.organization_id;
+    let loginStoreCode = userScope.store_code;
+
+    /**
+     * Token me organization_id missing ho to store_code se Store.id resolve karo
+     */
+    if ((!organization_id || !loginStoreCode) && req.user?.store_code) {
+      const store = await Store.findOne({
+        where: {
+          store_code: String(req.user.store_code).trim().toUpperCase(),
+          is_active: true,
+        },
+        attributes: [
+          "id",
+          "store_code",
+          "store_name",
+          "organization_level",
+          "is_active",
+        ],
+      });
+
+      if (store) {
+        organization_id = Number(store.id);
+        loginStoreCode = String(store.store_code).trim().toUpperCase();
+      }
+    }
+
+    if (!organization_id) {
+      organization_id = Number(
+        req.headers["x-organization-id"] ||
+          req.headers.organization_id ||
+          req.body.organization_id ||
+          0
+      );
+    }
+
+    if (!loginStoreCode) {
+      loginStoreCode = String(
+        req.headers["x-store-code"] ||
+          req.headers.store_code ||
+          req.body.store_code ||
+          ""
+      )
+        .trim()
+        .toUpperCase();
+    }
+
+    if (!organization_id || !loginStoreCode) {
+      return res.status(401).json({
+        success: false,
+        message:
+          "Unable to resolve logged-in user entity. Token must contain organization_id or valid store_code.",
+        debug_user: req.user || null,
+      });
+    }
+
+    const {
+      product_code,
+      product_name,
+      purity,
+      net_weight,
+      gross_weight,
+      making_charges,
+      total_value,
+      rate,
+    } = req.body;
+
+    const cleanProductCode = String(product_code || "").trim();
+    const cleanProductName = String(product_name || "").trim();
+    const cleanPurity = String(purity || "").trim();
+
+    const inputNetWeight = toNumber(net_weight);
+    const inputGrossWeight = toNumber(gross_weight);
+    const inputMakingCharges = toNumber(making_charges);
+    const inputTotalValue = toNumber(total_value);
+    const inputRate = toNumber(rate);
+
+    if (!cleanProductCode) {
+      return res.status(400).json({
+        success: false,
+        message: "Product Code is required",
+      });
+    }
+
+    if (!cleanProductName) {
+      return res.status(400).json({
+        success: false,
+        message: "Product Name is required",
+      });
+    }
+
+    if (!cleanPurity) {
+      return res.status(400).json({
+        success: false,
+        message: "Purity is required",
+      });
+    }
+
+    if (inputNetWeight <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Net Weight must be greater than 0",
+      });
+    }
+
+    if (inputGrossWeight <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Gross Weight must be greater than 0",
+      });
+    }
+
+    if (inputGrossWeight < inputNetWeight) {
+      return res.status(400).json({
+        success: false,
+        message: "Gross Weight cannot be less than Net Weight",
+      });
+    }
+
+    if (inputMakingCharges < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Making Charges cannot be negative",
+      });
+    }
+
+    /**
+     * ✅ Existing item lookup only
+     * Product Code ko article_code ya sku_code se match karenge.
+     */
+    const item = await Item.findOne({
+      where: {
+        organization_id: Number(organization_id),
+        current_status: "in_stock",
+        is_active: true,
+        [Op.or]: [
+          { article_code: cleanProductCode },
+          { sku_code: cleanProductCode },
+        ],
+      },
+    });
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "Item not found in stock for this Product Code. Manual billing can only be done for existing in-stock items.",
+        data: {
+          product_code: cleanProductCode,
+          organization_id: Number(organization_id),
+          store_code: loginStoreCode,
+        },
+      });
+    }
+
+    /**
+     * ✅ Stock check
+     */
+    const stock = await Stock.findOne({
+      where: {
+        item_id: item.id,
+        organization_id: Number(organization_id),
+      },
+    });
+
+    if (!stock) {
+      return res.status(404).json({
+        success: false,
+        message: "Stock record not found for this item",
+        data: {
+          item_id: item.id,
+          product_code: cleanProductCode,
+          organization_id: Number(organization_id),
+        },
+      });
+    }
+
+    if (toNumber(stock.available_qty) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Item is out of stock",
+        data: {
+          item_id: item.id,
+          product_code: cleanProductCode,
+          available_qty: toNumber(stock.available_qty),
+        },
+      });
+    }
+
+    if (toNumber(stock.available_weight) < inputNetWeight) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient stock weight for this item",
+        data: {
+          item_id: item.id,
+          product_code: cleanProductCode,
+          requested_weight: inputNetWeight,
+          available_weight: toNumber(stock.available_weight),
+        },
+      });
+    }
+
+    /**
+     *  UI values ko billing values ke liye use karenge
+     * Lekin item_id existing DB item ki hogi.
+     */
+    let finalRate = inputRate;
+    let metalValue = 0;
+    let finalTotalAmount = 0;
+
+    if (inputTotalValue > 0) {
+      finalTotalAmount = inputTotalValue;
+      metalValue = Math.max(inputTotalValue - inputMakingCharges, 0);
+      finalRate = inputNetWeight > 0 ? metalValue / inputNetWeight : 0;
+    } else {
+      finalRate = inputRate || toNumber(item.sale_rate);
+
+      if (finalRate <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Either total_value, rate, or item sale_rate is required",
+        });
+      }
+
+      metalValue = inputNetWeight * finalRate;
+      finalTotalAmount = metalValue + inputMakingCharges;
+    }
+
+    if (finalRate <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Calculated rate must be greater than 0",
+      });
+    }
+
+    /**
+     * Important:
+     * Existing createBill making_charge_percent use karta hai.
+     * UI me making_charges absolute value hai.
+     * Isliye absolute making_charges ko percent me convert kar rahe hain,
+     * taaki final createBill API same total calculate kare.
+     */
+    const makingChargePercent =
+      metalValue > 0 ? (inputMakingCharges / metalValue) * 100 : 0;
+
+    return res.status(200).json({
+      success: true,
+      message: "Manual billing item fetched successfully",
+      data: {
+        item_id: item.id,
+        is_manual_entry: true,
+
+        product_code: item.article_code || item.sku_code || cleanProductCode,
+        sku_code: item.sku_code,
+        article_code: item.article_code,
+
+        item_name: item.item_name,
+        description: item.details || item.item_name || cleanProductName,
+
+        metal_type: item.metal_type,
+        category: item.category,
+        purity: item.purity || cleanPurity,
+
+        gross_weight: Number(inputGrossWeight.toFixed(3)),
+        net_weight: Number(inputNetWeight.toFixed(3)),
+
+        rate: Number(finalRate.toFixed(2)),
+        sale_rate: Number(finalRate.toFixed(2)),
+
+        /**
+         * createBill compatible fields
+         */
+        making_charge_percent: Number(makingChargePercent.toFixed(6)),
+        making_charge_value: Number(inputMakingCharges.toFixed(2)),
+        making_charges: Number(inputMakingCharges.toFixed(2)),
+
+        metal_value: Number(metalValue.toFixed(2)),
+        total_value: Number(finalTotalAmount.toFixed(2)),
+        total_amount: Number(finalTotalAmount.toFixed(2)),
+
+        qty: 1,
+        unit: item.unit || "gm",
+
+        available_qty: toNumber(stock.available_qty),
+        available_weight: toNumber(stock.available_weight),
+
+        current_status: item.current_status,
+        qr_type: "manual",
+
+        organization_id: Number(organization_id),
+        store_code: loginStoreCode,
+      },
+    });
+  } catch (error) {
+    console.error("Create Manual Billing Entry Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch manual billing item",
+      error: error.message,
+    });
+  }
+};

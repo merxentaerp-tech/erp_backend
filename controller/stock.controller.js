@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
 import sequelize from "../config/db.js";
 import QRCode from "qrcode";
 // import QRCode from "qrcode";

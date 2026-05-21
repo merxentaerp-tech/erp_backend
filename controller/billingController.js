@@ -3,6 +3,7 @@ import path from "path";
 import PDFDocument from "pdfkit";
 import { Op } from "sequelize";
 import crypto from "crypto";
+
 import Bill from "../model/Bill.js";
 import BillItem from "../model/BillItem.js";
 import Customer from "../model/Customer.js";
@@ -11,10 +12,10 @@ import InvoiceItem from "../model/InvoiceItem.js";
 import LedgerEntry from "../model/LedgerEntry.js";
 import Store from "../model/Store.js";
 import Stock from "../model/stockrecord.js";
-import StockMovement from "../model/stockmovement.js"
+import StockMovement from "../model/stockmovement.js";
 import Item from "../model/item.js";
 import sequelize from "../config/db.js";
-
+import { InventoryTrackingService } from "../service/inventoryTracking.service.js";
 const ensureDir = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -29,6 +30,72 @@ const toNumber = (value) => {
 const normalizePhone = (phone) => {
   if (!phone) return null;
   return String(phone).replace(/\D/g, "").trim() || null;
+};
+
+/**
+ * Socket.IO Emit Helper
+ *
+ * Your server file already has:
+ * global.io = io;
+ *
+ * So controller can safely use global.io.emit(...)
+ */
+
+//------------SOCKET.IO---------------//
+
+const emitScannedItemToDashboard = (payload) => {
+  try {
+    if (!payload) {
+      console.log("Socket.IO emit skipped: payload missing");
+      return;
+    }
+
+    if (!global.io) {
+      console.log("Socket.IO not initialized: global.io missing");
+      return;
+    }
+
+    const eventPayload = {
+      success: true,
+      type: "billing:item_scanned",
+      data: payload,
+      sent_at: new Date().toISOString(),
+    };
+
+    const billingSessionId = payload.billing_session_id
+      ? String(payload.billing_session_id).trim()
+      : null;
+
+    /**
+     * Production safe:
+     * Billing scan should go only to the active laptop billing session.
+     * Global emit can leak scanned item to other open dashboards.
+     */
+    if (!billingSessionId) {
+      console.log("Socket.IO billing emit skipped: billing_session_id missing", {
+        item_id: payload?.item_id,
+        product_code: payload?.product_code,
+        store_code: payload?.store_code,
+        organization_id: payload?.organization_id,
+      });
+      return;
+    }
+
+    const roomName = `billing_session_${billingSessionId}`;
+
+    global.io.to(roomName).emit("billing:item_scanned", eventPayload);
+
+    console.log("Socket.IO billing:item_scanned emitted to session:", {
+      room: roomName,
+      session_id: billingSessionId,
+      item_id: payload?.item_id,
+      product_code: payload?.product_code,
+      store_code: payload?.store_code,
+      organization_id: payload?.organization_id,
+    });
+  } catch (error) {
+    console.error("Socket.IO billing emit error:", error.message);
+  }
 };
 
 const resolveUserScope = (user) => {
@@ -67,6 +134,7 @@ const resolveUserScope = (user) => {
 
 const generateInvoiceNumber = (storeCode = "STORE") => {
   const now = new Date();
+
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
@@ -79,6 +147,7 @@ const generateInvoiceNumber = (storeCode = "STORE") => {
 
 const generateBillNumber = (storeCode = "STORE") => {
   const now = new Date();
+
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
@@ -288,22 +357,82 @@ export const createInvoiceFromBill = async (req, res) => {
   try {
     const { bill_id, customer } = req.body;
 
-    if (!bill_id) throw new Error("bill_id is required");
-    if (!customer || !customer.phone || !customer.name) {
-      throw new Error("Customer name and phone are required");
+    if (!bill_id) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "bill_id is required",
+      });
     }
 
-    const bill = await Bill.findByPk(bill_id, { transaction: t });
-    if (!bill) throw new Error("Bill not found");
+    if (!customer || !customer.phone || !customer.name) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Customer name and phone are required",
+      });
+    }
+
+    const bill = await Bill.findByPk(bill_id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!bill) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Bill not found",
+      });
+    }
+
+    /**
+     * Production fix:
+     * Same bill ke liye duplicate invoice prevent.
+     */
+    const existingInvoice = await Invoice.findOne({
+      where: { bill_id },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (existingInvoice) {
+      await t.rollback();
+
+      return res.status(409).json({
+        success: false,
+        message: "Invoice already created for this bill",
+        data: {
+          invoice_id: existingInvoice.id,
+          invoice_number: existingInvoice.invoice_number,
+          pdf_path: existingInvoice.pdf_path || null,
+        },
+      });
+    }
 
     const billItems = await BillItem.findAll({
       where: { bill_id },
       transaction: t,
       raw: true,
     });
-    if (!billItems.length) throw new Error("No items found in this bill");
+
+    if (!billItems.length) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "No items found in this bill",
+      });
+    }
 
     const cleanPhone = normalizePhone(customer.phone);
+
+    if (!cleanPhone) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Valid customer phone is required",
+      });
+    }
 
     const [cust] = await Customer.findOrCreate({
       where: {
@@ -333,6 +462,7 @@ export const createInvoiceFromBill = async (req, res) => {
     );
 
     let subtotal = 0;
+
     billItems.forEach((item) => {
       subtotal += toNumber(item.total_amount);
     });
@@ -377,19 +507,53 @@ export const createInvoiceFromBill = async (req, res) => {
       );
     }
 
-    await LedgerEntry.create(
-      {
+    /**
+     * Production fix:
+     * Bill create already creates DEBIT ledger.
+     * Invoice creation should not create duplicate DEBIT for same bill.
+     *
+     * If no bill ledger exists due to old/partial data, then create invoice ledger.
+     */
+    const existingBillDebit = await LedgerEntry.findOne({
+      where: {
         customer_id: cust.id,
+        store_code: bill.store_code,
+        organization_id: bill.organization_id,
+        bill_id: bill.id,
         type: "DEBIT",
-        amount: Number(finalAmount.toFixed(2)),
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    const existingInvoiceDebit = await LedgerEntry.findOne({
+      where: {
+        customer_id: cust.id,
+        store_code: bill.store_code,
+        organization_id: bill.organization_id,
         reference_type: "INVOICE",
         reference_id: invoice.id,
-        description: `Invoice #${invoice.invoice_number} created`,
-        organization_id: bill.organization_id,
-        store_code: bill.store_code,
+        type: "DEBIT",
       },
-      { transaction: t }
-    );
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!existingBillDebit && !existingInvoiceDebit) {
+      await LedgerEntry.create(
+        {
+          customer_id: cust.id,
+          type: "DEBIT",
+          amount: Number(finalAmount.toFixed(2)),
+          reference_type: "INVOICE",
+          reference_id: invoice.id,
+          description: `Invoice #${invoice.invoice_number} created`,
+          organization_id: bill.organization_id,
+          store_code: bill.store_code,
+        },
+        { transaction: t }
+      );
+    }
 
     const summary = {
       subtotal: Number(subtotal.toFixed(2)),
@@ -465,13 +629,16 @@ export const createInvoiceFromBill = async (req, res) => {
     });
   } catch (error) {
     await t.rollback();
+
+    console.error("Create Invoice From Bill Error:", error);
+
     return res.status(500).json({
       success: false,
+      message: "Failed to create invoice",
       error: error.message,
     });
   }
 };
-
 export const createBill = async (req, res) => {
   const t = await sequelize.transaction();
 
@@ -484,6 +651,7 @@ export const createBill = async (req, res) => {
 
     if (!organization_id || !loginStoreCode) {
       await t.rollback();
+
       return res.status(401).json({
         success: false,
         message: "Unable to resolve logged-in user entity",
@@ -502,6 +670,7 @@ export const createBill = async (req, res) => {
 
     if (!Array.isArray(items) || items.length === 0) {
       await t.rollback();
+
       return res.status(400).json({
         success: false,
         message: "At least one item is required",
@@ -514,6 +683,7 @@ export const createBill = async (req, res) => {
 
     if (!cleanStoreCode) {
       await t.rollback();
+
       return res.status(400).json({
         success: false,
         message: "store_code is required",
@@ -523,7 +693,12 @@ export const createBill = async (req, res) => {
     const itemIds = items.map((i) => i.item_id).filter(Boolean);
 
     if (itemIds.length !== new Set(itemIds).size) {
-      throw new Error("Duplicate item found in bill items");
+      await t.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: "Duplicate item found in bill items",
+      });
     }
 
     let finalCustomer = null;
@@ -539,7 +714,12 @@ export const createBill = async (req, res) => {
       });
 
       if (!finalCustomer) {
-        throw new Error("Customer not found for this entity");
+        await t.rollback();
+
+        return res.status(404).json({
+          success: false,
+          message: "Customer not found for this entity",
+        });
       }
     } else if (
       customer &&
@@ -553,13 +733,8 @@ export const createBill = async (req, res) => {
 
       const orConditions = [];
 
-      if (cleanPhone) {
-        orConditions.push({ phone: cleanPhone });
-      }
-
-      if (cleanPan) {
-        orConditions.push({ pan_card_number: cleanPan });
-      }
+      if (cleanPhone) orConditions.push({ phone: cleanPhone });
+      if (cleanPan) orConditions.push({ pan_card_number: cleanPan });
 
       if (orConditions.length > 0) {
         finalCustomer = await Customer.findOne({
@@ -574,7 +749,12 @@ export const createBill = async (req, res) => {
 
       if (!finalCustomer) {
         if (!customer.name || !String(customer.name).trim()) {
-          throw new Error("Customer name is required for new customer");
+          await t.rollback();
+
+          return res.status(400).json({
+            success: false,
+            message: "Customer name is required for new customer",
+          });
         }
 
         finalCustomer = await Customer.create(
@@ -599,6 +779,11 @@ export const createBill = async (req, res) => {
     for (const row of items) {
       const item_id = row.item_id;
 
+      const batch_id =
+        row.batch_id === undefined || row.batch_id === null || row.batch_id === ""
+          ? null
+          : Number(row.batch_id);
+
       const qty =
         row.qty === undefined || row.qty === null || row.qty === ""
           ? 1
@@ -609,15 +794,39 @@ export const createBill = async (req, res) => {
       const making_charge_percent = toNumber(row.making_charge_percent);
 
       if (!item_id) {
-        throw new Error("item_id is required for each item");
+        await t.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: "item_id is required for each item",
+        });
+      }
+
+      if (batch_id !== null && (!Number.isInteger(batch_id) || batch_id <= 0)) {
+        await t.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: `Invalid batch_id for item ${item_id}`,
+        });
       }
 
       if (qty <= 0) {
-        throw new Error(`Invalid qty for item ${item_id}`);
+        await t.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: `Invalid qty for item ${item_id}`,
+        });
       }
 
       if (rate <= 0) {
-        throw new Error(`Invalid rate for item ${item_id}`);
+        await t.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: `Invalid rate for item ${item_id}`,
+        });
       }
 
       const dbItem = await Item.findOne({
@@ -632,20 +841,33 @@ export const createBill = async (req, res) => {
       });
 
       if (!dbItem) {
-        throw new Error(`Item not found or not available for item_id ${item_id}`);
+        await t.rollback();
+
+        return res.status(404).json({
+          success: false,
+          message: `Item not found or not available for item_id ${item_id}`,
+        });
       }
 
       const unit = String(dbItem.unit || row.unit || "").toLowerCase();
       const isPieceItem = ["pcs", "pc", "piece", "pieces"].includes(unit);
 
-      // PCS item me qty editable hai.
-      // Weight based item me qty fixed 1 hai.
       if (!isPieceItem && qty !== 1) {
-        throw new Error(`Qty must be 1 for weight-based item ${item_id}`);
+        await t.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: `Qty must be 1 for weight-based item ${item_id}`,
+        });
       }
 
       if (!isPieceItem && net_weight <= 0) {
-        throw new Error(`Invalid net_weight for item ${item_id}`);
+        await t.rollback();
+
+        return res.status(400).json({
+          success: false,
+          message: `Invalid net_weight for item ${item_id}`,
+        });
       }
 
       const stock = await Stock.findOne({
@@ -658,18 +880,116 @@ export const createBill = async (req, res) => {
       });
 
       if (!stock) {
-        throw new Error(`Stock not found for item ${item_id}`);
+        await t.rollback();
+
+        return res.status(404).json({
+          success: false,
+          message: `Stock not found for item ${item_id}`,
+        });
       }
 
       const openingQty = toNumber(stock.available_qty);
       const openingWeight = toNumber(stock.available_weight);
 
       if (openingQty < qty) {
-        throw new Error(`Insufficient stock qty for item ${item_id}`);
+        await t.rollback();
+
+        return res.status(409).json({
+          success: false,
+          message: `Insufficient stock qty for item ${item_id}`,
+        });
       }
 
       if (!isPieceItem && openingWeight < net_weight) {
-        throw new Error(`Insufficient stock weight for item ${item_id}`);
+        await t.rollback();
+
+        return res.status(409).json({
+          success: false,
+          message: `Insufficient stock weight for item ${item_id}`,
+        });
+      }
+
+      if (batch_id) {
+        const batchRows = await sequelize.query(
+          `
+          SELECT
+            id,
+            item_id,
+            organization_id,
+            current_organization_id,
+            available_qty,
+            available_weight,
+            status
+          FROM public.inventory_batches
+          WHERE id = :batch_id
+          FOR UPDATE
+          `,
+          {
+            replacements: { batch_id },
+            type: QueryTypes.SELECT,
+            transaction: t,
+          }
+        );
+
+        const batch = batchRows?.[0];
+
+        if (!batch) {
+          await t.rollback();
+
+          return res.status(404).json({
+            success: false,
+            message: `Batch not found for item ${item_id}`,
+          });
+        }
+
+        if (Number(batch.item_id) !== Number(item_id)) {
+          await t.rollback();
+
+          return res.status(400).json({
+            success: false,
+            message: `Invalid batch_id ${batch_id}. Batch does not belong to item ${item_id}`,
+          });
+        }
+
+        const batchOrgId = Number(
+          batch.current_organization_id || batch.organization_id || 0
+        );
+
+        if (batchOrgId !== Number(organization_id)) {
+          await t.rollback();
+
+          return res.status(403).json({
+            success: false,
+            message: `Batch ${batch_id} does not belong to this store/entity`,
+          });
+        }
+
+        if (Number(batch.available_qty || 0) < qty) {
+          await t.rollback();
+
+          return res.status(409).json({
+            success: false,
+            message: `Insufficient batch qty for item ${item_id}`,
+          });
+        }
+
+        if (!isPieceItem && Number(batch.available_weight || 0) < net_weight) {
+          await t.rollback();
+
+          return res.status(409).json({
+            success: false,
+            message: `Insufficient batch weight for item ${item_id}`,
+          });
+        }
+
+        if (["sold", "damaged", "dead"].includes(String(batch.status || "").toLowerCase())) {
+          await t.rollback();
+
+          return res.status(409).json({
+            success: false,
+            message: `Batch ${batch_id} is already ${batch.status}`,
+          });
+        }
       }
 
       const baseAmount = isPieceItem ? qty * rate : net_weight * rate;
@@ -682,37 +1002,14 @@ export const createBill = async (req, res) => {
         dbItem,
         stock,
         item_id,
+        batch_id,
         qty,
         unit,
         isPieceItem,
-
         product_code:
-          row.product_code ||
-          dbItem.article_code ||
-          dbItem.sku_code ||
-          null,
-
-        description:
-          row.description ||
-          dbItem.details ||
-          dbItem.item_name ||
-          null,
-
-        item_name: dbItem.item_name || row.description || null,
-        metal_type: dbItem.metal_type || row.metal_type || null,
-        category: dbItem.category || row.category || null,
-        purity: dbItem.purity || row.purity || null,
-
-        gross_weight: isPieceItem
-          ? 0
-          : toNumber(row.gross_weight || dbItem.gross_weight || net_weight),
-
+          row.product_code || dbItem.article_code || dbItem.sku_code || null,
+        description: row.description || dbItem.details || dbItem.item_name || null,
         net_weight: isPieceItem ? 0 : net_weight,
-
-        stone_weight: isPieceItem
-          ? 0
-          : toNumber(row.stone_weight || dbItem.stone_weight || 0),
-
         rate,
         making_charge_percent,
         making_charge_value: makingChargeValue,
@@ -726,11 +1023,21 @@ export const createBill = async (req, res) => {
     const dueAmount = grandTotal - paidAmount;
 
     if (paidAmount < 0) {
-      throw new Error("paid_amount cannot be negative");
+      await t.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: "paid_amount cannot be negative",
+      });
     }
 
     if (paidAmount > grandTotal) {
-      throw new Error("paid_amount cannot be greater than total amount");
+      await t.rollback();
+
+      return res.status(400).json({
+        success: false,
+        message: "paid_amount cannot be greater than total amount",
+      });
     }
 
     const billNumber = generateBillNumber(cleanStoreCode);
@@ -745,39 +1052,6 @@ export const createBill = async (req, res) => {
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
         notes,
-      },
-      { transaction: t }
-    );
-
-    // ✅ NEW: invoice create with bill
-    const invoiceNumber =
-      typeof generateInvoiceNumber === "function"
-        ? generateInvoiceNumber(cleanStoreCode)
-        : `INV-${cleanStoreCode}-${Date.now()}`;
-
-    const invoice = await Invoice.create(
-      {
-        invoice_number: invoiceNumber,
-
-        // Agar tumhare Invoice model me bill_id nahi hai to ye line remove kar dena.
-        bill_id: bill.id,
-
-        customer_id: finalCustomer?.id || null,
-        organization_id: Number(organization_id),
-        organization_level,
-        store_code: cleanStoreCode,
-
-        invoice_date: new Date(),
-
-        total_amount: Number(grandTotal.toFixed(2)),
-        paid_amount: Number(paidAmount.toFixed(2)),
-        due_amount: Number(dueAmount.toFixed(2)),
-
-        status: dueAmount > 0 ? "partial" : "paid",
-        payment_status: dueAmount > 0 ? "partial" : "paid",
-
-        notes,
-        created_by: req.user?.id || null,
       },
       { transaction: t }
     );
@@ -804,35 +1078,6 @@ export const createBill = async (req, res) => {
         { transaction: t }
       );
 
-      // ✅ NEW: invoice item create with bill item
-      await InvoiceItem.create(
-        {
-          invoice_id: invoice.id,
-          item_id: row.item_id,
-
-          product_code: row.product_code,
-          item_name: row.item_name,
-          description: row.description,
-
-          qty: row.qty,
-          unit: row.unit,
-
-          metal_type: row.metal_type,
-          category: row.category,
-          purity: row.purity,
-
-          gross_weight: row.gross_weight,
-          net_weight: row.net_weight,
-          stone_weight: row.stone_weight,
-
-          rate: row.rate,
-          making_charge_percent: row.making_charge_percent,
-          making_charge_value: Number(row.making_charge_value.toFixed(2)),
-          total_amount: Number(row.total_amount.toFixed(2)),
-        },
-        { transaction: t }
-      );
-
       await row.stock.update(
         {
           available_qty: updatedQty,
@@ -844,6 +1089,7 @@ export const createBill = async (req, res) => {
       await StockMovement.create(
         {
           organization_id,
+          store_code: cleanStoreCode,
           item_id: row.item_id,
           movement_type: "sale",
           reference_type: "BILL",
@@ -860,17 +1106,29 @@ export const createBill = async (req, res) => {
         { transaction: t }
       );
 
-      // Unique / weight item sold lock.
-      // PCS item me same item ka stock remaining ho sakta hai.
+      if (row.batch_id) {
+        await InventoryTrackingService.consumeBatch(
+          {
+            batch_id: row.batch_id,
+            quantity: row.qty,
+            weight: row.net_weight,
+
+            event_type: "SOLD",
+            reference_type: "BILL",
+            reference_id: bill.id,
+
+            remarks: `Item sold via billing (${billNumber})`,
+            handled_by: req.user?.id || null,
+          },
+          { transaction: t }
+        );
+      }
+
       if (!row.isPieceItem || updatedQty <= 0) {
         await Item.update(
+          { current_status: "sold" },
           {
-            current_status: "sold",
-          },
-          {
-            where: {
-              id: row.item_id,
-            },
+            where: { id: row.item_id },
             transaction: t,
           }
         );
@@ -884,10 +1142,6 @@ export const createBill = async (req, res) => {
           organization_id,
           store_code: cleanStoreCode,
           bill_id: bill.id,
-
-          // Agar tumhare LedgerEntry model me invoice_id hai to ye useful hai.
-          invoice_id: invoice.id,
-
           type: "DEBIT",
           amount: Number(grandTotal.toFixed(2)),
           remarks: `Bill created: ${billNumber}`,
@@ -903,10 +1157,6 @@ export const createBill = async (req, res) => {
             organization_id,
             store_code: cleanStoreCode,
             bill_id: bill.id,
-
-            // Agar tumhare LedgerEntry model me invoice_id hai to ye useful hai.
-            invoice_id: invoice.id,
-
             type: "CREDIT",
             amount: Number(paidAmount.toFixed(2)),
             remarks: `Payment received against bill: ${billNumber}`,
@@ -921,22 +1171,16 @@ export const createBill = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Bill and invoice created successfully",
+      message: "Bill created successfully",
       data: {
         bill_id: bill.id,
         bill_number: bill.bill_number,
-
-        invoice_id: invoice.id,
-        invoice_number: invoice.invoice_number,
-
         customer_id: finalCustomer?.id || null,
         customer_name: finalCustomer?.name || null,
-
         total_items: preparedItems.length,
         total_amount: Number(grandTotal.toFixed(2)),
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
-        payment_status: dueAmount > 0 ? "partial" : "paid",
       },
     });
   } catch (error) {
@@ -951,94 +1195,6 @@ export const createBill = async (req, res) => {
     });
   }
 };
-// export const scanBillItemQR = async (req, res) => {
-//   try {
-//     const {
-//       organization_id,
-//       store_code: loginStoreCode,
-//     } = resolveUserScope(req.user);
-
-//     const { qr_value, qrValue, article_code, sku_code, item_id } = req.body;
-
-//     const scanValue = qr_value || qrValue || article_code || sku_code || item_id;
-
-//     if (!scanValue) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "QR value is required",
-//       });
-//     }
-
-//     let parsed = null;
-//     try {
-//       parsed = JSON.parse(scanValue);
-//     } catch (e) {}
-
-//     const where = {};
-
-//     if (parsed?.item_id) where.id = parsed.item_id;
-//     else if (parsed?.article_code) where.article_code = parsed.article_code;
-//     else if (parsed?.sku_code) where.sku_code = parsed.sku_code;
-//     else if (item_id) where.id = item_id;
-//     else if (article_code) where.article_code = article_code;
-//     else if (sku_code) where.sku_code = sku_code;
-//     else {
-//       where[Op.or] = [
-//         { qr_value: scanValue },
-//         { article_code: scanValue },
-//         { sku_code: scanValue },
-//       ];
-//     }
-
-//     const item = await Item.findOne({ where });
-
-//     if (!item) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Item not found",
-//       });
-//     }
-
-//     const stock = await Stock.findOne({
-//       where: {
-//         item_id: item.id,
-//         organization_id,
-//       },
-//     });
-
-//     return res.status(200).json({
-//       success: true,
-//       data: {
-//         item_id: item.id,
-//         product_code:
-//           item.product_code || item.article_code || item.sku_code || null,
-//         article_code: item.article_code || null,
-//         sku_code: item.sku_code || null,
-//         description: item.description || item.item_name || null,
-//         item_name: item.item_name || null,
-//         category: item.category || null,
-//         metal_type: item.metal_type || null,
-//         purity: item.purity || null,
-//         net_weight: item.net_weight || 0,
-//         gross_weight: item.gross_weight || 0,
-//         rate: item.sale_rate || item.rate || 0,
-//         making_charge_percent: item.making_charge_percent || 0,
-//         available_qty: stock?.available_qty || 0,
-//         available_weight: stock?.available_weight || 0,
-//         store_code: loginStoreCode,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("scanBillItemQR error:", error);
-//     return res.status(500).json({
-//       success: false,
-//       message: "QR scan failed",
-//       error: error.message,
-//     });
-//   }
-// };
-
-
 
 const QR_SECRET = process.env.QR_SECRET || "change-this-secret";
 
@@ -1084,8 +1240,20 @@ const verifyQRPayload = (qrText) => {
 
 export const scanBillingItem = async (req, res) => {
   try {
-    const rawCode = String(req.params.code || "").trim();
-    const organizationId = req.user?.organization_id;
+    const rawCode = String(req.params.code || req.body?.code || "").trim();
+
+    const billingSessionId =
+      req.headers["x-billing-session-id"] ||
+      req.body?.session_id ||
+      req.query?.session_id ||
+      null;
+
+    const organizationId =
+      req.user?.organization_id ??
+      req.user?.organizationId ??
+      req.user?.org_id ??
+      req.user?.store_id ??
+      null;
 
     if (!rawCode) {
       return res.status(400).json({
@@ -1176,364 +1344,78 @@ export const scanBillingItem = async (req, res) => {
     const makingValue = (metalValue * makingPercent) / 100;
     const totalAmount = metalValue + makingValue;
 
+    const scannedItemPayload = {
+      item_id: item.id,
+      sku_code: item.sku_code,
+      article_code: item.article_code,
+      product_code: item.article_code || item.sku_code,
+
+      item_name: item.item_name,
+      description: item.details || item.item_name,
+
+      metal_type: item.metal_type,
+      category: item.category,
+      purity: item.purity,
+      gross_weight: toNumber(item.gross_weight),
+      net_weight: netWeight,
+      stone_weight: toNumber(item.stone_weight),
+      stone_amount: toNumber(item.stone_amount),
+
+      rate,
+      purchase_rate: toNumber(item.purchase_rate),
+      sale_rate: toNumber(item.sale_rate),
+
+      making_charge_percent: makingPercent,
+      making_charge_value: Number(makingValue.toFixed(2)),
+      total_amount: Number(totalAmount.toFixed(2)),
+
+      hsn_code: item.hsn_code,
+      unit: item.unit,
+      current_status: item.current_status,
+
+      qty: 1,
+      available_qty: toNumber(stock.available_qty),
+      available_weight: toNumber(stock.available_weight),
+      reserved_qty: toNumber(stock.reserved_qty),
+      reserved_weight: toNumber(stock.reserved_weight),
+      transit_qty: toNumber(stock.transit_qty),
+      transit_weight: toNumber(stock.transit_weight),
+      damaged_qty: toNumber(stock.damaged_qty),
+      damaged_weight: toNumber(stock.damaged_weight),
+
+      organization_id: Number(organizationId),
+
+      store_code:
+        stock.store_code ||
+        req.user?.store_code ||
+        req.user?.storeCode ||
+        req.headers["store_code"] ||
+        req.headers["x-store-code"] ||
+        null,
+
+      billing_session_id: billingSessionId
+        ? String(billingSessionId).trim()
+        : null,
+
+      qr_type: qr.isSecure ? "secure" : "plain",
+      qr_code_url: item.qr_code_url,
+
+      scanned_at: new Date().toISOString(),
+    };
+
+    emitScannedItemToDashboard(scannedItemPayload);
+
     return res.status(200).json({
       success: true,
       message: "Item fetched successfully",
-      data: {
-        item_id: item.id,
-        sku_code: item.sku_code,
-        article_code: item.article_code,
-        product_code: item.article_code || item.sku_code,
-
-        item_name: item.item_name,
-        description: item.details || item.item_name,
-
-        metal_type: item.metal_type,
-        category: item.category,
-        purity: item.purity,
-        gross_weight: toNumber(item.gross_weight),
-        net_weight: netWeight,
-        stone_weight: toNumber(item.stone_weight),
-        stone_amount: toNumber(item.stone_amount),
-
-        rate,
-        purchase_rate: toNumber(item.purchase_rate),
-        sale_rate: toNumber(item.sale_rate),
-
-        making_charge_percent: makingPercent,
-        making_charge_value: Number(makingValue.toFixed(2)),
-        total_amount: Number(totalAmount.toFixed(2)),
-
-        hsn_code: item.hsn_code,
-        unit: item.unit,
-        current_status: item.current_status,
-
-        qty: 1,
-        available_qty: toNumber(stock.available_qty),
-        available_weight: toNumber(stock.available_weight),
-        reserved_qty: toNumber(stock.reserved_qty),
-        reserved_weight: toNumber(stock.reserved_weight),
-        transit_qty: toNumber(stock.transit_qty),
-        transit_weight: toNumber(stock.transit_weight),
-        damaged_qty: toNumber(stock.damaged_qty),
-        damaged_weight: toNumber(stock.damaged_weight),
-
-        qr_type: qr.isSecure ? "secure" : "plain",
-        qr_code_url: item.qr_code_url,
-      },
+      data: scannedItemPayload,
     });
   } catch (error) {
     console.error("Scan Billing Item Error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch scanned item",
-      error: error.message,
-    });
-  }
-};
-export const createManualBillingEntry = async (req, res) => {
-  try {
-    const userScope = resolveUserScope(req.user);
-
-    let organization_id = userScope.organization_id;
-    let loginStoreCode = userScope.store_code;
-
-    /**
-     * Token me organization_id missing ho to store_code se Store.id resolve karo
-     */
-    if ((!organization_id || !loginStoreCode) && req.user?.store_code) {
-      const store = await Store.findOne({
-        where: {
-          store_code: String(req.user.store_code).trim().toUpperCase(),
-          is_active: true,
-        },
-        attributes: [
-          "id",
-          "store_code",
-          "store_name",
-          "organization_level",
-          "is_active",
-        ],
-      });
-
-      if (store) {
-        organization_id = Number(store.id);
-        loginStoreCode = String(store.store_code).trim().toUpperCase();
-      }
-    }
-
-    if (!organization_id) {
-      organization_id = Number(
-        req.headers["x-organization-id"] ||
-          req.headers.organization_id ||
-          req.body.organization_id ||
-          0
-      );
-    }
-
-    if (!loginStoreCode) {
-      loginStoreCode = String(
-        req.headers["x-store-code"] ||
-          req.headers.store_code ||
-          req.body.store_code ||
-          ""
-      )
-        .trim()
-        .toUpperCase();
-    }
-
-    if (!organization_id || !loginStoreCode) {
-      return res.status(401).json({
-        success: false,
-        message:
-          "Unable to resolve logged-in user entity. Token must contain organization_id or valid store_code.",
-        debug_user: req.user || null,
-      });
-    }
-
-    const {
-      product_code,
-      product_name,
-      purity,
-      net_weight,
-      gross_weight,
-      making_charges,
-      total_value,
-      rate,
-    } = req.body;
-
-    const cleanProductCode = String(product_code || "").trim();
-    const cleanProductName = String(product_name || "").trim();
-    const cleanPurity = String(purity || "").trim();
-
-    const inputNetWeight = toNumber(net_weight);
-    const inputGrossWeight = toNumber(gross_weight);
-    const inputMakingCharges = toNumber(making_charges);
-    const inputTotalValue = toNumber(total_value);
-    const inputRate = toNumber(rate);
-
-    if (!cleanProductCode) {
-      return res.status(400).json({
-        success: false,
-        message: "Product Code is required",
-      });
-    }
-
-    if (!cleanProductName) {
-      return res.status(400).json({
-        success: false,
-        message: "Product Name is required",
-      });
-    }
-
-    if (!cleanPurity) {
-      return res.status(400).json({
-        success: false,
-        message: "Purity is required",
-      });
-    }
-
-    if (inputNetWeight <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Net Weight must be greater than 0",
-      });
-    }
-
-    if (inputGrossWeight <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Gross Weight must be greater than 0",
-      });
-    }
-
-    if (inputGrossWeight < inputNetWeight) {
-      return res.status(400).json({
-        success: false,
-        message: "Gross Weight cannot be less than Net Weight",
-      });
-    }
-
-    if (inputMakingCharges < 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Making Charges cannot be negative",
-      });
-    }
-
-    /**
-     * ✅ Existing item lookup only
-     * Product Code ko article_code ya sku_code se match karenge.
-     */
-    const item = await Item.findOne({
-      where: {
-        organization_id: Number(organization_id),
-        current_status: "in_stock",
-        is_active: true,
-        [Op.or]: [
-          { article_code: cleanProductCode },
-          { sku_code: cleanProductCode },
-        ],
-      },
-    });
-
-    if (!item) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Item not found in stock for this Product Code. Manual billing can only be done for existing in-stock items.",
-        data: {
-          product_code: cleanProductCode,
-          organization_id: Number(organization_id),
-          store_code: loginStoreCode,
-        },
-      });
-    }
-
-    /**
-     * ✅ Stock check
-     */
-    const stock = await Stock.findOne({
-      where: {
-        item_id: item.id,
-        organization_id: Number(organization_id),
-      },
-    });
-
-    if (!stock) {
-      return res.status(404).json({
-        success: false,
-        message: "Stock record not found for this item",
-        data: {
-          item_id: item.id,
-          product_code: cleanProductCode,
-          organization_id: Number(organization_id),
-        },
-      });
-    }
-
-    if (toNumber(stock.available_qty) <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Item is out of stock",
-        data: {
-          item_id: item.id,
-          product_code: cleanProductCode,
-          available_qty: toNumber(stock.available_qty),
-        },
-      });
-    }
-
-    if (toNumber(stock.available_weight) < inputNetWeight) {
-      return res.status(400).json({
-        success: false,
-        message: "Insufficient stock weight for this item",
-        data: {
-          item_id: item.id,
-          product_code: cleanProductCode,
-          requested_weight: inputNetWeight,
-          available_weight: toNumber(stock.available_weight),
-        },
-      });
-    }
-
-    /**
-     *  UI values ko billing values ke liye use karenge
-     * Lekin item_id existing DB item ki hogi.
-     */
-    let finalRate = inputRate;
-    let metalValue = 0;
-    let finalTotalAmount = 0;
-
-    if (inputTotalValue > 0) {
-      finalTotalAmount = inputTotalValue;
-      metalValue = Math.max(inputTotalValue - inputMakingCharges, 0);
-      finalRate = inputNetWeight > 0 ? metalValue / inputNetWeight : 0;
-    } else {
-      finalRate = inputRate || toNumber(item.sale_rate);
-
-      if (finalRate <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Either total_value, rate, or item sale_rate is required",
-        });
-      }
-
-      metalValue = inputNetWeight * finalRate;
-      finalTotalAmount = metalValue + inputMakingCharges;
-    }
-
-    if (finalRate <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Calculated rate must be greater than 0",
-      });
-    }
-
-    /**
-     * Important:
-     * Existing createBill making_charge_percent use karta hai.
-     * UI me making_charges absolute value hai.
-     * Isliye absolute making_charges ko percent me convert kar rahe hain,
-     * taaki final createBill API same total calculate kare.
-     */
-    const makingChargePercent =
-      metalValue > 0 ? (inputMakingCharges / metalValue) * 100 : 0;
-
-    return res.status(200).json({
-      success: true,
-      message: "Manual billing item fetched successfully",
-      data: {
-        item_id: item.id,
-        is_manual_entry: true,
-
-        product_code: item.article_code || item.sku_code || cleanProductCode,
-        sku_code: item.sku_code,
-        article_code: item.article_code,
-
-        item_name: item.item_name,
-        description: item.details || item.item_name || cleanProductName,
-
-        metal_type: item.metal_type,
-        category: item.category,
-        purity: item.purity || cleanPurity,
-
-        gross_weight: Number(inputGrossWeight.toFixed(3)),
-        net_weight: Number(inputNetWeight.toFixed(3)),
-
-        rate: Number(finalRate.toFixed(2)),
-        sale_rate: Number(finalRate.toFixed(2)),
-
-        /**
-         * createBill compatible fields
-         */
-        making_charge_percent: Number(makingChargePercent.toFixed(6)),
-        making_charge_value: Number(inputMakingCharges.toFixed(2)),
-        making_charges: Number(inputMakingCharges.toFixed(2)),
-
-        metal_value: Number(metalValue.toFixed(2)),
-        total_value: Number(finalTotalAmount.toFixed(2)),
-        total_amount: Number(finalTotalAmount.toFixed(2)),
-
-        qty: 1,
-        unit: item.unit || "gm",
-
-        available_qty: toNumber(stock.available_qty),
-        available_weight: toNumber(stock.available_weight),
-
-        current_status: item.current_status,
-        qr_type: "manual",
-
-        organization_id: Number(organization_id),
-        store_code: loginStoreCode,
-      },
-    });
-  } catch (error) {
-    console.error("Create Manual Billing Entry Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch manual billing item",
       error: error.message,
     });
   }

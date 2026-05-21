@@ -48,14 +48,42 @@ export const getHeadOfficeReports = async (req, res) => {
 
     // ================= AVG MONTHLY SALES =================
     const [avgSales] = await sequelize.query(`
-      SELECT COALESCE(AVG(monthly_sales),0) AS value FROM (
-        SELECT DATE_TRUNC('month', invoice_date) AS m,
-               SUM(total_amount) AS monthly_sales
-        FROM invoices
-        WHERE status IN ('PAID','PARTIAL')
-        GROUP BY m
-      ) t
-    `, { type: QueryTypes.SELECT });
+  WITH months AS (
+    SELECT generate_series(
+      DATE_TRUNC(
+        'month',
+        (SELECT MIN(invoice_date) FROM invoices)
+      ),
+      DATE_TRUNC('month', CURRENT_DATE),
+      INTERVAL '1 month'
+    ) AS month
+  ),
+
+  monthly_sales AS (
+    SELECT
+      DATE_TRUNC('month', invoice_date) AS month,
+
+      SUM(total_amount) AS sales
+
+    FROM invoices
+
+    WHERE status IN ('PAID','PARTIAL')
+
+    GROUP BY month
+  )
+
+  SELECT COALESCE(
+    AVG(
+      COALESCE(ms.sales, 0)
+    ),
+    0
+  ) AS value
+
+  FROM months m
+
+  LEFT JOIN monthly_sales ms
+  ON ms.month = m.month
+`, { type: QueryTypes.SELECT });
 
     // ================= LAST MONTH =================
     const [currMonth] = await sequelize.query(`

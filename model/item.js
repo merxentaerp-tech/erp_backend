@@ -114,6 +114,64 @@ const Item = sequelize.define(
       defaultValue: "in_stock",
     },
 
+    store_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
+
+    storeCode: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    storeName: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    organization_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+    },
+
+    // ==========================================
+    // IMAGE FIELDS
+    // ==========================================
+
+    image_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    image_public_id: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    // ==========================================
+    // QR FIELDS
+    // ==========================================
+
+    qr_code_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    qr_code_value: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    // ==========================================
+    // AUDIT FIELDS
+    // ==========================================
+
+    is_active: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
+
     isItemAudit: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
@@ -138,20 +196,20 @@ const Item = sequelize.define(
       allowNull: true,
       field: "last_audit_reason",
     },
-
-    organization_id: {
-      type: DataTypes.BIGINT,
-      allowNull: true,
-    },
   },
+
   {
     tableName: "items",
+
     timestamps: true,
+
     createdAt: "createdAt",
     updatedAt: "updatedAt",
+
     indexes: [
       { unique: true, fields: ["article_code"] },
       { unique: true, fields: ["sku_code"] },
+
       { fields: ["metal_type"] },
       { fields: ["category"] },
       { fields: ["current_status"] },

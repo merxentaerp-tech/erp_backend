@@ -76,22 +76,42 @@ export const getHeadOfficeReports = async (req, res) => {
     const growth = calcGrowth(currMonth.value, prevMonth.value);
 
     // ================= MONTHLY TREND =================
-    const monthlyRaw = await sequelize.query(`
-      SELECT 
-        TO_CHAR(invoice_date, 'Mon') AS label,
-        DATE_TRUNC('month', invoice_date) AS sort_date,
-        SUM(total_amount) AS sales
-      FROM invoices
-      WHERE status IN ('PAID','PARTIAL')
-      GROUP BY label, sort_date
-      ORDER BY sort_date
-    `, { type: QueryTypes.SELECT });
+    // ================= MONTHLY TREND =================
+const monthlyRaw = await sequelize.query(`
+  SELECT 
+    TO_CHAR(inv.invoice_date, 'Mon') AS label,
 
-    const monthlyTrend = monthlyRaw.map(m => ({
-      label: m.label,
-      sales: Number(m.sales || 0)
-    }));
+    DATE_TRUNC('month', inv.invoice_date) AS sort_date,
 
+    SUM(inv.total_amount) AS sales,
+
+    SUM(
+      COALESCE(ii.total_amount,0) - (
+        COALESCE(i.purchase_rate,0) *
+        COALESCE(ii.quantity,1)
+      )
+    ) AS profit
+
+  FROM invoices inv
+
+  JOIN invoice_items ii
+  ON ii.invoice_id = inv.id
+
+  JOIN items i
+  ON i.id = ii.item_id
+
+  WHERE inv.status IN ('PAID','PARTIAL')
+
+  GROUP BY label, sort_date
+
+  ORDER BY sort_date
+`, { type: QueryTypes.SELECT });
+
+const monthlyTrend = monthlyRaw.map(m => ({
+  label: m.label,
+  sales: Number(m.sales || 0),
+  profit: Number(m.profit || 0)
+}));
     // ================= CATEGORY =================
     const categoryRaw = await sequelize.query(`
       SELECT i.category, SUM(ii.total_amount) AS value

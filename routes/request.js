@@ -11,7 +11,7 @@ import {
   approveAndDispatchRequest,
   receiveTransfer,
   getIncomingTransfers,
-  getOutgoingTransfers,
+  getOutgoingTransfers,getRetailStoresUnderDistrict,
   getAvailableStockForRequest,getTransferDetails,getEWayBillByTransferId,estimateDispatchRequestValue,createDistrictStockRequest,getHeadStore,getRetailStoresUnderDistrict,approveAndDispatchRequestfromretail
 } from "../controller/stockRequest.controller.js";
 
@@ -85,6 +85,14 @@ router.post(
   "/district-stock-request",
   auth,
   createDistrictStockRequest
+);
+
+
+
+router.get(
+  "/district/retail-stores",
+  auth,
+  getRetailStoresUnderDistrict
 );
 router.post(
   "/head/available-stores",

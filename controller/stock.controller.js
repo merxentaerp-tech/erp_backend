@@ -122,8 +122,7 @@ export const getRetailInventory = async (req, res) => {
         Number(user.organization_id);
 
       // =================================================
-      // IMPORTANT FIX
-      // SAME LOGIC AS DASHBOARD
+      // SAME STORE FILTER AS DASHBOARD
       // =================================================
 
       if (
@@ -138,13 +137,12 @@ export const getRetailInventory = async (req, res) => {
           .trim()
           .toUpperCase();
 
-        // Dashboard uses ONLY items.storeCode
+        // IMPORTANT:
+        // Dashboard uses items.storeCode
         itemWhere.storeCode =
           cleanStoreCode;
 
-        // IMPORTANT:
         // DO NOT FILTER stocks.store_code
-        // otherwise mismatch happens
       }
     }
 
@@ -222,6 +220,7 @@ export const getRetailInventory = async (req, res) => {
         "current_status",
         "storeCode",
         "organization_id",
+        "createdAt",
       ],
 
       include: [
@@ -266,7 +265,6 @@ export const getRetailInventory = async (req, res) => {
     // SUMMARY
     // =================================================
 
-    let deadStock = 0;
     let transitGoods = 0;
     let lowStock = 0;
 
@@ -307,8 +305,6 @@ export const getRetailInventory = async (req, res) => {
       );
 
       transitGoods += transit_qty;
-
-      deadStock += dead_qty;
 
       if (
         available_qty > 0 &&
@@ -378,7 +374,7 @@ export const getRetailInventory = async (req, res) => {
     });
 
     // =================================================
-    // SAME QUERY AS DASHBOARD
+    // TOTAL STOCK - SAME AS DASHBOARD
     // =================================================
 
     const totalStockResult =
@@ -425,6 +421,79 @@ export const getRetailInventory = async (req, res) => {
 
     const totalStock = Number(
       totalStockResult?.[0]?.total || 0
+    );
+
+    // =================================================
+    // DEAD STOCK - SAME AS DASHBOARD
+    // =================================================
+
+    const deadStockResult =
+      await sequelize.query(
+        `
+          SELECT
+            COUNT(
+              DISTINCT CASE
+                WHEN
+                  s.available_qty > 0
+
+                  AND i."createdAt"
+                  < NOW() - INTERVAL '30 days'
+
+                  AND NOT EXISTS (
+
+                    SELECT 1
+
+                    FROM invoice_items ii
+
+                    JOIN invoices inv
+                    ON inv.id = ii.invoice_id
+
+                    WHERE ii.item_id = i.id
+
+                    AND inv."createdAt"
+                    > NOW() - INTERVAL '30 days'
+                  )
+
+                THEN i.id
+              END
+            )::int AS dead_stock_items
+
+          FROM stocks s
+
+          INNER JOIN items i
+          ON i.id = s.item_id
+
+          WHERE 1=1
+
+          ${
+            itemWhere.storeCode
+              ? `AND i."storeCode" = :store_code`
+              : ""
+          }
+
+          ${
+            itemWhere.organization_id
+              ? `AND i.organization_id = :organization_id`
+              : ""
+          }
+        `,
+        {
+          replacements: {
+            store_code:
+              itemWhere.storeCode,
+
+            organization_id:
+              itemWhere.organization_id,
+          },
+
+          type:
+            sequelize.QueryTypes.SELECT,
+        }
+      );
+
+    const deadStock = Number(
+      deadStockResult?.[0]
+        ?.dead_stock_items || 0
     );
 
     return res.status(200).json({

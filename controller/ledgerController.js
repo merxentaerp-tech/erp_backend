@@ -1541,63 +1541,87 @@ export const downloadDistrictLedgerExcel = async (req, res) => {
 };
 
 
-export const downloadInvoiceById = async (req, res) => {
+// =========================
+// MODERN PROFESSIONAL PDF INVOICE
+// =========================
+
+// =========================
+// IMPORTS
+// =========================
+
+// import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
+
+// =========================
+// DOWNLOAD INVOICE
+// =========================
+
+export const downloadInvoiceById = async (
+  req,
+  res
+) => {
   try {
-    const invoice_id = Number(req.params.invoice_id);
+    // =========================
+    // VALIDATION
+    // =========================
+
+    const invoice_id = Number(
+      req.params.invoice_id
+    );
 
     if (isNaN(invoice_id)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid invoice_id",
+        message: "Invalid invoice id",
       });
     }
 
     if (!req.user) {
       return res.status(401).json({
         success: false,
-        message: "User not authenticated",
+        message: "Unauthorized",
       });
     }
 
-    const organization_id = req.user?.organization_id || null;
+    const organization_id =
+      req.user.organization_id;
 
-    const invoiceWhere = {
-      id: invoice_id,
-    };
+    // =========================
+    // FETCH INVOICE
+    // =========================
 
-    // Access check same org ke basis par
-    if (organization_id) {
-      invoiceWhere.organization_id = organization_id;
-    }
-
-    // 1. Invoice fetch
     const invoice = await Invoice.findOne({
-      where: invoiceWhere,
+      where: {
+        id: invoice_id,
+        organization_id,
+      },
       raw: true,
     });
 
     if (!invoice) {
       return res.status(404).json({
         success: false,
-        message: "Invoice not found or access denied",
+        message: "Invoice not found",
       });
     }
 
-    // 2. Customer fetch separately
-    let customer = null;
+    // =========================
+    // FETCH CUSTOMER
+    // =========================
 
-    if (invoice.customer_id) {
-      customer = await Customer.findOne({
+    const customer =
+      await Customer.findOne({
         where: {
           id: invoice.customer_id,
-          ...(organization_id ? { organization_id } : {}),
         },
         raw: true,
       });
-    }
 
-    // 3. Invoice items fetch with raw SQL
-    // IMPORTANT: InvoiceItem model use nahi karna, kyunki model/DB column mismatch aa raha hai.
+    // =========================
+    // FETCH ITEMS
+    // =========================
+
     const items = await sequelize.query(
       `
       SELECT *
@@ -1607,282 +1631,698 @@ export const downloadInvoiceById = async (req, res) => {
       `,
       {
         replacements: {
-          invoice_id: invoice.id,
+          invoice_id,
         },
         type: QueryTypes.SELECT,
       }
     );
 
-    const safeFileName = String(
-      invoice.invoice_number || `invoice_${invoice.id}`
-    ).replace(/[^\w\-]/g, "_");
+    // =========================
+    // PDF CONFIG
+    // =========================
 
-    const fileName = `${safeFileName}.pdf`;
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 0,
+    });
 
-    res.setHeader("Content-Type", "application/pdf");
+    const fileName = `invoice_${invoice.id}.pdf`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/pdf"
+    );
+
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${fileName}"`
     );
 
-    const doc = new PDFDocument({
-      size: "A4",
-      margin: 40,
-      bufferPages: true,
-    });
-
     doc.pipe(res);
 
-    const formatMoney = (value) => {
-      const num = Number(value || 0);
-      return `Rs. ${num.toFixed(2)}`;
+    // =========================
+    // LOGO
+    // =========================
+
+    const logoPath = path.join(
+      process.cwd(),
+      "public",
+      "logo.png"
+    );
+
+    // =========================
+    // COLORS
+    // =========================
+
+    const COLORS = {
+      bg: "#F8F6F3",
+      white: "#FFFFFF",
+      primary: "#2C3E50",
+      secondary: "#7B6D62",
+      accent: "#C7A17A",
+      accentLight: "#EFE5DA",
+      border: "#E7DED5",
+      tableHead: "#A27B5C",
+      text: "#6B7280",
     };
 
-    const formatWeight = (value) => {
-      const num = Number(value || 0);
-      return num.toFixed(3);
-    };
+    // =========================
+    // HELPERS
+    // =========================
 
-    const formatDate = (value) => {
-      if (!value) return "-";
-
-      const date = new Date(value);
-
-      if (isNaN(date.getTime())) {
-        return "-";
-      }
-
-      return date.toLocaleDateString("en-IN");
-    };
-
-    // ================= HEADER =================
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(20)
-      .text("TAX INVOICE", {
-        align: "center",
-      });
-
-    doc.moveDown(0.5);
-
-    doc
-      .font("Helvetica")
-      .fontSize(10)
-      .text(`Invoice No: ${invoice.invoice_number || "-"}`, 40, 80)
-      .text(`Invoice Date: ${formatDate(invoice.invoice_date)}`, 40, 96)
-      .text(`Store Code: ${invoice.store_code || "-"}`, 40, 112);
-
-    doc
-      .font("Helvetica")
-      .fontSize(10)
-      .text(`Invoice ID: ${invoice.id}`, 390, 80, {
-        width: 160,
-        align: "right",
-      })
-      .text(`Status: ${invoice.status || "-"}`, 390, 96, {
-        width: 160,
-        align: "right",
-      });
-
-    doc.moveDown(3);
-
-    // ================= CUSTOMER =================
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(13)
-      .text("Customer Details", 40, 145);
-
-    doc
-      .moveTo(40, 163)
-      .lineTo(555, 163)
-      .stroke();
-
-    doc
-      .font("Helvetica")
-      .fontSize(10)
-      .text(`Name: ${customer?.name || "-"}`, 40, 175)
-      .text(`Phone: ${customer?.phone || "-"}`, 40, 191)
-      .text(`Address: ${customer?.address || "-"}`, 40, 207, {
-        width: 320,
-      })
-      .text(`PAN: ${customer?.pan_card_number || "-"}`, 40, 237);
-
-    // ================= ITEMS TABLE =================
-    let y = 275;
-
-    const drawTableHeader = () => {
+    const drawText = (
+      text,
+      x,
+      y,
+      size = 10,
+      color = COLORS.primary,
+      bold = false,
+      align = "left",
+      width = 100
+    ) => {
       doc
-        .font("Helvetica-Bold")
-        .fontSize(9)
-        .text("No.", 40, y, { width: 25 })
-        .text("Product", 68, y, { width: 115 })
-        .text("Purity", 185, y, { width: 45 })
-        .text("Qty", 230, y, { width: 35, align: "right" })
-        .text("Net Wt", 270, y, { width: 55, align: "right" })
-        .text("Rate", 330, y, { width: 60, align: "right" })
-        .text("Making", 395, y, { width: 65, align: "right" })
-        .text("Total", 465, y, { width: 85, align: "right" });
+        .fillColor(color)
+        .font(
+          bold
+            ? "Helvetica-Bold"
+            : "Helvetica"
+        )
+        .fontSize(size)
+        .text(String(text || ""), x, y, {
+          width,
+          align,
+        });
+    };
 
-      y += 16;
+    const roundedBox = (
+      x,
+      y,
+      w,
+      h,
+      fill = COLORS.white,
+      border = COLORS.border,
+      radius = 12
+    ) => {
+      doc
+        .fillColor(fill)
+        .roundedRect(
+          x,
+          y,
+          w,
+          h,
+          radius
+        )
+        .fill();
 
       doc
-        .moveTo(40, y)
-        .lineTo(555, y)
+        .strokeColor(border)
+        .lineWidth(1)
+        .roundedRect(
+          x,
+          y,
+          w,
+          h,
+          radius
+        )
         .stroke();
-
-      y += 8;
     };
 
+    // =========================
+    // PAGE BG
+    // =========================
+
     doc
-      .font("Helvetica-Bold")
-      .fontSize(13)
-      .text("Invoice Items", 40, y);
+      .fillColor(COLORS.bg)
+      .rect(0, 0, 595, 842)
+      .fill();
 
-    y += 22;
+    // =========================
+    // HEADER CARD
+    // =========================
 
-    drawTableHeader();
+    roundedBox(
+      25,
+      25,
+      545,
+      150,
+      COLORS.white,
+      COLORS.border,
+      18
+    );
 
-    doc.font("Helvetica").fontSize(8);
+    // LEFT ACCENT
 
-    if (!items.length) {
-      doc.text("No items found", 40, y);
-      y += 20;
+    doc
+      .fillColor(COLORS.accent)
+      .roundedRect(25, 25, 8, 150, 10)
+      .fill();
+
+    // LOGO
+
+    if (fs.existsSync(logoPath)) {
+      doc.image(logoPath, 45, 48, {
+        fit: [70, 70],
+      });
     }
 
-    items.forEach((item, index) => {
-      if (y > 720) {
-        doc.addPage();
-        y = 50;
-        drawTableHeader();
-        doc.font("Helvetica").fontSize(8);
-      }
+    // TITLE
 
-      const productText =
-        item.description ||
-        item.product_name ||
-        item.product_code ||
-        item.article_code ||
-        item.sku_code ||
-        "-";
+    drawText(
+      "TAX INVOICE",
+      0,
+      38,
+      30,
+      COLORS.primary,
+      true,
+      "center",
+      595
+    );
 
-      const quantity = Number(item.quantity || item.qty || 1);
-      const netWeight = item.net_weight || 0;
-      const rate = item.rate || 0;
-      const making =
-        item.making_charge_value ||
-        item.making_charge_amount ||
-        item.making_charge_percent ||
-        0;
-      const total =
-        item.total_amount ||
-        item.line_total ||
-        item.value ||
-        0;
+    // UNDERLINE
+
+    doc
+      .strokeColor(COLORS.accent)
+      .lineWidth(2)
+      .moveTo(255, 82)
+      .lineTo(340, 82)
+      .stroke();
+
+    // COMPANY NAME
+
+    drawText(
+      "Merxenta Global Private Limited",
+      0,
+      102,
+      18,
+      COLORS.primary,
+      true,
+      "center",
+      595
+    );
+
+    drawText(
+      "H. No. 999/9, Gurugram, Haryana, India",
+      0,
+      130,
+      10,
+      COLORS.text,
+      false,
+      "center",
+      595
+    );
+
+    drawText(
+      "PH: 0120-256211",
+      0,
+      146,
+      10,
+      COLORS.text,
+      false,
+      "center",
+      595
+    );
+
+    // DECORATIVE STRIP
+
+    doc
+      .fillColor("#D9C2A8")
+      .roundedRect(25, 192, 380, 6, 5)
+      .fill();
+
+    doc
+      .fillColor("#B08968")
+      .polygon(
+        [405, 192],
+        [570, 192],
+        [545, 198],
+        [385, 198]
+      )
+      .fill();
+
+    // =========================
+    // INFO CARD
+    // =========================
+
+    const infoCard = (
+      x,
+      y,
+      w,
+      h,
+      title,
+      value
+    ) => {
+      roundedBox(
+        x,
+        y,
+        w,
+        h,
+        COLORS.white,
+        COLORS.border,
+        16
+      );
+
+      // LEFT STRIP
 
       doc
-        .font("Helvetica")
-        .fontSize(8)
-        .text(index + 1, 40, y, { width: 25 })
-        .text(productText, 68, y, {
-          width: 115,
-          height: 28,
-          ellipsis: true,
-        })
-        .text(item.purity || "-", 185, y, { width: 45 })
-        .text(quantity.toFixed(0), 230, y, {
-          width: 35,
-          align: "right",
-        })
-        .text(formatWeight(netWeight), 270, y, {
-          width: 55,
-          align: "right",
-        })
-        .text(Number(rate || 0).toFixed(2), 330, y, {
-          width: 60,
-          align: "right",
-        })
-        .text(Number(making || 0).toFixed(2), 395, y, {
-          width: 65,
-          align: "right",
-        })
-        .text(Number(total || 0).toFixed(2), 465, y, {
-          width: 85,
-          align: "right",
-        });
+        .fillColor(COLORS.accentLight)
+        .roundedRect(
+          x,
+          y,
+          8,
+          h,
+          16
+        )
+        .fill();
 
-      y += 30;
+      // LABEL
+
+      drawText(
+        title,
+        x + 24,
+        y + 15,
+        9,
+        COLORS.secondary,
+        true
+      );
+
+      // VALUE
+
+      drawText(
+        value,
+        x + 24,
+        y + 38,
+        13,
+        COLORS.primary,
+        true
+      );
+    };
+
+    // =========================
+    // CUSTOMER INFO
+    // =========================
+
+    let infoY = 225;
+
+    infoCard(
+      30,
+      infoY,
+      255,
+      70,
+      "Customer Name",
+      customer?.name || "-"
+    );
+
+    infoCard(
+      310,
+      infoY,
+      255,
+      70,
+      "Invoice Number",
+      String(
+        invoice.invoice_number ||
+          invoice.id
+      )
+    );
+
+    infoCard(
+      30,
+      infoY + 85,
+      255,
+      70,
+      "Customer Address",
+      customer?.address || "-"
+    );
+
+    infoCard(
+      310,
+      infoY + 85,
+      255,
+      70,
+      "Invoice Date",
+      new Date(
+        invoice.invoice_date ||
+          invoice.createdAt
+      ).toLocaleDateString("en-IN")
+    );
+
+    infoCard(
+      30,
+      infoY + 170,
+      255,
+      70,
+      "State",
+      customer?.state || "Haryana"
+    );
+
+    infoCard(
+      310,
+      infoY + 170,
+      255,
+      70,
+      "State Code",
+      customer?.state_code ||
+        "STR004"
+    );
+
+    // =========================
+    // TABLE START
+    // =========================
+
+    let y = 500;
+
+    const columns = [
+      {
+        title: "S.No",
+        x: 30,
+        width: 50,
+      },
+      {
+        title: "Product",
+        x: 80,
+        width: 145,
+      },
+      {
+        title: "Purity",
+        x: 225,
+        width: 70,
+      },
+      {
+        title: "Gross",
+        x: 295,
+        width: 70,
+      },
+      {
+        title: "Less",
+        x: 365,
+        width: 70,
+      },
+      {
+        title: "Net",
+        x: 435,
+        width: 70,
+      },
+      {
+        title: "Rate",
+        x: 505,
+        width: 60,
+      },
+    ];
+
+    // =========================
+    // TABLE HEADER
+    // =========================
+
+    columns.forEach((col) => {
+      doc
+        .fillColor(COLORS.tableHead)
+        .roundedRect(
+          col.x,
+          y,
+          col.width,
+          42,
+          0
+        )
+        .fill();
+
+      drawText(
+        col.title,
+        col.x,
+        y + 14,
+        10,
+        COLORS.white,
+        true,
+        "center",
+        col.width
+      );
     });
 
-    if (y > 650) {
-      doc.addPage();
-      y = 60;
-    }
+    y += 42;
+
+    // =========================
+    // TOTALS
+    // =========================
+
+    let totalNet = 0;
+    let totalRate = 0;
+    let totalAmount = 0;
+
+    // =========================
+    // TABLE ROWS
+    // =========================
+
+    items.forEach((item, index) => {
+      const bg =
+        index % 2 === 0
+          ? "#FFFFFF"
+          : "#FAF7F4";
+
+      const gross = Number(
+        item.gross_weight || 0
+      );
+
+      const less = Number(
+        item.less_weight || 0
+      );
+
+      const net = Number(
+        item.net_weight || 0
+      );
+
+      const rate = Number(
+        item.rate || 0
+      );
+
+      const amount = Number(
+        item.total_amount || 0
+      );
+
+      totalNet += net;
+      totalRate += rate;
+      totalAmount += amount;
+
+      const row = [
+        index + 1,
+        item.description || "-",
+        item.purity || "-",
+        gross.toFixed(3),
+        less.toFixed(3),
+        net.toFixed(3),
+        rate.toFixed(2),
+      ];
+
+      columns.forEach((col, i) => {
+        doc
+          .fillColor(bg)
+          .rect(
+            col.x,
+            y,
+            col.width,
+            44
+          )
+          .fill();
+
+        doc
+          .strokeColor(COLORS.border)
+          .lineWidth(1)
+          .rect(
+            col.x,
+            y,
+            col.width,
+            44
+          )
+          .stroke();
+
+        drawText(
+          row[i],
+          col.x,
+          y + 15,
+          10,
+          COLORS.primary,
+          i === 1,
+          "center",
+          col.width
+        );
+      });
+
+      y += 44;
+    });
+
+    // =========================
+    // TOTAL ROW
+    // =========================
 
     doc
-      .moveTo(40, y)
-      .lineTo(555, y)
+      .fillColor(COLORS.accentLight)
+      .roundedRect(
+        30,
+        y,
+        535,
+        50,
+        12
+      )
+      .fill();
+
+    drawText(
+      "TOTAL",
+      50,
+      y + 17,
+      12,
+      COLORS.secondary,
+      true
+    );
+
+    drawText(
+      totalNet.toFixed(3),
+      438,
+      y + 17,
+      11,
+      COLORS.primary,
+      true
+    );
+
+    drawText(
+      totalRate.toFixed(2),
+      510,
+      y + 17,
+      11,
+      COLORS.primary,
+      true
+    );
+
+    // =========================
+    // TAX
+    // =========================
+
+    const sgst =
+      totalAmount * 0.015;
+
+    const cgst =
+      totalAmount * 0.015;
+
+    const grandTotal =
+      totalAmount + sgst + cgst;
+
+    // =========================
+    // SUMMARY BOX
+    // =========================
+
+    const summaryX = 330;
+    const summaryY = y + 80;
+
+    roundedBox(
+      summaryX,
+      summaryY,
+      235,
+      125,
+      COLORS.white,
+      COLORS.border,
+      16
+    );
+
+    const summaryRows = [
+      [
+        "SGST 1.5%",
+        sgst.toFixed(2),
+      ],
+      [
+        "CGST 1.5%",
+        cgst.toFixed(2),
+      ],
+      [
+        "Grand Total",
+        grandTotal.toFixed(2),
+      ],
+    ];
+
+    summaryRows.forEach(
+      ([label, value], index) => {
+        const rowY =
+          summaryY + index * 41;
+
+        const fill =
+          label === "Grand Total"
+            ? COLORS.accentLight
+            : COLORS.white;
+
+        doc
+          .fillColor(fill)
+          .rect(
+            summaryX,
+            rowY,
+            235,
+            41
+          )
+          .fill();
+
+        doc
+          .strokeColor(COLORS.border)
+          .lineWidth(1)
+          .rect(
+            summaryX,
+            rowY,
+            235,
+            41
+          )
+          .stroke();
+
+        drawText(
+          label,
+          summaryX + 18,
+          rowY + 14,
+          11,
+          COLORS.primary,
+          true
+        );
+
+        drawText(
+          value,
+          summaryX + 145,
+          rowY + 14,
+          11,
+          COLORS.primary,
+          true
+        );
+      }
+    );
+
+    // =========================
+    // FOOTER
+    // =========================
+
+    doc
+      .strokeColor("#D9C2A8")
+      .lineWidth(1.5)
+      .moveTo(220, 800)
+      .lineTo(370, 800)
       .stroke();
 
-    y += 20;
+    drawText(
+      "This is a computer generated invoice.",
+      0,
+      812,
+      10,
+      COLORS.text,
+      false,
+      "center",
+      595
+    );
 
-    // ================= SUMMARY =================
-    const totalAmount = Number(invoice.total_amount || 0);
-    const receivedAmount = Number(invoice.received_amount || 0);
-    const pendingAmount = Number(invoice.pending_amount || 0);
-
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(11)
-      .text("Summary", 360, y);
-
-    y += 18;
-
-    doc
-      .font("Helvetica")
-      .fontSize(10)
-      .text("Total Amount:", 360, y, { width: 90 })
-      .text(formatMoney(totalAmount), 455, y, {
-        width: 95,
-        align: "right",
-      });
-
-    y += 16;
-
-    doc
-      .text("Received:", 360, y, { width: 90 })
-      .text(formatMoney(receivedAmount), 455, y, {
-        width: 95,
-        align: "right",
-      });
-
-    y += 16;
-
-    doc
-      .text("Pending:", 360, y, { width: 90 })
-      .text(formatMoney(pendingAmount), 455, y, {
-        width: 95,
-        align: "right",
-      });
-
-    y += 45;
-
-    // ================= FOOTER =================
-    doc
-      .font("Helvetica")
-      .fontSize(9)
-      .text("Thank you for your business.", 40, y, {
-        align: "center",
-        width: 515,
-      });
+    // =========================
+    // END PDF
+    // =========================
 
     doc.end();
   } catch (err) {
-    console.error("Download Invoice Error:", err);
+    console.error(
+      "Download Invoice Error:",
+      err
+    );
 
     if (!res.headersSent) {
       return res.status(500).json({
         success: false,
-        message: "Failed to download invoice",
+        message:
+          "Failed to download invoice",
         error: err.message,
       });
     }

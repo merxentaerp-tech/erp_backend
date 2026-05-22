@@ -122,7 +122,8 @@ export const getRetailInventory = async (req, res) => {
         Number(user.organization_id);
 
       // =================================================
-      // STORE FILTER
+      // IMPORTANT FIX
+      // SAME LOGIC AS DASHBOARD
       // =================================================
 
       if (
@@ -131,11 +132,19 @@ export const getRetailInventory = async (req, res) => {
         ) &&
         user.store_code
       ) {
-        stockWhere.store_code = String(
+        const cleanStoreCode = String(
           user.store_code
         )
           .trim()
           .toUpperCase();
+
+        // Dashboard uses ONLY items.storeCode
+        itemWhere.storeCode =
+          cleanStoreCode;
+
+        // IMPORTANT:
+        // DO NOT FILTER stocks.store_code
+        // otherwise mismatch happens
       }
     }
 
@@ -257,7 +266,6 @@ export const getRetailInventory = async (req, res) => {
     // SUMMARY
     // =================================================
 
-    let totalStock = 0;
     let deadStock = 0;
     let transitGoods = 0;
     let lowStock = 0;
@@ -266,10 +274,6 @@ export const getRetailInventory = async (req, res) => {
       const stocks = Array.isArray(item.stocks)
         ? item.stocks
         : [];
-
-      // =================================================
-      // STORE WISE STOCK SUM
-      // =================================================
 
       const available_qty = stocks.reduce(
         (sum, s) =>
@@ -301,8 +305,6 @@ export const getRetailInventory = async (req, res) => {
           sum + Number(s.dead_qty || 0),
         0
       );
-
-      totalStock += available_qty;
 
       transitGoods += transit_qty;
 
@@ -366,9 +368,7 @@ export const getRetailInventory = async (req, res) => {
           item.current_status,
 
         storeCode:
-          stocks?.[0]?.store_code ||
-          item.storeCode ||
-          null,
+          item.storeCode || null,
 
         organization_id:
           item.organization_id,
@@ -377,6 +377,56 @@ export const getRetailInventory = async (req, res) => {
       };
     });
 
+    // =================================================
+    // SAME QUERY AS DASHBOARD
+    // =================================================
+
+    const totalStockResult =
+      await sequelize.query(
+        `
+          SELECT
+            COALESCE(
+              SUM(s.available_qty),
+              0
+            ) AS total
+
+          FROM stocks s
+
+          INNER JOIN items i
+          ON i.id = s.item_id
+
+          WHERE 1=1
+
+          ${
+            itemWhere.storeCode
+              ? `AND i."storeCode" = :store_code`
+              : ""
+          }
+
+          ${
+            itemWhere.organization_id
+              ? `AND i.organization_id = :organization_id`
+              : ""
+          }
+        `,
+        {
+          replacements: {
+            store_code:
+              itemWhere.storeCode,
+
+            organization_id:
+              itemWhere.organization_id,
+          },
+
+          type:
+            sequelize.QueryTypes.SELECT,
+        }
+      );
+
+    const totalStock = Number(
+      totalStockResult?.[0]?.total || 0
+    );
+
     return res.status(200).json({
       success: true,
 
@@ -384,13 +434,17 @@ export const getRetailInventory = async (req, res) => {
         "Retail inventory fetched successfully",
 
       summary: {
-        total_stock_items: totalStock,
+        total_stock_items:
+          totalStock,
 
-        dead_stock_items: deadStock,
+        dead_stock_items:
+          deadStock,
 
-        low_stock_items: lowStock,
+        low_stock_items:
+          lowStock,
 
-        transit_goods: transitGoods,
+        transit_goods:
+          transitGoods,
       },
 
       pagination: {
@@ -418,7 +472,6 @@ export const getRetailInventory = async (req, res) => {
     });
   }
 };
-
 export const getDistrictInventory = async (req, res) => {
   try {
     const user = req.user;

@@ -103,44 +103,36 @@ export const getRetailInventory = async (req, res) => {
     ).toLowerCase();
 
     // =================================================
-    // ACCESS FILTER
-    // =================================================
+// ACCESS FILTER
+// =================================================
 
-    if (role === "super_admin") {
-      if (organization_id) {
-        itemWhere.organization_id =
-          Number(organization_id);
+if (role === "super_admin") {
+  if (organization_id) {
+    itemWhere.organization_id =
+      Number(organization_id);
 
-        stockWhere.organization_id =
-          Number(organization_id);
-      }
-    } else {
-      itemWhere.organization_id =
-        Number(user.organization_id);
+    stockWhere.organization_id =
+      Number(organization_id);
+  }
+} else {
+  // =================================================
+  // STORE BASED FILTER
+  // =================================================
 
-      stockWhere.organization_id =
-        Number(user.organization_id);
+  if (user.store_code) {
+    const cleanStoreCode = String(
+      user.store_code
+    )
+      .trim()
+      .toUpperCase();
 
-      // =================================================
-      // SAME STORE FILTER AS DASHBOARD
-      // =================================================
+    itemWhere.storeCode =
+      cleanStoreCode;
 
-      if (
-        ["district", "retail", "store"].includes(
-          level
-        ) &&
-        user.store_code
-      ) {
-        const cleanStoreCode = String(
-          user.store_code
-        )
-          .trim()
-          .toUpperCase();
-
-        itemWhere.storeCode =
-          cleanStoreCode;
-      }
-    }
+    stockWhere.store_code =
+      cleanStoreCode;
+  }
+}
 
     // =================================================
     // FILTERS
@@ -225,7 +217,9 @@ export const getRetailInventory = async (req, res) => {
 
           as: "stocks",
 
-          required: true,
+          // ✅ IMPORTANT FIX
+          // quantity 0 / empty stock items bhi aayenge
+          required: false,
 
           where:
             Object.keys(stockWhere).length
@@ -263,6 +257,18 @@ export const getRetailInventory = async (req, res) => {
 
     let transitGoods = 0;
     let lowStock = 0;
+
+    // ✅ IMPORTANT FIX
+    // all category items count honge
+    const categoryCounts = {};
+
+    items.forEach((item) => {
+      const key =
+        item.category || "Others";
+
+      categoryCounts[key] =
+        (categoryCounts[key] || 0) + 1;
+    });
 
     const data = items.map((item) => {
       const stocks = Array.isArray(item.stocks)
@@ -309,15 +315,6 @@ export const getRetailInventory = async (req, res) => {
         lowStock++;
       }
 
-      // =================================================
-      // TOTAL CHILD ITEMS INSIDE CATEGORY
-      // =================================================
-
-      const total_category_items =
-        items.filter(
-          (i) => i.category === item.category
-        ).length;
-
       return {
         id: item.id,
 
@@ -329,7 +326,11 @@ export const getRetailInventory = async (req, res) => {
 
         category: item.category,
 
-        total_category_items,
+        // ✅ FIXED
+        total_category_items:
+          categoryCounts[
+            item.category || "Others"
+          ] || 0,
 
         metal_type: item.metal_type,
 
@@ -402,7 +403,7 @@ export const getRetailInventory = async (req, res) => {
 
           ${
             itemWhere.storeCode
-              ? `AND i."storeCode" = :store_code`
+              ? `AND s.store_code = :store_code`
               : ""
           }
 
@@ -474,7 +475,7 @@ export const getRetailInventory = async (req, res) => {
 
           ${
             itemWhere.storeCode
-              ? `AND i."storeCode" = :store_code`
+              ? `AND s.store_code = :store_code`
               : ""
           }
 

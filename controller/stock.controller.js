@@ -751,36 +751,64 @@ export const getDistrictInventory = async (req, res) => {
 export const getStockItemsByCategory = async (req, res) => {
   try {
     const user = req.user;
+
     const { category } = req.params;
-    const { organization_id, search, metal_type } = req.query;
+
+    const {
+      organization_id,
+      search,
+      metal_type,
+    } = req.query;
 
     let orgId = null;
 
     const getAuditBusinessDate = () => {
       const indiaNow = new Date(
-        new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
+        new Date().toLocaleString(
+          "en-US",
+          {
+            timeZone: "Asia/Kolkata",
+          }
+        )
       );
 
       // 8 AM se pehle previous day audit valid rahega
       if (indiaNow.getHours() < 8) {
-        indiaNow.setDate(indiaNow.getDate() - 1);
+        indiaNow.setDate(
+          indiaNow.getDate() - 1
+        );
       }
 
-      return indiaNow.toISOString().slice(0, 10);
+      return indiaNow
+        .toISOString()
+        .slice(0, 10);
     };
 
-    const isSameDate = (dateValue, targetDate) => {
+    const isSameDate = (
+      dateValue,
+      targetDate
+    ) => {
       if (!dateValue) return false;
-      return new Date(dateValue).toISOString().slice(0, 10) === targetDate;
+
+      return (
+        new Date(dateValue)
+          .toISOString()
+          .slice(0, 10) === targetDate
+      );
     };
 
     // =========================
     // Resolve organization
     // =========================
+
     if (user?.role === "super_admin") {
-      orgId = organization_id ? Number(organization_id) : null;
+      orgId = organization_id
+        ? Number(organization_id)
+        : null;
     } else {
-      orgId = user?.organization_id ? Number(user.organization_id) : null;
+      orgId = user?.organization_id
+        ? Number(user.organization_id)
+        : null;
     }
 
     if (!user?.role) {
@@ -790,47 +818,90 @@ export const getStockItemsByCategory = async (req, res) => {
       });
     }
 
-    if (user.role !== "super_admin" && !orgId) {
+    if (
+      user.role !== "super_admin" &&
+      !orgId
+    ) {
       return res.status(403).json({
         success: false,
-        message: "Organization not found for this user",
+        message:
+          "Organization not found for this user",
       });
     }
 
     if (!category) {
       return res.status(400).json({
         success: false,
-        message: "Category is required",
+        message:
+          "Category is required",
       });
     }
 
     // =========================
     // Filters
     // =========================
-    const itemWhere = { category };
+
+    const itemWhere = {
+      category,
+    };
+
     const stockWhere = {};
 
-    if (orgId) {
-      itemWhere.organization_id = orgId;
-      stockWhere.organization_id = orgId;
+    // =================================================
+    // STORE BASED FILTER
+    // =================================================
+
+    if (user?.store_code) {
+      const cleanStoreCode = String(
+        user.store_code
+      )
+        .trim()
+        .toUpperCase();
+
+      itemWhere.storeCode =
+        cleanStoreCode;
+
+      stockWhere.store_code =
+        cleanStoreCode;
     }
 
     if (metal_type) {
-      itemWhere.metal_type = metal_type;
+      itemWhere.metal_type =
+        metal_type;
     }
 
     if (search) {
       itemWhere[Op.or] = [
-        { item_name: { [Op.iLike]: `%${search}%` } },
-        { article_code: { [Op.iLike]: `%${search}%` } },
-        { sku_code: { [Op.iLike]: `%${search}%` } },
-        { purity: { [Op.iLike]: `%${search}%` } },
+        {
+          item_name: {
+            [Op.iLike]: `%${search}%`,
+          },
+        },
+
+        {
+          article_code: {
+            [Op.iLike]: `%${search}%`,
+          },
+        },
+
+        {
+          sku_code: {
+            [Op.iLike]: `%${search}%`,
+          },
+        },
+
+        {
+          purity: {
+            [Op.iLike]: `%${search}%`,
+          },
+        },
       ];
     }
 
     // =========================
     // Fetch items
     // =========================
+
     const items = await Item.findAll({
       attributes: [
         "id",
@@ -852,22 +923,34 @@ export const getStockItemsByCategory = async (req, res) => {
         "unit",
         "current_status",
         "organization_id",
+        "storeCode",
         "isItemAudit",
         "itemAuditAt",
         "createdAt",
         "updatedAt",
       ],
+
       where: itemWhere,
+
       include: [
         {
           model: Stock,
+
           as: "stocks",
+
           required: false,
-          where: Object.keys(stockWhere).length ? stockWhere : undefined,
+
+          where:
+            Object.keys(stockWhere)
+              .length
+              ? stockWhere
+              : undefined,
+
           attributes: [
             "id",
             "organization_id",
             "item_id",
+            "store_code",
             "available_qty",
             "available_weight",
             "reserved_qty",
@@ -880,93 +963,220 @@ export const getStockItemsByCategory = async (req, res) => {
             "dead_weight",
           ],
         },
+
         {
           model: Store,
+
           as: "organization",
+
           required: false,
-          attributes: ["id", "store_code", "store_name", "organization_level"],
+
+          attributes: [
+            "id",
+            "store_code",
+            "store_name",
+            "organization_level",
+          ],
         },
       ],
+
       order: [["id", "DESC"]],
     });
 
-    const auditBusinessDate = getAuditBusinessDate();
+    const auditBusinessDate =
+      getAuditBusinessDate();
 
     // =========================
     // Flatten response
     // =========================
-    const data = items.map((item, index) => {
-      const stock =
-        Array.isArray(item.stocks) && item.stocks.length > 0
-          ? item.stocks[0]
-          : null;
 
-      return {
-        idx: index,
-        id: Number(item.id || 0),
-        article_code: item.article_code || "",
-        sku_code: item.sku_code || "",
-        item_name: item.item_name || "",
-        metal_type: item.metal_type || "",
-        category: item.category || "",
-        details: item.details || "",
-        purity: item.purity || "",
+    const data = items.map(
+      (item, index) => {
+        const stock =
+          Array.isArray(item.stocks) &&
+          item.stocks.length > 0
+            ? item.stocks[0]
+            : null;
 
-        gross_weight: Number(item.gross_weight || 0),
-        net_weight: Number(item.net_weight || 0),
-        stone_weight: Number(item.stone_weight || 0),
-        stone_amount: Number(item.stone_amount || 0),
+        return {
+          idx: index,
 
-        making_charge: Number(item.making_charge || 0),
-        purchase_rate: Number(item.purchase_rate || 0),
-        sale_rate: Number(item.sale_rate || 0),
+          id: Number(item.id || 0),
 
-        hsn_code: item.hsn_code || "",
-        unit: item.unit || "",
-        current_status: item.current_status || "",
+          article_code:
+            item.article_code || "",
 
-        stock_id: stock ? Number(stock.id || 0) : null,
-        quantity: Number(stock?.available_qty || 0),
-        available_qty: Number(stock?.available_qty || 0),
-        available_weight: Number(stock?.available_weight || 0),
-        reserved_qty: Number(stock?.reserved_qty || 0),
-        reserved_weight: Number(stock?.reserved_weight || 0),
-        transit_qty: Number(stock?.transit_qty || 0),
-        transit_weight: Number(stock?.transit_weight || 0),
-        damaged_qty: Number(stock?.damaged_qty || 0),
-        damaged_weight: Number(stock?.damaged_weight || 0),
-        dead_qty: Number(stock?.dead_qty || 0),
-        dead_weight: Number(stock?.dead_weight || 0),
+          sku_code:
+            item.sku_code || "",
 
-        store_id: item.organization ? Number(item.organization.id || 0) : null,
-        storeCode: item.organization?.store_code || null,
-        storeName: item.organization?.store_name || null,
-        organization_level: item.organization?.organization_level || null,
-        organization_id: Number(item.organization_id || 0),
+          item_name:
+            item.item_name || "",
 
-        isItemAudit: isSameDate(item.itemAuditAt, auditBusinessDate),
-        itemAuditAt: item.itemAuditAt || null,
+          metal_type:
+            item.metal_type || "",
 
-        createdAt: item.createdAt || null,
-        updatedAt: item.updatedAt || null,
+          category:
+            item.category || "",
 
-        action: "View",
-      };
-    });
+          details:
+            item.details || "",
+
+          purity:
+            item.purity || "",
+
+          gross_weight: Number(
+            item.gross_weight || 0
+          ),
+
+          net_weight: Number(
+            item.net_weight || 0
+          ),
+
+          stone_weight: Number(
+            item.stone_weight || 0
+          ),
+
+          stone_amount: Number(
+            item.stone_amount || 0
+          ),
+
+          making_charge: Number(
+            item.making_charge || 0
+          ),
+
+          purchase_rate: Number(
+            item.purchase_rate || 0
+          ),
+
+          sale_rate: Number(
+            item.sale_rate || 0
+          ),
+
+          hsn_code:
+            item.hsn_code || "",
+
+          unit: item.unit || "",
+
+          current_status:
+            item.current_status || "",
+
+          stock_id: stock
+            ? Number(stock.id || 0)
+            : null,
+
+          quantity: Number(
+            stock?.available_qty || 0
+          ),
+
+          available_qty: Number(
+            stock?.available_qty || 0
+          ),
+
+          available_weight: Number(
+            stock?.available_weight || 0
+          ),
+
+          reserved_qty: Number(
+            stock?.reserved_qty || 0
+          ),
+
+          reserved_weight: Number(
+            stock?.reserved_weight || 0
+          ),
+
+          transit_qty: Number(
+            stock?.transit_qty || 0
+          ),
+
+          transit_weight: Number(
+            stock?.transit_weight || 0
+          ),
+
+          damaged_qty: Number(
+            stock?.damaged_qty || 0
+          ),
+
+          damaged_weight: Number(
+            stock?.damaged_weight || 0
+          ),
+
+          dead_qty: Number(
+            stock?.dead_qty || 0
+          ),
+
+          dead_weight: Number(
+            stock?.dead_weight || 0
+          ),
+
+          store_id:
+            item.organization
+              ? Number(
+                  item.organization.id ||
+                    0
+                )
+              : null,
+
+          storeCode:
+            item.organization
+              ?.store_code || null,
+
+          storeName:
+            item.organization
+              ?.store_name || null,
+
+          organization_level:
+            item.organization
+              ?.organization_level ||
+            null,
+
+          organization_id: Number(
+            item.organization_id || 0
+          ),
+
+          isItemAudit: isSameDate(
+            item.itemAuditAt,
+            auditBusinessDate
+          ),
+
+          itemAuditAt:
+            item.itemAuditAt || null,
+
+          createdAt:
+            item.createdAt || null,
+
+          updatedAt:
+            item.updatedAt || null,
+
+          action: "View",
+        };
+      }
+    );
 
     return res.status(200).json({
       success: true,
+
       message: `${category} items fetched successfully`,
+
       organization_id: orgId,
+
       category,
+
       count: data.length,
+
       data,
     });
   } catch (error) {
-    console.error("getStockItemsByCategory error:", error);
+    console.error(
+      "getStockItemsByCategory error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch category items",
+
+      message:
+        "Failed to fetch category items",
+
       error: error.message,
     });
   }

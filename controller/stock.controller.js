@@ -137,12 +137,8 @@ export const getRetailInventory = async (req, res) => {
           .trim()
           .toUpperCase();
 
-        // IMPORTANT:
-        // Dashboard uses items.storeCode
         itemWhere.storeCode =
           cleanStoreCode;
-
-        // DO NOT FILTER stocks.store_code
       }
     }
 
@@ -313,6 +309,15 @@ export const getRetailInventory = async (req, res) => {
         lowStock++;
       }
 
+      // =================================================
+      // TOTAL CHILD ITEMS INSIDE CATEGORY
+      // =================================================
+
+      const total_category_items =
+        items.filter(
+          (i) => i.category === item.category
+        ).length;
+
       return {
         id: item.id,
 
@@ -323,6 +328,8 @@ export const getRetailInventory = async (req, res) => {
         sku_code: item.sku_code,
 
         category: item.category,
+
+        total_category_items,
 
         metal_type: item.metal_type,
 

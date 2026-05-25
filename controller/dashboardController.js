@@ -237,247 +237,449 @@ export const getDashboardSummary = async (req, res) => {
       });
     }
 
-    const role = String(req.user?.role || "").toLowerCase();
-    const isSuper = role === "super_admin" || role.startsWith("super_");
+    const role = String(
+      req.user?.role || ""
+    ).toLowerCase();
 
-    const organizationId = req.user?.organization_id;
-    const storeCode = req.user?.store_code;
+    const isSuper =
+      role === "super_admin" ||
+      role.startsWith("super_");
+
+    const organizationId =
+      req.user?.organization_id;
+
+    const storeCode = String(
+      req.user?.store_code || ""
+    )
+      .trim()
+      .toUpperCase();
 
     if (!isSuper && !storeCode) {
       return res.status(403).json({
         success: false,
-        message: "Store code missing in token",
+        message:
+          "Store code missing in token",
       });
     }
 
     const replacements = {
-      organization_id: organizationId,
+      organization_id:
+        organizationId,
+
       store_code: storeCode,
     };
 
-    const stockItemWhere = isSuper
+    // =====================================================
+    // SAME FILTER EVERYWHERE
+    // =====================================================
+
+    const stockWhere = isSuper
       ? ""
-      : ` AND i."storeCode" = :store_code`;
+      : `
+        AND s.store_code = :store_code
+      `;
 
     const movementWhere = isSuper
       ? ""
-      : ` AND sm.organization_id = :organization_id`;
+      : `
+        AND sm.organization_id = :organization_id
+      `;
 
     const taskWhere = isSuper
       ? ""
-      : ` AND t.store_code = :store_code`;
+      : `
+        AND t.store_code = :store_code
+      `;
 
     const activityWhere = isSuper
       ? ""
-      : ` AND sa.store_code = :store_code`;
+      : `
+        AND sa.store_code = :store_code
+      `;
 
     // =====================================================
-    // STOCK CARDS - RETAIL STORE DATA ONLY
+    // CENTRALIZED STOCK SUMMARY
     // =====================================================
-    const stockSummary = await sequelize.query(
-      `
-      SELECT
-        COALESCE(SUM(s.available_qty), 0) AS total_available_qty,
 
-        COALESCE(SUM(s.transit_qty), 0) AS total_transit_qty,
+    const stockSummary =
+      await sequelize.query(
+        `
+        SELECT
+          COALESCE(
+            SUM(s.available_qty),
+            0
+          )::numeric AS total_stock,
 
-        COUNT(
-          DISTINCT CASE
-            WHEN
-              s.available_qty > 0
+          COALESCE(
+            SUM(s.transit_qty),
+            0
+          )::numeric AS transit_goods,
 
-              AND i."createdAt"
-              < NOW() - INTERVAL '30 days'
+          COUNT(
+            DISTINCT CASE
+              WHEN
+                s.available_qty > 0
 
-              AND NOT EXISTS (
+                AND s.available_qty <= 5
 
-                SELECT 1
+              THEN s.item_id
+            END
+          )::int AS low_stock_items,
 
-                FROM invoice_items ii
+          COUNT(
+            DISTINCT CASE
+              WHEN
+                s.available_qty > 0
 
-                JOIN invoices inv
-                ON inv.id = ii.invoice_id
+                AND i."createdAt"
+                < NOW() - INTERVAL '30 days'
 
-                WHERE ii.item_id = i.id
+                AND NOT EXISTS (
 
-                AND inv."createdAt"
-                > NOW() - INTERVAL '30 days'
-              )
+                  SELECT 1
 
-            THEN i.id
-          END
-        )::int AS dead_stock_items,
+                  FROM invoice_items ii
 
-        COUNT(
-          CASE
-            WHEN COALESCE(s.transit_qty,0) > 0
-            THEN 1
-          END
-        )::int AS transit_goods
+                  INNER JOIN invoices inv
+                  ON inv.id = ii.invoice_id
 
-      FROM stocks s
+                  WHERE ii.item_id = i.id
 
-      INNER JOIN items i
-      ON i.id = s.item_id
+                  AND inv."createdAt"
+                  > NOW() - INTERVAL '30 days'
+                )
 
-      WHERE 1=1
-      ${stockItemWhere}
-      `,
-      {
-        replacements,
-        type: QueryTypes.SELECT,
-      }
-    );
+              THEN i.id
+            END
+          )::int AS dead_stock_items
 
-    const stock = stockSummary[0] || {};
+        FROM stocks s
+
+        INNER JOIN items i
+        ON i.id = s.item_id
+
+        WHERE 1=1
+
+        ${stockWhere}
+        `,
+        {
+          replacements,
+
+          type:
+            QueryTypes.SELECT,
+        }
+      );
+
+    const stock =
+      stockSummary?.[0] || {};
 
     // =====================================================
-    // METAL RATES
+    // LIVE GOLD / SILVER RATE
     // =====================================================
-    // ✅ ONLY MODIFIED: DB metal_rates ki jagah live Head Dashboard wali value
-    const { goldPrice, silverPrice } = await getLiveGoldSilverPrice();
+
+    const {
+      goldPrice,
+      silverPrice,
+    } =
+      await getLiveGoldSilverPrice();
 
     // =====================================================
-    // SALES TREND - STOCK_MOVEMENTS
+    // LAST 7 DAYS SALES TREND
     // =====================================================
-    const labels = getLast7DaysLabelsIndia();
-    const startDate = labels[0].fullDate;
-    const endDate = labels[labels.length - 1].fullDate;
 
-    const salesTrendRaw = await sequelize.query(
-      `
-      SELECT
-        DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata') AS date,
-        COUNT(sm.id)::int AS count
-      FROM stock_movements sm
-      WHERE sm.movement_type = 'sale'
-      ${movementWhere}
-      AND DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata')
-        BETWEEN :startDate AND :endDate
-      GROUP BY DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata')
-      ORDER BY DATE(sm.created_at AT TIME ZONE 'Asia/Kolkata') ASC
-      `,
-      {
-        replacements: {
-          ...replacements,
-          startDate,
-          endDate,
-        },
-        type: QueryTypes.SELECT,
-      }
-    );
+    const labels =
+      getLast7DaysLabelsIndia();
+
+    const startDate =
+      labels[0].fullDate;
+
+    const endDate =
+      labels[
+        labels.length - 1
+      ].fullDate;
+
+    const salesTrendRaw =
+      await sequelize.query(
+        `
+        SELECT
+          DATE(
+            sm.created_at
+            AT TIME ZONE 'Asia/Kolkata'
+          ) AS date,
+
+          COUNT(sm.id)::int AS count
+
+        FROM stock_movements sm
+
+        WHERE
+          sm.movement_type = 'sale'
+
+          ${movementWhere}
+
+          AND DATE(
+            sm.created_at
+            AT TIME ZONE 'Asia/Kolkata'
+          )
+          BETWEEN :startDate
+          AND :endDate
+
+        GROUP BY
+          DATE(
+            sm.created_at
+            AT TIME ZONE 'Asia/Kolkata'
+          )
+
+        ORDER BY
+          DATE(
+            sm.created_at
+            AT TIME ZONE 'Asia/Kolkata'
+          ) ASC
+        `,
+        {
+          replacements: {
+            ...replacements,
+
+            startDate,
+
+            endDate,
+          },
+
+          type:
+            QueryTypes.SELECT,
+        }
+      );
 
     const salesMap = new Map(
-      salesTrendRaw.map((row) => [String(row.date), num(row.count)])
+      salesTrendRaw.map(
+        (row) => [
+          String(row.date),
+
+          Number(
+            row.count || 0
+          ),
+        ]
+      )
     );
 
-    const salesTrends = labels.map((d) => ({
-      day: d.label,
-      date: d.fullDate,
-      sales_count: salesMap.get(d.fullDate) || 0,
-    }));
+    const salesTrends =
+      labels.map((d) => ({
+        day: d.label,
+
+        date: d.fullDate,
+
+        sales_count:
+          salesMap.get(
+            d.fullDate
+          ) || 0,
+      }));
 
     // =====================================================
-    // SALES BY CATEGORY - STOCK_MOVEMENTS + ITEMS
+    // SALES BY CATEGORY
     // =====================================================
-    const salesByCategoryRaw = await sequelize.query(
-      `
-      SELECT
-        COALESCE(i.category::text, 'Other') AS category,
-        COUNT(sm.id)::int AS count
-      FROM stock_movements sm
-      INNER JOIN items i ON i.id = sm.item_id
-      WHERE sm.movement_type = 'sale'
-      ${movementWhere}
-      GROUP BY i.category
-      ORDER BY count DESC
-      `,
-      {
-        replacements,
-        type: QueryTypes.SELECT,
-      }
-    );
 
-    const totalCategoryCount = salesByCategoryRaw.reduce(
-      (sum, row) => sum + num(row.count),
-      0
-    );
+    const salesByCategoryRaw =
+      await sequelize.query(
+        `
+        SELECT
+          COALESCE(
+            i.category::text,
+            'Other'
+          ) AS category,
 
-    const salesByCategory = salesByCategoryRaw.map((row) => ({
-      category: row.category || "Other",
-      count: num(row.count),
-      percentage: totalCategoryCount
-        ? Number(((num(row.count) / totalCategoryCount) * 100).toFixed(2))
-        : 0,
-    }));
+          COUNT(sm.id)::int AS count
+
+        FROM stock_movements sm
+
+        INNER JOIN items i
+        ON i.id = sm.item_id
+
+        WHERE
+          sm.movement_type = 'sale'
+
+          ${movementWhere}
+
+        GROUP BY i.category
+
+        ORDER BY count DESC
+        `,
+        {
+          replacements,
+
+          type:
+            QueryTypes.SELECT,
+        }
+      );
+
+    const totalCategoryCount =
+      salesByCategoryRaw.reduce(
+        (sum, row) =>
+          sum +
+          Number(
+            row.count || 0
+          ),
+        0
+      );
+
+    const salesByCategory =
+      salesByCategoryRaw.map(
+        (row) => ({
+          category:
+            row.category ||
+            "Other",
+
+          count: Number(
+            row.count || 0
+          ),
+
+          percentage:
+            totalCategoryCount > 0
+              ? Number(
+                  (
+                    (Number(
+                      row.count || 0
+                    ) /
+                      totalCategoryCount) *
+                    100
+                  ).toFixed(2)
+                )
+              : 0,
+        })
+      );
 
     // =====================================================
-    // PENDING TASKS - STRICT CURRENT STORE
+    // PENDING TASKS
     // =====================================================
-    const pendingTasks = await sequelize.query(
-      `
-      SELECT t.*
-      FROM tasks t
-      WHERE LOWER(t.status::text) = 'pending'
-      ${taskWhere}
-      ORDER BY t.created_at DESC
-      LIMIT 5
-      `,
-      {
-        replacements,
-        type: QueryTypes.SELECT,
-      }
-    );
+
+    const pendingTasks =
+      await sequelize.query(
+        `
+        SELECT t.*
+
+        FROM tasks t
+
+        WHERE
+          LOWER(
+            t.status::text
+          ) = 'pending'
+
+          ${taskWhere}
+
+        ORDER BY t.created_at DESC
+
+        LIMIT 5
+        `,
+        {
+          replacements,
+
+          type:
+            QueryTypes.SELECT,
+        }
+      );
 
     // =====================================================
-    // RECENT ACTIVITIES - STRICT CURRENT STORE
+    // RECENT ACTIVITIES
     // =====================================================
-    const recentActivities = await sequelize.query(
-      `
-      SELECT sa.*
-      FROM system_activities sa
-      WHERE 1=1
-      ${activityWhere}
-      ORDER BY sa.created_at DESC
-      LIMIT 5
-      `,
-      {
-        replacements,
-        type: QueryTypes.SELECT,
-      }
-    );
+
+    const recentActivities =
+      await sequelize.query(
+        `
+        SELECT sa.*
+
+        FROM system_activities sa
+
+        WHERE 1=1
+
+        ${activityWhere}
+
+        ORDER BY sa.created_at DESC
+
+        LIMIT 5
+        `,
+        {
+          replacements,
+
+          type:
+            QueryTypes.SELECT,
+        }
+      );
+
+    // =====================================================
+    // FINAL RESPONSE
+    // =====================================================
 
     return res.status(200).json({
       success: true,
-      message: "Dashboard fetched successfully",
+
+      message:
+        "Dashboard fetched successfully",
+
       data: {
         cards: {
-          total_stock: num(stock.total_available_qty),
-          dead_stock_items: num(stock.dead_stock_items),
-          transit_goods: num(stock.transit_goods),
+          // ✅ TOTAL STOCK QTY
+          total_stock: Number(
+            stock.total_stock || 0
+          ),
 
-          // ✅ ONLY MODIFIED
-          gold_price: goldPrice,
-          silver_price: silverPrice,
+          // ✅ DEAD STOCK
+          dead_stock_items:
+            Number(
+              stock.dead_stock_items ||
+                0
+            ),
+
+          // ✅ LOW STOCK
+          low_stock_items:
+            Number(
+              stock.low_stock_items ||
+                0
+            ),
+
+          // ✅ TRANSIT QTY SUM
+          transit_goods:
+            Number(
+              stock.transit_goods ||
+                0
+            ),
+
+          // ✅ LIVE RATE
+          gold_price:
+            goldPrice,
+
+          silver_price:
+            silverPrice,
         },
+
         charts: {
-          sales_trends: salesTrends,
-          sales_by_category: salesByCategory,
+          sales_trends:
+            salesTrends,
+
+          sales_by_category:
+            salesByCategory,
         },
-        pending_tasks: pendingTasks,
-        recent_activities: recentActivities,
+
+        pending_tasks:
+          pendingTasks,
+
+        recent_activities:
+          recentActivities,
       },
     });
   } catch (error) {
-    console.error("Dashboard Summary Error:", error);
+    console.error(
+      "Dashboard Summary Error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch dashboard",
+
+      message:
+        "Failed to fetch dashboard",
+
       error: error.message,
     });
   }
 };
-
 export const getAllReports = async (req, res) => {
   try {
     if (!req.user) {

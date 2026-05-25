@@ -1,6 +1,7 @@
 import Store from "../../model/Store.js";
 import sequelize from "../../config/db.js";
 import { Op } from "sequelize";
+
 // ================= SUMMARY CARDS (UNCHANGED) =================
 export const getStoreDashboard = async (req, res) => {
   try {
@@ -59,7 +60,10 @@ export const getDistrictInventory = async (req, res) => {
     const { store_code } = req.params;
     const { category } = req.query;
 
-    let condition = `WHERE st.store_code = :store_code`;
+    let condition = `
+      WHERE st.store_code = :store_code
+      AND COALESCE(s.available_qty, 0) > 0
+    `;
 
     if (category) {
       condition += ` AND i.category = :category`;
@@ -71,65 +75,125 @@ export const getDistrictInventory = async (req, res) => {
         SELECT 
           i.category,
 
-          MIN(i.sku_code) as code,                         -- ✅ real code
-          COUNT(i.id) as quantity,                         -- ✅ correct count
+          MIN(i.sku_code) as code,
 
-          AVG(i.sale_rate)::numeric(10,2) as selling_price,   -- ✅ avg price
+          COALESCE(SUM(s.available_qty), 0) as quantity,
+
+          AVG(i.sale_rate)::numeric(10,2) as selling_price,
+
           AVG(i.making_charge)::numeric(10,2) as making_charge,
 
-          MIN(i.purity) as purity,                         -- ✅ representative purity
+          MIN(i.purity) as purity,
 
-          SUM(i.net_weight) as net_weight,
-          SUM(i.stone_weight) as stone_weight,
-          SUM(i.gross_weight) as gross_weight
+          COALESCE(SUM(i.net_weight), 0) as net_weight,
 
-        FROM items i
-        JOIN stores st ON st.id = i.store_id
+          COALESCE(SUM(i.stone_weight), 0) as stone_weight,
+
+          COALESCE(SUM(i.gross_weight), 0) as gross_weight
+
+        FROM stocks s
+
+        JOIN items i
+          ON i.id = s.item_id
+
+        JOIN stores st
+          ON st.id = s.organization_id
 
         ${condition}
 
         GROUP BY i.category
+
         ORDER BY i.category
       `, {
-        replacements: { store_code },
+        replacements: { store_code, category },
         type: sequelize.QueryTypes.SELECT
       });
 
-      return res.json({ success: true, data });
+      return res.json({
+        success: true,
+        data
+      });
     }
 
     // ================= ITEM VIEW =================
     const data = await sequelize.query(`
       SELECT 
-        i.item_name as article,              
+        i.id as item_id,
+
+        i.item_name as article,
+
+        i.article_code,
+
         i.sku_code as code,
-        1 as quantity,                        
+
+        COALESCE(s.available_qty, 0) as quantity,
 
         i.sale_rate as selling_price,
+
+        i.purchase_rate,
+
         i.making_charge,
+
         i.purity,
 
-        i.net_weight,
-        i.stone_weight,
-        i.gross_weight
+        i.metal_type,
 
-      FROM items i
-      JOIN stores st ON st.id = i.store_id
+        i.net_weight,
+
+        i.stone_weight,
+
+        i.gross_weight,
+
+        i.hsn_code,
+
+        i.current_status,
+
+        s.available_weight,
+
+        s.reserved_qty,
+
+        s.reserved_weight,
+
+        s.transit_qty,
+
+        s.transit_weight,
+
+        s.damaged_qty,
+
+        s.damaged_weight
+
+      FROM stocks s
+
+      JOIN items i
+        ON i.id = s.item_id
+
+      JOIN stores st
+        ON st.id = s.organization_id
 
       ${condition}
 
-      ORDER BY i."createdAt" DESC             
+      ORDER BY i."createdAt" DESC
     `, {
       replacements: { store_code, category },
       type: sequelize.QueryTypes.SELECT
     });
 
-    res.json({ success: true, data });
+    return res.json({
+      success: true,
+      data
+    });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.log("getDistrictInventory error =>", error);
+
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
+
+// ================= DISTRICT CATEGORY ITEMS =================
 export const getDistrictCategoryItems = async (req, res) => {
   try {
     const { store_code } = req.params;
@@ -144,23 +208,62 @@ export const getDistrictCategoryItems = async (req, res) => {
 
     const data = await sequelize.query(`
       SELECT       
-        i.item_name as article,            
-        i.sku_code as code,               
-        1 as quantity,                     
-        i.sale_rate as selling_price,      
-        i.making_charge,                 
-        i.purity,                         
-        i.net_weight,                     
-        i.stone_weight,                  
-        i.gross_weight                   
+        i.id as item_id,
 
-      FROM items i
-      JOIN stores st ON st.id = i.store_id
+        i.item_name as article,
+
+        i.article_code,
+
+        i.sku_code as code,
+
+        COALESCE(s.available_qty, 0) as quantity,
+
+        i.sale_rate as selling_price,
+
+        i.purchase_rate,
+
+        i.making_charge,
+
+        i.purity,
+
+        i.metal_type,
+
+        i.net_weight,
+
+        i.stone_weight,
+
+        i.gross_weight,
+
+        i.hsn_code,
+
+        i.current_status,
+
+        s.available_weight,
+
+        s.reserved_qty,
+
+        s.reserved_weight,
+
+        s.transit_qty,
+
+        s.transit_weight,
+
+        s.damaged_qty,
+
+        s.damaged_weight
+
+      FROM stocks s
+
+      JOIN items i
+        ON i.id = s.item_id
+
+      JOIN stores st
+        ON st.id = s.organization_id
 
       WHERE st.store_code = :store_code
       AND i.category = :category
 
-      ORDER BY i."createdAt" DESC 
+      ORDER BY i."createdAt" DESC
     `, {
       replacements: { store_code, category },
       type: sequelize.QueryTypes.SELECT
@@ -172,7 +275,12 @@ export const getDistrictCategoryItems = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.log("getDistrictCategoryItems error =>", error);
+
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
 
@@ -212,65 +320,127 @@ export const getStoreInventory = async (req, res) => {
         SELECT 
           i.category,
 
-          MIN(i.sku_code) as code,                        
-          COUNT(i.id) as quantity,                         
+          MIN(i.sku_code) as code,
 
-          AVG(i.sale_rate)::numeric(10,2) as selling_price,  
+          COALESCE(SUM(s.available_qty), 0) as quantity,
+
+          AVG(i.sale_rate)::numeric(10,2) as selling_price,
+
           AVG(i.making_charge)::numeric(10,2) as making_charge,
 
-          MIN(i.purity) as purity,                      
-          SUM(i.net_weight) as net_weight,
-          SUM(i.stone_weight) as stone_weight,
-          SUM(i.gross_weight) as gross_weight
+          MIN(i.purity) as purity,
 
-        FROM items i
-        JOIN stores st ON st.id = i.store_id
+          COALESCE(SUM(i.net_weight), 0) as net_weight,
+
+          COALESCE(SUM(i.stone_weight), 0) as stone_weight,
+
+          COALESCE(SUM(i.gross_weight), 0) as gross_weight
+
+        FROM stocks s
+
+        JOIN items i
+          ON i.id = s.item_id
+
+        JOIN stores st
+          ON st.id = s.organization_id
 
         WHERE st.store_code = :store_code
+        AND COALESCE(s.available_qty, 0) > 0
 
         GROUP BY i.category
+
         ORDER BY i.category
       `, {
         replacements: { store_code },
         type: sequelize.QueryTypes.SELECT
       });
 
-      return res.json({ success: true, data });
+      return res.json({
+        success: true,
+        data
+      });
     }
 
     // ================= ITEM VIEW =================
     const data = await sequelize.query(`
       SELECT 
-        i.item_name as article,               
+        i.id as item_id,
+
+        i.item_name as article,
+
+        i.article_code,
+
         i.sku_code as code,
-        1 as quantity,                        
+
+        COALESCE(s.available_qty, 0) as quantity,
 
         i.sale_rate as selling_price,
+
+        i.purchase_rate,
+
         i.making_charge,
+
         i.purity,
 
-        i.net_weight,
-        i.stone_weight,
-        i.gross_weight
+        i.metal_type,
 
-      FROM items i
-      JOIN stores st ON st.id = i.store_id
+        i.net_weight,
+
+        i.stone_weight,
+
+        i.gross_weight,
+
+        i.hsn_code,
+
+        i.current_status,
+
+        s.available_weight,
+
+        s.reserved_qty,
+
+        s.reserved_weight,
+
+        s.transit_qty,
+
+        s.transit_weight,
+
+        s.damaged_qty,
+
+        s.damaged_weight
+
+      FROM stocks s
+
+      JOIN items i
+        ON i.id = s.item_id
+
+      JOIN stores st
+        ON st.id = s.organization_id
 
       WHERE st.store_code = :store_code
       AND i.category = :category
 
-      ORDER BY i."createdAt" DESC            
+      ORDER BY i."createdAt" DESC
     `, {
       replacements: { store_code, category },
       type: sequelize.QueryTypes.SELECT
     });
 
-    res.json({ success: true, data });
+    res.json({
+      success: true,
+      data
+    });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.log("getStoreInventory error =>", error);
+
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
+
+// ================= STORE CATEGORY ITEMS =================
 export const getStoreCategoryItems = async (req, res) => {
   try {
     const { store_code } = req.params;
@@ -285,23 +455,62 @@ export const getStoreCategoryItems = async (req, res) => {
 
     const data = await sequelize.query(`
       SELECT 
-        i.item_name as article,            
-        i.sku_code as code,                
-        1 as quantity,                     
-        i.sale_rate as selling_price,      
-        i.making_charge,                   
-        i.purity,                         
-        i.net_weight,                      
-        i.stone_weight,                    
-        i.gross_weight                     
+        i.id as item_id,
 
-      FROM items i
-      JOIN stores st ON st.id = i.store_id
+        i.item_name as article,
+
+        i.article_code,
+
+        i.sku_code as code,
+
+        COALESCE(s.available_qty, 0) as quantity,
+
+        i.sale_rate as selling_price,
+
+        i.purchase_rate,
+
+        i.making_charge,
+
+        i.purity,
+
+        i.metal_type,
+
+        i.net_weight,
+
+        i.stone_weight,
+
+        i.gross_weight,
+
+        i.hsn_code,
+
+        i.current_status,
+
+        s.available_weight,
+
+        s.reserved_qty,
+
+        s.reserved_weight,
+
+        s.transit_qty,
+
+        s.transit_weight,
+
+        s.damaged_qty,
+
+        s.damaged_weight
+
+      FROM stocks s
+
+      JOIN items i
+        ON i.id = s.item_id
+
+      JOIN stores st
+        ON st.id = s.organization_id
 
       WHERE st.store_code = :store_code
       AND i.category = :category
 
-      ORDER BY i."createdAt" DESC   
+      ORDER BY i."createdAt" DESC
     `, {
       replacements: { store_code, category },
       type: sequelize.QueryTypes.SELECT
@@ -313,9 +522,15 @@ export const getStoreCategoryItems = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.log("getStoreCategoryItems error =>", error);
+
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
+
 // ================= CREATE STORE =================
 export const createStore = async (req, res) => {
   let t;
@@ -329,7 +544,6 @@ export const createStore = async (req, res) => {
       store_code,
     } = req.body;
 
-    // ================= VALIDATION =================
     const normalizedLevel = level?.trim();
 
     const allowedLevels = ["Retail", "District", "head_office"];
@@ -348,7 +562,6 @@ export const createStore = async (req, res) => {
       });
     }
 
-    // Optional safety (avoid wrong data like "District Delhi" saved as Retail)
     if (
       store_name.toLowerCase().includes("district") &&
       normalizedLevel !== "District"
@@ -361,13 +574,12 @@ export const createStore = async (req, res) => {
 
     const finalAddress = `${address || ""} - ${pincode || ""}`;
 
-    // ================= TRANSACTION =================
     t = await sequelize.transaction();
 
     const newStore = await Store.create(
       {
         store_name,
-        organization_level: normalizedLevel, 
+        organization_level: normalizedLevel,
         store_code,
         address: finalAddress,
         is_active: true,
@@ -377,7 +589,6 @@ export const createStore = async (req, res) => {
 
     await t.commit();
 
-    // ================= RETAIL =================
     if (normalizedLevel === "Retail") {
       return res.json({
         success: true,
@@ -386,7 +597,6 @@ export const createStore = async (req, res) => {
       });
     }
 
-    // ================= DISTRICT =================
     if (normalizedLevel === "District") {
 
       const unassignedStores = await Store.findAll({
@@ -398,7 +608,7 @@ export const createStore = async (req, res) => {
             [Op.ne]: newStore.id,
           },
         },
-        attributes: ["id", "store_name", "store_code","address"],
+        attributes: ["id", "store_name", "store_code", "address"],
         order: [["createdAt", "DESC"]],
       });
 
@@ -452,7 +662,6 @@ export const mapStoresToDistrict = async (req, res) => {
       });
     }
 
-    // ================= VALIDATE DISTRICT =================
     const district = await Store.findOne({
       where: {
         id: districtId,
@@ -467,7 +676,6 @@ export const mapStoresToDistrict = async (req, res) => {
       });
     }
 
-    // ================= VALIDATE STORES =================
     const validStores = await Store.findAll({
       where: {
         id: { [Op.in]: storeIds },
@@ -483,10 +691,8 @@ export const mapStoresToDistrict = async (req, res) => {
       });
     }
 
-    // ================= TRANSACTION =================
     t = await sequelize.transaction();
 
-    //  IMPORTANT: RAW UPDATE (FORCE DB UPDATE)
     await sequelize.query(
       `
       UPDATE stores
@@ -499,7 +705,6 @@ export const mapStoresToDistrict = async (req, res) => {
       }
     );
 
-    //  FETCH UPDATED DATA (AFTER UPDATE)
     const updatedStores = await Store.findAll({
       where: {
         id: { [Op.in]: storeIds },

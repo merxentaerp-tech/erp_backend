@@ -858,6 +858,7 @@ export const getDistrictStoreDetail = async (req, res) => {
 
     const districtId = req.user.organization_id;
 
+    // ================= STORE =================
     const store = await Store.findOne({
       where: {
         id: storeId,
@@ -875,6 +876,7 @@ export const getDistrictStoreDetail = async (req, res) => {
     const storeNameField = getStoreNameField();
     const storeCodeField = getStoreCodeField();
 
+    // ================= STOCK SUMMARY =================
     const stockSummary = await Stock.findOne({
       attributes: [
         [sequelize.fn("SUM", sequelize.col("available_qty")), "available_qty"],
@@ -892,9 +894,8 @@ export const getDistrictStoreDetail = async (req, res) => {
       raw: true,
     });
 
-    const itemWhere = {
-      organization_id: store.id,
-    };
+    // ================= ITEM FILTER =================
+    const itemWhere = {};
 
     if (category && category.toLowerCase() !== "all") {
       itemWhere.category = category;
@@ -905,25 +906,33 @@ export const getDistrictStoreDetail = async (req, res) => {
 
       if (hasAttr(Item, "item_name")) {
         searchConditions.push({
-          item_name: { [Op.iLike]: `%${search}%` },
+          item_name: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
       }
 
       if (hasAttr(Item, "article_code")) {
         searchConditions.push({
-          article_code: { [Op.iLike]: `%${search}%` },
+          article_code: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
       }
 
       if (hasAttr(Item, "sku_code")) {
         searchConditions.push({
-          sku_code: { [Op.iLike]: `%${search}%` },
+          sku_code: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
       }
 
       if (hasAttr(Item, "category")) {
         searchConditions.push({
-          category: { [Op.iLike]: `%${search}%` },
+          category: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
       }
 
@@ -932,16 +941,23 @@ export const getDistrictStoreDetail = async (req, res) => {
       }
     }
 
+    console.log("ITEM WHERE =>", itemWhere);
+
+    // ================= ITEMS =================
     const items = await Item.findAll({
       where: itemWhere,
+
       include: [
         {
           model: Stock,
           as: "stocks",
-          required: false,
+
+          required: true,
+
           where: {
             organization_id: store.id,
           },
+
           attributes: [
             "available_qty",
             "available_weight",
@@ -954,12 +970,21 @@ export const getDistrictStoreDetail = async (req, res) => {
           ],
         },
       ],
+
       order: [
-        hasAttr(Item, "category") ? ["category", "ASC"] : ["id", "DESC"],
-        hasAttr(Item, "item_name") ? ["item_name", "ASC"] : ["id", "DESC"],
+        hasAttr(Item, "category")
+          ? ["category", "ASC"]
+          : ["id", "DESC"],
+
+        hasAttr(Item, "item_name")
+          ? ["item_name", "ASC"]
+          : ["id", "DESC"],
       ],
     });
 
+    console.log("ITEM COUNT =>", items.length);
+
+    // ================= INVENTORY =================
     const inventory = items.map((item) => {
       const stock = item.stocks?.[0] || {};
 
@@ -970,39 +995,72 @@ export const getDistrictStoreDetail = async (req, res) => {
 
       return {
         item_id: item.id,
-        category: hasAttr(Item, "category") ? item.category : null,
+
+        category: hasAttr(Item, "category")
+          ? item.category
+          : null,
+
         code,
-        item_name: hasAttr(Item, "item_name") ? item.item_name : null,
+
+        item_name: hasAttr(Item, "item_name")
+          ? item.item_name
+          : null,
+
         quantity: num(stock.available_qty),
+
         selling_price: num(item.sale_rate),
+
         making_charge: num(item.making_charge),
-        purity: hasAttr(Item, "purity") ? item.purity : null,
+
+        purity: hasAttr(Item, "purity")
+          ? item.purity
+          : null,
+
         net_weight: num(item.net_weight),
+
         stone_weight: num(item.stone_weight),
+
         gross_weight: num(item.gross_weight),
-        metal_type: hasAttr(Item, "metal_type") ? item.metal_type : null,
+
+        metal_type: hasAttr(Item, "metal_type")
+          ? item.metal_type
+          : null,
+
         current_status: hasAttr(Item, "current_status")
           ? item.current_status
           : null,
-        image_url: hasAttr(Item, "image_url") ? item.image_url : null,
+
+        image_url: hasAttr(Item, "image_url")
+          ? item.image_url
+          : null,
+
         stock: {
           available_qty: num(stock.available_qty),
           available_weight: num(stock.available_weight),
+
           reserved_qty: num(stock.reserved_qty),
           reserved_weight: num(stock.reserved_weight),
+
           transit_qty: num(stock.transit_qty),
           transit_weight: num(stock.transit_weight),
+
           damaged_qty: num(stock.damaged_qty),
           damaged_weight: num(stock.damaged_weight),
         },
+
         action: "view",
       };
     });
 
+    // ================= CATEGORY OPTIONS =================
     const categoryOptions = [
       ...new Set(
         items
-          .map((item) => (hasAttr(Item, "category") ? item.category : null))
+          .map((item) =>
+            hasAttr(Item, "category")
+              ? item.category
+              : null
+          )
           .filter(Boolean)
       ),
     ];
@@ -1010,38 +1068,67 @@ export const getDistrictStoreDetail = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Store detail fetched successfully",
+
       data: {
         store: {
           id: store.id,
-          store_code: store[storeCodeField] || null,
-          store_name: store[storeNameField] || null,
-          district_id: store.district_id || null,
-          district: hasAttr(Store, "district") ? store.district : null,
-          state: hasAttr(Store, "state") ? store.state : null,
-          address: hasAttr(Store, "address") ? store.address : null,
-          phone_number: hasAttr(Store, "phone_number") ? store.phone_number : null,
-          is_active: hasAttr(Store, "is_active") ? !!store.is_active : true,
+
+          store_code:
+            store[storeCodeField] || null,
+
+          store_name:
+            store[storeNameField] || null,
+
+          district_id:
+            store.district_id || null,
+
+          district: hasAttr(Store, "district")
+            ? store.district
+            : null,
+
+          state: hasAttr(Store, "state")
+            ? store.state
+            : null,
+
+          address: hasAttr(Store, "address")
+            ? store.address
+            : null,
+
+          phone_number: hasAttr(Store, "phone_number")
+            ? store.phone_number
+            : null,
+
+          is_active: hasAttr(Store, "is_active")
+            ? !!store.is_active
+            : true,
         },
+
         stock_summary: {
           available_qty: num(stockSummary?.available_qty),
           available_weight: num(stockSummary?.available_weight),
+
           reserved_qty: num(stockSummary?.reserved_qty),
           reserved_weight: num(stockSummary?.reserved_weight),
+
           transit_qty: num(stockSummary?.transit_qty),
           transit_weight: num(stockSummary?.transit_weight),
+
           damaged_qty: num(stockSummary?.damaged_qty),
           damaged_weight: num(stockSummary?.damaged_weight),
         },
+
         filters: {
           selected_category: category || "All",
           search: search || "",
           categories: categoryOptions,
         },
+
         inventory,
       },
     });
   } catch (error) {
     console.error("getDistrictStoreDetail error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch store detail",

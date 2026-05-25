@@ -1154,6 +1154,8 @@ export const getDistrictStoreCategoryItems = async (req, res) => {
 
     const districtId = req.user.organization_id;
 
+    // ================= STORE CHECK =================
+
     const store = await Store.findOne({
       where: {
         id: storeId,
@@ -1168,43 +1170,66 @@ export const getDistrictStoreCategoryItems = async (req, res) => {
       });
     }
 
-    const itemWhere = {
-      organization_id: store.id,
-      category,
-    };
+    // ================= ITEM FILTER =================
 
+    const itemWhere = {};
+
+    // category filter
+    if (hasAttr(Item, "category")) {
+      itemWhere.category = {
+        [Op.iLike]: category,
+      };
+    }
+
+    // search filter
     if (search) {
-      itemWhere[Op.or] = [];
+      const searchConditions = [];
 
       if (hasAttr(Item, "item_name")) {
-        itemWhere[Op.or].push({
-          item_name: { [Op.iLike]: `%${search}%` },
+        searchConditions.push({
+          item_name: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
       }
 
       if (hasAttr(Item, "article_code")) {
-        itemWhere[Op.or].push({
-          article_code: { [Op.iLike]: `%${search}%` },
+        searchConditions.push({
+          article_code: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
       }
 
       if (hasAttr(Item, "sku_code")) {
-        itemWhere[Op.or].push({
-          sku_code: { [Op.iLike]: `%${search}%` },
+        searchConditions.push({
+          sku_code: {
+            [Op.iLike]: `%${search}%`,
+          },
         });
+      }
+
+      if (searchConditions.length) {
+        itemWhere[Op.or] = searchConditions;
       }
     }
 
+    // ================= FETCH ITEMS =================
+
     const items = await Item.findAll({
       where: itemWhere,
+
       include: [
         {
           model: Stock,
           as: "stocks",
-          required: false,
+
+          required: true,
+
           where: {
             organization_id: store.id,
           },
+
           attributes: [
             "id",
             "available_qty",
@@ -1218,40 +1243,91 @@ export const getDistrictStoreCategoryItems = async (req, res) => {
           ],
         },
       ],
-      order: [[getCreatedField(), "DESC"]],
+
+      order: [
+        hasAttr(Item, "item_name")
+          ? ["item_name", "ASC"]
+          : ["id", "DESC"],
+      ],
     });
+
+    // ================= RESPONSE FORMAT =================
 
     const finalItems = items.map((item) => {
       const stock = item.stocks?.[0] || {};
 
       return {
         item_id: item.id,
-        article_code: hasAttr(Item, "article_code") ? item.article_code : null,
-        sku_code: hasAttr(Item, "sku_code") ? item.sku_code : null,
-        item_name: hasAttr(Item, "item_name") ? item.item_name : null,
-        category: hasAttr(Item, "category") ? item.category : null,
-        metal_type: hasAttr(Item, "metal_type") ? item.metal_type : null,
-        purity: hasAttr(Item, "purity") ? item.purity : null,
+
+        stock_id: stock.id || null,
+
+        article_code: hasAttr(Item, "article_code")
+          ? item.article_code
+          : null,
+
+        sku_code: hasAttr(Item, "sku_code")
+          ? item.sku_code
+          : null,
+
+        item_name: hasAttr(Item, "item_name")
+          ? item.item_name
+          : null,
+
+        category: hasAttr(Item, "category")
+          ? item.category
+          : null,
+
+        metal_type: hasAttr(Item, "metal_type")
+          ? item.metal_type
+          : null,
+
+        purity: hasAttr(Item, "purity")
+          ? item.purity
+          : null,
+
         gross_weight: num(item.gross_weight),
+
         net_weight: num(item.net_weight),
+
         stone_weight: num(item.stone_weight),
+
         making_charge: num(item.making_charge),
+
         sale_rate: num(item.sale_rate),
+
         purchase_rate: num(item.purchase_rate),
-        hsn_code: hasAttr(Item, "hsn_code") ? item.hsn_code : null,
-        unit: hasAttr(Item, "unit") ? item.unit : null,
+
+        hsn_code: hasAttr(Item, "hsn_code")
+          ? item.hsn_code
+          : null,
+
+        unit: hasAttr(Item, "unit")
+          ? item.unit
+          : null,
+
         current_status: hasAttr(Item, "current_status")
           ? item.current_status
           : null,
-        image_url: hasAttr(Item, "image_url") ? item.image_url : null,
+
+        image_url: hasAttr(Item, "image_url")
+          ? item.image_url
+          : null,
+
         stock: {
           available_qty: num(stock.available_qty),
+
           available_weight: num(stock.available_weight),
+
           reserved_qty: num(stock.reserved_qty),
+
           reserved_weight: num(stock.reserved_weight),
+
           transit_qty: num(stock.transit_qty),
+
           transit_weight: num(stock.transit_weight),
+
           damaged_qty: num(stock.damaged_qty),
+
           damaged_weight: num(stock.damaged_weight),
         },
       };
@@ -1260,15 +1336,20 @@ export const getDistrictStoreCategoryItems = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Store category items fetched successfully",
+
       data: {
         store_id: store.id,
+
         category,
+
         total_items: finalItems.length,
+
         items: finalItems,
       },
     });
   } catch (error) {
     console.error("getDistrictStoreCategoryItems error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch store category items",

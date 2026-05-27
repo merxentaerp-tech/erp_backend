@@ -155,13 +155,13 @@ export const createExchange = async (req, res) => {
       });
     }
 
-    if (!original_products.length || !new_products.length) {
-      await t.rollback();
-      return res.status(400).json({
-        success: false,
-        message: "Products are required for exchange",
-      });
-    }
+    // if (!original_products.length || !new_products.length) {
+    //   await t.rollback();
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: "Products are required for exchange",
+    //   });
+    // }
 
     // ================= FETCH INVOICE =================
     const invoice = await sequelize.query(

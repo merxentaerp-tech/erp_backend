@@ -356,14 +356,28 @@ export const getDistrictStoreInventory = async (req, res) => {
 
     const district = await getDistrictFromUser(user);
 
+    // ================= DEBUG LOGS =================
+    console.log("USER =>", user);
+    console.log("DISTRICT =>", district);
+    console.log("STORE ID PARAM =>", storeId);
+
+    // ================= STORE CHECK =================
     const store = await Store.findOne({
       where: {
         id: storeId,
         district_id: district.id,
       },
-      attributes: ["id", "store_name", "store_code", "district_id", "is_active"],
+      attributes: [
+        "id",
+        "store_name",
+        "store_code",
+        "district_id",
+        "is_active",
+      ],
       raw: true,
     });
+
+    console.log("FOUND STORE =>", store);
 
     if (!store) {
       return res.status(404).json({
@@ -372,13 +386,31 @@ export const getDistrictStoreInventory = async (req, res) => {
       });
     }
 
+    // ================= ITEM FILTER =================
     const itemWhere = {};
+
     if (search?.trim()) {
       itemWhere[Op.or] = [
-        { item_name: { [Op.iLike]: `%${search.trim()}%` } },
-        { article_code: { [Op.iLike]: `%${search.trim()}%` } },
-        { sku_code: { [Op.iLike]: `%${search.trim()}%` } },
-        { category: { [Op.iLike]: `%${search.trim()}%` } },
+        {
+          item_name: {
+            [Op.iLike]: `%${search.trim()}%`,
+          },
+        },
+        {
+          article_code: {
+            [Op.iLike]: `%${search.trim()}%`,
+          },
+        },
+        {
+          sku_code: {
+            [Op.iLike]: `%${search.trim()}%`,
+          },
+        },
+        {
+          category: {
+            [Op.iLike]: `%${search.trim()}%`,
+          },
+        },
       ];
     }
 
@@ -386,13 +418,18 @@ export const getDistrictStoreInventory = async (req, res) => {
       itemWhere.category = category.trim();
     }
 
+    console.log("ITEM WHERE =>", itemWhere);
+
+    // ================= INVENTORY =================
     const inventory = await Stock.findAll({
       where: {
         organization_id: store.id,
       },
+
       include: [
         {
           model: Item,
+
           attributes: [
             "id",
             "item_name",
@@ -406,10 +443,17 @@ export const getDistrictStoreInventory = async (req, res) => {
             "making_charge",
             "sale_rate",
           ],
-          where: itemWhere,
-          required: true,
+
+          // APPLY WHERE ONLY IF FILTER EXISTS
+          ...(Object.keys(itemWhere).length > 0 && {
+            where: itemWhere,
+          }),
+
+          // IMPORTANT FIX
+          required: false,
         },
       ],
+
       attributes: [
         "id",
         "organization_id",
@@ -423,34 +467,72 @@ export const getDistrictStoreInventory = async (req, res) => {
         "damaged_qty",
         "damaged_weight",
       ],
-      order: [[Item, "category", "ASC"], [Item, "item_name", "ASC"]],
+
+      order: [
+        [{ model: Item }, "category", "ASC"],
+        [{ model: Item }, "item_name", "ASC"],
+      ],
     });
 
+    console.log("INVENTORY COUNT =>", inventory.length);
+
+    // ================= RESPONSE DATA =================
     const rows = inventory.map((row) => ({
       stock_id: row.id,
+
       item_id: row.Item?.id || null,
+
       item_name: row.Item?.item_name || null,
+
       category: row.Item?.category || null,
-      code: row.Item?.article_code || row.Item?.sku_code || null,
+
+      code:
+        row.Item?.article_code ||
+        row.Item?.sku_code ||
+        null,
+
       quantity: safeNumber(row.available_qty),
+
       selling_price: safeNumber(row.Item?.sale_rate),
+
       making_charge: safeNumber(row.Item?.making_charge),
+
       purity: row.Item?.purity || null,
+
       net_weight: safeNumber(row.Item?.net_weight),
+
       stone_weight: safeNumber(row.Item?.stone_weight),
+
       gross_weight: safeNumber(row.Item?.gross_weight),
+
       available_weight: safeNumber(row.available_weight),
+
       reserved_qty: safeNumber(row.reserved_qty),
+
       reserved_weight: safeNumber(row.reserved_weight),
+
       transit_qty: safeNumber(row.transit_qty),
+
       transit_weight: safeNumber(row.transit_weight),
+
       damaged_qty: safeNumber(row.damaged_qty),
+
       damaged_weight: safeNumber(row.damaged_weight),
     }));
+
+    // ================= CATEGORY LIST =================
+    const categories = [
+      ...new Set(
+        rows
+          .map((x) => x.category)
+          .filter(Boolean)
+      ),
+    ];
 
     return res.status(200).json({
       success: true,
       message: "Store inventory fetched successfully",
+
       data: {
         store: {
           id: store.id,
@@ -458,12 +540,24 @@ export const getDistrictStoreInventory = async (req, res) => {
           store_code: store.store_code,
           is_active: !!store.is_active,
         },
+
         count: rows.length,
+
+        filters: {
+          selected_category: category || "All",
+          search,
+          categories,
+        },
+
         inventory: rows,
       },
     });
   } catch (error) {
-    console.error("getDistrictStoreInventory error:", error);
+    console.error(
+      "getDistrictStoreInventory error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch store inventory",
@@ -1553,22 +1647,33 @@ export const getDistrictDashboard = async (req, res) => {
       });
     }
 
-    const districtId = Number(user.organization_id || user.branch_id);
-    const districtCode = user.store_code || user.district_code || null;
+    const districtId = Number(
+      user.organization_id || user.branch_id
+    );
+
+    const districtCode =
+      user.store_code ||
+      user.district_code ||
+      null;
 
     if (!districtId) {
       return res.status(400).json({
         success: false,
-        message: "District organization_id not found for logged-in user",
+        message:
+          "District organization_id not found",
       });
     }
 
-    const storeNameField = getStoreNameField();
-    const storeCodeField = getStoreCodeField();
+    const storeNameField =
+      getStoreNameField();
 
-    // =========================================================
+    const storeCodeField =
+      getStoreCodeField();
+
+    // =====================================================
     // LIVE GOLD / SILVER RATE
-    // =========================================================
+    // =====================================================
+
     let liveRate = {
       gold_price: 0,
       silver_price: 0,
@@ -1589,558 +1694,573 @@ export const getDistrictDashboard = async (req, res) => {
     };
 
     try {
-  // 1 Gold & Silver USD per ounce
-  const goldRes = await axios.get("https://api.gold-api.com/price/XAU");
-  const silverRes = await axios.get("https://api.gold-api.com/price/XAG");
-
-  // 2 LIVE USD → INR
-  const rateRes = await axios.get("https://open.er-api.com/v6/latest/USD");
-  const usdToInr = Number(rateRes?.data?.rates?.INR || 0);
-
-  const ounceToGram = 31.1035;
-
-  // 3 Gold 24K per gram INR
-  const gold24K = ((Number(goldRes?.data?.price || 0)) / ounceToGram) * usdToInr;
-
-  // 4 Gold 22K / 18K per gram INR
-  const gold22K = gold24K * (22 / 24);
-  const gold18K = gold24K * (18 / 24);
-
-  // 5 Silver 999 → 925 per gram INR
-  const silver999 = ((Number(silverRes?.data?.price || 0)) / ounceToGram) * usdToInr;
-  const silver925 = silver999 * 0.925;
-
-  liveRate = {
-    gold_price: Number((gold24K * 10).toFixed(2)), // 24K per 10 gram
-    silver_price: Number(silver925.toFixed(2)),   // silver 925 per gram
-
-    gold_rate_24k: Number(gold24K.toFixed(2)),
-    gold_rate_22k: Number(gold22K.toFixed(2)),
-    gold_rate_18k: Number(gold18K.toFixed(2)),
-    silver_rate: Number(silver925.toFixed(2)),
-
-    gold_change_percent: 0,
-    silver_change_percent: 0,
-
-    gold_trend: "up",
-    silver_trend: "up",
-
-    currency: "INR",
-    updated_at: new Date().toISOString(),
-  };
-} catch (err) {
-  console.log("District Gold/Silver API Error:", err.message);
-}
-
-    // =========================================================
-    // STORES
-    // =========================================================
-    let districtStores = [];
-
-    try {
-      districtStores = await Store.findAll({
-        where: {
-          [Op.or]: [
-            ...(hasAttr(Store, "district_id")
-              ? [{ district_id: districtId }]
-              : []),
-            ...(districtCode && hasAttr(Store, "district_code")
-              ? [{ district_code: districtCode }]
-              : []),
-          ],
-        },
-        attributes: [
-          "id",
-          [col(storeNameField), "store_name"],
-          [col(storeCodeField), "store_code"],
-        ],
-        raw: true,
-      });
-    } catch (err) {
-      console.error("districtStores error:", err.message);
-      districtStores = [];
-    }
-
-    const storeIds = districtStores.map((s) => Number(s.id)).filter(Boolean);
-
-    // =========================================================
-    // STOCK DATA
-    // =========================================================
-    let districtStockRows = [];
-    let storeStockRows = [];
-
-    try {
-      districtStockRows = await Stock.findAll({
-        where: hasAttr(Stock, "organization_id")
-          ? { organization_id: districtId }
-          : { branch_id: districtId },
-        include: [
-          {
-            model: Item,
-            as: hasAttr(Stock, "item_id") ? "item" : undefined,
-            required: false,
-          },
-        ].filter((x) => x.as !== undefined || x.model),
-      });
-    } catch (err) {
-      console.error("districtStockRows error:", err.message);
-
-      districtStockRows = await Stock.findAll({
-        where: { branch_id: districtId },
-      });
-    }
-
-    try {
-      if (storeIds.length) {
-        storeStockRows = await Stock.findAll({
-          where: hasAttr(Stock, "organization_id")
-            ? {
-                organization_id: {
-                  [Op.in]: storeIds,
-                },
-              }
-            : {
-                branch_id: {
-                  [Op.in]: storeIds,
-                },
-              },
-          include: [
-            {
-              model: Item,
-              as: hasAttr(Stock, "item_id") ? "item" : undefined,
-              required: false,
-            },
-          ].filter((x) => x.as !== undefined || x.model),
-        });
-      }
-    } catch (err) {
-      console.error("storeStockRows error:", err.message);
-
-      if (storeIds.length) {
-        storeStockRows = await Stock.findAll({
-          where: {
-            branch_id: {
-              [Op.in]: storeIds,
-            },
-          },
-        });
-      }
-    }
-
-    let districtOwnStock = 0;
-    let retailStoresStocks = 0;
-    let totalStock = 0;
-    let deadStockItems = 0;
-    let transitGoods = 0;
-    let goldPriceValue = 0;
-    let silverPriceValue = 0;
-
-    const districtInventoryItems = [];
-
-    const getItemObj = (row) =>
-      row.item || row.Item || row.dataValues?.item || row.dataValues?.Item || {};
-
-    const getStockQty = (row) => {
-      const availableQty = safeNum(row.available_qty ?? row.quantity);
-      const reservedQty = safeNum(row.reserved_qty);
-      const transitQty = safeNum(row.transit_qty);
-      return availableQty + reservedQty + transitQty;
-    };
-
-    const getStockWeight = (row) => {
-      const availableWeight = safeNum(row.available_weight ?? row.net_weight);
-      const reservedWeight = safeNum(row.reserved_weight);
-      const transitWeight = safeNum(row.transit_weight);
-      return availableWeight + reservedWeight + transitWeight;
-    };
-
-    const addStockValue = (row) => {
-      const item = getItemObj(row);
-
-      const totalQty = getStockQty(row);
-      const totalWeight = getStockWeight(row);
-
-      const rate = safeNum(
-        item?.sale_rate ||
-          item?.purchase_rate ||
-          row.rate ||
-          row.dataValues?.rate
+      const goldRes = await axios.get(
+        "https://api.gold-api.com/price/XAU"
       );
 
-      const valueBase = totalWeight > 0 ? totalWeight : totalQty;
-      const metalType = String(
-        item?.metal_type || row.metal_type || row.category || ""
-      ).toLowerCase();
-
-      if (metalType.includes("gold")) {
-        goldPriceValue += valueBase * rate;
-      } else if (metalType.includes("silver")) {
-        silverPriceValue += valueBase * rate;
-      } else {
-        goldPriceValue += safeNum(row.value);
-      }
-    };
-
-    for (const row of districtStockRows) {
-      const totalQty = getStockQty(row);
-      const transitQty = safeNum(row.transit_qty);
-      const deadQty = safeNum(row.dead_qty);
-      const deadWeight = safeNum(row.dead_weight);
-
-      districtOwnStock += totalQty;
-      totalStock += totalQty;
-      transitGoods += transitQty;
-
-      if (
-        deadQty > 0 ||
-        deadWeight > 0 ||
-        String(row.status).toUpperCase() === "DEAD"
-      ) {
-        deadStockItems += 1;
-      }
-
-      addStockValue(row);
-
-      const item = getItemObj(row);
-
-      districtInventoryItems.push({
-        stock_id: row.id,
-        item_id: row.item_id || item?.id || null,
-        item_name: item?.item_name || row.item || null,
-      });
-    }
-
-    for (const row of storeStockRows) {
-      const totalQty = getStockQty(row);
-      const transitQty = safeNum(row.transit_qty);
-      const deadQty = safeNum(row.dead_qty);
-
-      retailStoresStocks += totalQty;
-      totalStock += totalQty;
-      transitGoods += transitQty;
-
-      if (deadQty > 0 || String(row.status).toUpperCase() === "DEAD") {
-        deadStockItems += 1;
-      }
-
-      addStockValue(row);
-    }
-
-    // =========================================================
-    // STORE PERFORMANCE
-    // =========================================================
-    const storePerformance = districtStores.map((store, index) => {
-      const rows = storeStockRows.filter((x) => {
-        const rowOrgId = Number(x.organization_id || x.branch_id);
-        return rowOrgId === Number(store.id);
-      });
-
-      let revenue = 0;
-
-      for (const row of rows) {
-        const item = getItemObj(row);
-
-        const qty = getStockQty(row);
-        const weight = getStockWeight(row);
-
-        const rate = safeNum(
-          item?.sale_rate ||
-            item?.purchase_rate ||
-            row.rate ||
-            row.dataValues?.rate
+      const silverRes =
+        await axios.get(
+          "https://api.gold-api.com/price/XAG"
         );
 
-        const base = weight > 0 ? weight : qty;
+      const rateRes = await axios.get(
+        "https://open.er-api.com/v6/latest/USD"
+      );
 
-        revenue += base * rate;
-      }
+      const usdToInr = Number(
+        rateRes?.data?.rates?.INR || 0
+      );
 
-      return {
-        store_id: store.id,
-        store_name: store.store_name || `Store ${index + 1}`,
-        store_code: store.store_code || null,
-        revenue: Math.round(revenue),
+      const ounceToGram = 31.1035;
+
+      const gold24K =
+        (Number(
+          goldRes?.data?.price || 0
+        ) /
+          ounceToGram) *
+        usdToInr;
+
+      const gold22K =
+        gold24K * (22 / 24);
+
+      const gold18K =
+        gold24K * (18 / 24);
+
+      const silver999 =
+        (Number(
+          silverRes?.data?.price || 0
+        ) /
+          ounceToGram) *
+        usdToInr;
+
+      const silver925 =
+        silver999 * 0.925;
+
+      liveRate = {
+        gold_price: Number(
+          (gold24K * 10).toFixed(2)
+        ),
+
+        silver_price: Number(
+          silver925.toFixed(2)
+        ),
+
+        gold_rate_24k: Number(
+          gold24K.toFixed(2)
+        ),
+
+        gold_rate_22k: Number(
+          gold22K.toFixed(2)
+        ),
+
+        gold_rate_18k: Number(
+          gold18K.toFixed(2)
+        ),
+
+        silver_rate: Number(
+          silver925.toFixed(2)
+        ),
+
+        gold_change_percent: 0,
+        silver_change_percent: 0,
+
+        gold_trend: "up",
+        silver_trend: "up",
+
+        currency: "INR",
+
+        updated_at:
+          new Date().toISOString(),
       };
-    });
+    } catch (err) {
+      console.log(
+        "Gold/Silver API Error:",
+        err.message
+      );
+    }
 
-    // =========================================================
-    // PROFIT LOSS - REAL DB
-    // =========================================================
-    let profitLoss = [];
+    // =====================================================
+    // DISTRICT RETAIL STORES
+    // =====================================================
 
-    try {
-      const branchIdsForReport = [districtId, ...storeIds].filter(Boolean);
+    const districtStores =
+      await Store.findAll({
+        where: {
+          [Op.and]: [
+            {
+              [Op.or]: [
+                ...(hasAttr(
+                  Store,
+                  "district_id"
+                )
+                  ? [
+                      {
+                        district_id:
+                          districtId,
+                      },
+                    ]
+                  : []),
 
-      profitLoss = await Ledger.findAll({
+                ...(districtCode &&
+                hasAttr(
+                  Store,
+                  "district_code"
+                )
+                  ? [
+                      {
+                        district_code:
+                          districtCode,
+                      },
+                    ]
+                  : []),
+              ],
+            },
+
+            hasAttr(
+              Store,
+              "organization_level"
+            )
+              ? sequelize.where(
+                  sequelize.fn(
+                    "LOWER",
+                    sequelize.col(
+                      "organization_level"
+                    )
+                  ),
+                  "retail"
+                )
+              : {},
+
+            hasAttr(
+              Store,
+              "store_code"
+            )
+              ? {
+                  store_code: {
+                    [Op.notILike]:
+                      "DST%",
+                  },
+                }
+              : {},
+          ],
+        },
+
         attributes: [
-          [sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"), "month"],
+          "id",
+
           [
-            sequelize.fn(
-              "COALESCE",
-              sequelize.fn(
-                "SUM",
-                sequelize.literal(`
-                  CASE 
-                    WHEN type = 'SALE' THEN total
-                    WHEN type = 'PURCHASE' THEN -total
-                    ELSE 0
-                  END
-                `)
-              ),
-              0
+            col(storeNameField),
+            "store_name",
+          ],
+
+          [
+            col(storeCodeField),
+            "store_code",
+          ],
+        ],
+
+        raw: true,
+      });
+
+    const storeIds =
+      districtStores
+        .map((s) => Number(s.id))
+        .filter(Boolean);
+
+    // =====================================================
+    // CENTRALIZED STOCK SUMMARY
+    // =====================================================
+
+    const stockSummary =
+      await sequelize.query(
+        `
+        SELECT
+          COALESCE(
+            SUM(
+              CASE
+                WHEN s.organization_id = :districtId
+                THEN s.available_qty
+                ELSE 0
+              END
             ),
-            "amount",
-          ],
-        ],
-        where: {
-          ...(branchIdsForReport.length
-            ? {
-                branch_id: {
-                  [Op.in]: branchIdsForReport,
-                },
-              }
-            : {}),
-        },
-        group: [
-          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "Mon"),
-          sequelize.fn("DATE_PART", "month", sequelize.col("created_at")),
-        ],
-        order: [
-          [
-            sequelize.fn("DATE_PART", "month", sequelize.col("created_at")),
-            "ASC",
-          ],
-        ],
-        raw: true,
-      });
+            0
+          )::numeric AS district_stock,
 
-      profitLoss = profitLoss.map((x) => ({
-        month: x.month,
-        amount: Number(x.amount || 0),
-      }));
-    } catch (err) {
-      console.error("profitLoss error:", err.message);
-      profitLoss = [];
+          COALESCE(
+            SUM(
+              CASE
+                WHEN s.organization_id IN (:storeIds)
+                THEN s.available_qty
+                ELSE 0
+              END
+            ),
+            0
+          )::numeric AS retail_stock,
+
+          COALESCE(
+            SUM(s.transit_qty),
+            0
+          )::numeric AS transit_goods,
+
+          COUNT(
+            DISTINCT CASE
+              WHEN
+                COALESCE(
+                  s.dead_qty,
+                  0
+                ) > 0
+
+              THEN s.item_id
+            END
+          )::int AS dead_stock_items,
+
+          COUNT(
+            DISTINCT CASE
+              WHEN
+                s.available_qty > 0
+
+              THEN s.item_id
+            END
+          )::int AS district_item_count
+
+        FROM stocks s
+
+        WHERE
+          (
+            s.organization_id =
+            :districtId
+
+            OR s.organization_id
+            IN (:storeIds)
+          )
+        `,
+        {
+          replacements: {
+            districtId,
+
+            storeIds:
+              storeIds.length
+                ? storeIds
+                : [0],
+          },
+
+          type: QueryTypes.SELECT,
+        }
+      );
+
+    const stock =
+      stockSummary?.[0] || {};
+
+    // =====================================================
+    // STORE PERFORMANCE
+    // =====================================================
+
+    const storePerformance =
+      await sequelize.query(
+        `
+        SELECT
+          s.id AS store_id,
+
+          s.store_name,
+
+          s.store_code,
+
+          COALESCE(
+            SUM(inv.total_amount),
+            0
+          ) AS revenue
+
+        FROM stores s
+
+        LEFT JOIN invoices inv
+        ON inv.organization_id = s.id
+
+        WHERE s.id IN (:storeIds)
+
+        GROUP BY
+          s.id,
+          s.store_name,
+          s.store_code
+
+        ORDER BY revenue DESC
+        `,
+        {
+          replacements: {
+            storeIds:
+              storeIds.length
+                ? storeIds
+                : [0],
+          },
+
+          type: QueryTypes.SELECT,
+        }
+      );
+
+    // =====================================================
+    // PROFIT LOSS
+    // =====================================================
+
+  const profitLoss =
+  await sequelize.query(
+    `
+    SELECT
+      TO_CHAR(
+        DATE_TRUNC(
+          'month',
+          inv."createdAt"
+        ),
+        'Mon'
+      ) AS month,
+
+      COALESCE(
+        SUM(inv.total_amount),
+        0
+      ) AS amount
+
+    FROM invoices inv
+
+    WHERE
+      (
+        inv.organization_id =
+        :districtId
+
+        OR inv.organization_id
+        IN (:storeIds)
+      )
+
+    GROUP BY
+      DATE_TRUNC(
+        'month',
+        inv."createdAt"
+      )
+
+    ORDER BY
+      DATE_TRUNC(
+        'month',
+        inv."createdAt"
+      ) ASC
+    `,
+    {
+      replacements: {
+        districtId,
+
+        storeIds:
+          storeIds.length
+            ? storeIds
+            : [0],
+      },
+
+      type: QueryTypes.SELECT,
     }
+  );
 
-    // =========================================================
+    // =====================================================
     // PENDING TASKS
-    // =========================================================
-    let pendingTasks = [];
+    // =====================================================
 
-    try {
-      pendingTasks = await Task.findAll({
-        where: {
-          status: "pending",
-          [Op.or]: [
-            { assigned_to: user.id },
-            ...(districtCode ? [{ district_code: districtCode }] : []),
-            ...(user.store_code ? [{ store_code: user.store_code }] : []),
-          ],
-        },
-        order: [["created_at", "DESC"]],
-        limit: 5,
-        raw: true,
-      });
+    const pendingTasks =
+  await sequelize.query(
+    `
+    SELECT t.*
 
-      const now = new Date();
+    FROM tasks t
 
-      pendingTasks = pendingTasks.map((task) => {
-        const createdAt = new Date(
-          task.created_at || task.createdAt || new Date()
-        );
+    WHERE
+      LOWER(
+        t.status::text
+      ) = 'pending'
 
-        const diffMs = now - createdAt;
-        const diffMinutes = Math.floor(diffMs / (1000 * 60));
-        const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHrs / 24);
+      AND t.district_code =
+      :districtCode
 
-        let timeAgo = "Just now";
+    ORDER BY
+      t.created_at DESC
 
-        if (diffDays > 0) {
-          timeAgo = `${diffDays} day(s) ago`;
-        } else if (diffHrs > 0) {
-          timeAgo = `${diffHrs} hour(s) ago`;
-        } else if (diffMinutes > 0) {
-          timeAgo = `${diffMinutes} minute(s) ago`;
-        }
+    LIMIT 5
+    `,
+    {
+      replacements: {
+        districtCode,
+      },
 
-        const meta = task.meta && typeof task.meta === "object" ? task.meta : {};
-
-        const rawAmount =
-          task.amount ||
-          task.total_amount ||
-          meta.amount ||
-          meta.total_amount ||
-          null;
-
-        const amountNumber =
-          rawAmount !== null && rawAmount !== undefined && rawAmount !== ""
-            ? Number(rawAmount)
-            : null;
-
-        return {
-          ...task,
-          priority: task.priority || meta.priority || "medium",
-
-          module_name:
-            task.module_name ||
-            task.task_type ||
-            task.type ||
-            meta.module_name ||
-            "Task",
-
-          title: task.title || meta.title || task.name || "Pending Task",
-
-          description:
-            task.description ||
-            meta.description ||
-            task.remark ||
-            "Task requires your attention",
-
-          time_ago: timeAgo,
-          pending_since: timeAgo,
-
-          created_time: createdAt.toLocaleString("en-IN", {
-            timeZone: "Asia/Kolkata",
-          }),
-
-          items_pending:
-            task.items_pending || meta.items_pending || meta.pending_items || null,
-
-          customer_name:
-            task.customer_name || meta.customer_name || meta.customer || null,
-
-          amount: amountNumber,
-          amount_text:
-            amountNumber !== null && !Number.isNaN(amountNumber)
-              ? `₹${amountNumber.toLocaleString("en-IN")}`
-              : null,
-        };
-      });
-    } catch (err) {
-      console.error("pendingTasks error:", err.message);
-      pendingTasks = [];
+      type: QueryTypes.SELECT,
     }
+  );
 
-    // =========================================================
-    // RECENT ACTIVITIES - REAL DB
-    // =========================================================
-    let recentActivities = [];
+    // =====================================================
+    // RECENT ACTIVITIES
+    // =====================================================
 
-    try {
-      const activityWhere = {
-        [Op.or]: [
-          ...(districtCode ? [{ district_code: districtCode }] : []),
-          ...(user.store_code ? [{ store_code: user.store_code }] : []),
-          ...(hasAttr(ActivityLog, "organization_id")
-            ? [{ organization_id: districtId }]
-            : []),
-        ],
-      };
+    const recentActivities =
+  await sequelize.query(
+    `
+    SELECT sa.*
 
-      recentActivities = await ActivityLog.findAll({
-        where: activityWhere,
-        order: [["created_at", "DESC"]],
-        limit: 5,
-        raw: true,
-      });
+    FROM system_activities sa
 
-      const now = new Date();
+    WHERE
+      (
+        sa.store_code = :districtCode
 
-      recentActivities = recentActivities.map((activity) => {
-        const createdAt = new Date(
-          activity.created_at || activity.createdAt || new Date()
-        );
+        OR sa.store_code
+        IN (:storeCodes)
+      )
 
-        const diffMs = now - createdAt;
-        const diffMinutes = Math.floor(diffMs / (1000 * 60));
-        const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHrs / 24);
+    ORDER BY
+      sa.created_at DESC
 
-        let timeAgo = "Just now";
+    LIMIT 5
+    `,
+    {
+      replacements: {
+        districtCode,
 
-        if (diffDays > 0) {
-          timeAgo = `${diffDays} day(s) ago`;
-        } else if (diffHrs > 0) {
-          timeAgo = `${diffHrs} hour(s) ago`;
-        } else if (diffMinutes > 0) {
-          timeAgo = `${diffMinutes} minute(s) ago`;
-        }
+        storeCodes:
+          districtStores.length
+            ? districtStores.map(
+                (s) => s.store_code
+              )
+            : ["NA"],
+      },
 
-        return {
-          id: activity.id,
-          title:
-            activity.title ||
-            activity.action ||
-            activity.module_name ||
-            "Recent Activity",
-          subtitle:
-            activity.description ||
-            activity.reference_no ||
-            activity.module_name ||
-            "",
-          time_ago: timeAgo,
-        };
-      });
-    } catch (err) {
-      console.error("recentActivities error:", err.message);
-      recentActivities = [];
+      type: QueryTypes.SELECT,
     }
+  );
+    // =====================================================
+    // FINAL RESPONSE
+    // =====================================================
 
     return res.status(200).json({
       success: true,
-      message: "District dashboard fetched successfully",
+
+      message:
+        "District dashboard fetched successfully",
+
       data: {
         summary_cards: {
-          total_stock: totalStock,
-          retail_stores_stocks: retailStoresStocks,
-          dead_stock_items: deadStockItems,
-          transit_goods: transitGoods,
+          total_stock: Number(
+            stock.district_stock || 0
+          ),
 
-          gold_price_value: liveRate.gold_price,
-          silver_price_value: liveRate.silver_price,
+          retail_stores_stocks:
+            Number(
+              stock.retail_stock || 0
+            ),
 
-          gold_price: liveRate.gold_price,
-          silver_price: liveRate.silver_price,
+          dead_stock_items:
+            Number(
+              stock.dead_stock_items ||
+                0
+            ),
 
-          gold_rate_24k: liveRate.gold_rate_24k,
-          gold_rate_22k: liveRate.gold_rate_22k,
-          gold_rate_18k: liveRate.gold_rate_18k,
-          silver_rate: liveRate.silver_rate,
+          transit_goods: Number(
+            stock.transit_goods || 0
+          ),
 
-          gold_change_percent: liveRate.gold_change_percent,
-          silver_change_percent: liveRate.silver_change_percent,
+          gold_price:
+            liveRate.gold_price,
 
-          gold_trend: liveRate.gold_trend,
-          silver_trend: liveRate.silver_trend,
+          silver_price:
+            liveRate.silver_price,
 
-          rate_currency: liveRate.currency,
-          rate_updated_at: liveRate.updated_at,
+          gold_rate_24k:
+            liveRate.gold_rate_24k,
+
+          gold_rate_22k:
+            liveRate.gold_rate_22k,
+
+          gold_rate_18k:
+            liveRate.gold_rate_18k,
+
+          silver_rate:
+            liveRate.silver_rate,
+
+          gold_change_percent:
+            liveRate.gold_change_percent,
+
+          silver_change_percent:
+            liveRate.silver_change_percent,
+
+          gold_trend:
+            liveRate.gold_trend,
+
+          silver_trend:
+            liveRate.silver_trend,
+
+          rate_currency:
+            liveRate.currency,
+
+          rate_updated_at:
+            liveRate.updated_at,
         },
 
-        store_performance: storePerformance,
-        profit_loss: profitLoss,
+        store_performance:
+          storePerformance.map(
+            (row) => ({
+              store_id:
+                row.store_id,
 
-        pending_tasks: pendingTasks,
-        recent_activities: recentActivities,
+              store_name:
+                row.store_name,
+
+              store_code:
+                row.store_code,
+
+              revenue: Number(
+                row.revenue || 0
+              ),
+            })
+          ),
+
+        profit_loss:
+          profitLoss.map((row) => ({
+            month: row.month,
+
+            amount: Number(
+              row.amount || 0
+            ),
+          })),
+
+        pending_tasks:
+          pendingTasks,
+
+        recent_activities:
+          recentActivities,
 
         extra_summary: {
           district_id: districtId,
-          district_code: districtCode,
-          district_own_stock: districtOwnStock,
-          total_inventory_value: goldPriceValue + silverPriceValue,
-          total_stores: districtStores.length,
-          district_item_count: districtInventoryItems.length,
+
+          district_code:
+            districtCode,
+
+          district_own_stock:
+            Number(
+              stock.district_stock || 0
+            ),
+
+          total_stores:
+            districtStores.length,
+
+          district_item_count:
+            Number(
+              stock.district_item_count ||
+                0
+            ),
         },
       },
     });
   } catch (error) {
-    console.error("getDistrictDashboard error:", error);
+    console.error(
+      "getDistrictDashboard error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,
-      message: "Failed to fetch district dashboard",
+
+      message:
+        "Failed to fetch district dashboard",
+
       error: error.message,
     });
   }

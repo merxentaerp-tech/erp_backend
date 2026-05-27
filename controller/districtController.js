@@ -1671,113 +1671,173 @@ export const getDistrictDashboard = async (req, res) => {
       getStoreCodeField();
 
     // =====================================================
-    // LIVE GOLD / SILVER RATE
-    // =====================================================
+// LIVE GOLD / SILVER RATE
+// =====================================================
 
-    let liveRate = {
-      gold_price: 0,
-      silver_price: 0,
+let liveRate = {
+  gold_price: 0,
+  silver_price: 0,
 
-      gold_rate_24k: 0,
-      gold_rate_22k: 0,
-      gold_rate_18k: 0,
-      silver_rate: 0,
+  gold_rate_24k: 0,
+  gold_rate_22k: 0,
+  gold_rate_18k: 0,
+  silver_rate: 0,
 
-      gold_change_percent: 0,
-      silver_change_percent: 0,
+  gold_change_percent: 0,
+  silver_change_percent: 0,
 
-      gold_trend: "up",
-      silver_trend: "up",
+  gold_trend: "up",
+  silver_trend: "up",
 
-      currency: "INR",
-      updated_at: null,
-    };
+  currency: "INR",
+  updated_at: null,
+};
 
-    try {
-      const goldRes = await axios.get(
-        "https://api.gold-api.com/price/XAU"
-      );
+try {
+  const [goldRes, silverRes, rateRes] =
+    await Promise.all([
+      axios.get(
+        "https://api.gold-api.com/price/XAU",
+        {
+          timeout: 10000,
+        }
+      ),
 
-      const silverRes =
-        await axios.get(
-          "https://api.gold-api.com/price/XAG"
-        );
+      axios.get(
+        "https://api.gold-api.com/price/XAG",
+        {
+          timeout: 10000,
+        }
+      ),
 
-      const rateRes = await axios.get(
-        "https://open.er-api.com/v6/latest/USD"
-      );
+      axios.get(
+        "https://open.er-api.com/v6/latest/USD",
+        {
+          timeout: 10000,
+        }
+      ),
+    ]);
 
-      const usdToInr = Number(
-        rateRes?.data?.rates?.INR || 0
-      );
+  console.log(
+    "GOLD API =>",
+    goldRes?.data
+  );
 
-      const ounceToGram = 31.1035;
+  console.log(
+    "SILVER API =>",
+    silverRes?.data
+  );
 
-      const gold24K =
-        (Number(
-          goldRes?.data?.price || 0
-        ) /
-          ounceToGram) *
-        usdToInr;
+  console.log(
+    "USD INR API =>",
+    rateRes?.data
+  );
 
-      const gold22K =
-        gold24K * (22 / 24);
+  const goldUsdPerOunce = Number(
+    goldRes?.data?.price || 0
+  );
 
-      const gold18K =
-        gold24K * (18 / 24);
+  const silverUsdPerOunce = Number(
+    silverRes?.data?.price || 0
+  );
 
-      const silver999 =
-        (Number(
-          silverRes?.data?.price || 0
-        ) /
-          ounceToGram) *
-        usdToInr;
+  const usdToInr = Number(
+    rateRes?.data?.rates?.INR || 0
+  );
 
-      const silver925 =
-        silver999 * 0.925;
+  if (
+    !goldUsdPerOunce ||
+    !silverUsdPerOunce ||
+    !usdToInr
+  ) {
+    throw new Error(
+      "Invalid live rate response"
+    );
+  }
 
-      liveRate = {
-        gold_price: Number(
-          (gold24K * 10).toFixed(2)
-        ),
+  // 1 troy ounce = 31.1035 grams
+  const ounceToGram = 31.1035;
 
-        silver_price: Number(
-          silver925.toFixed(2)
-        ),
+  // GOLD
+  const gold24KPerGram =
+    (goldUsdPerOunce / ounceToGram) *
+    usdToInr;
 
-        gold_rate_24k: Number(
-          gold24K.toFixed(2)
-        ),
+  const gold22KPerGram =
+    gold24KPerGram * (22 / 24);
 
-        gold_rate_22k: Number(
-          gold22K.toFixed(2)
-        ),
+  const gold18KPerGram =
+    gold24KPerGram * (18 / 24);
 
-        gold_rate_18k: Number(
-          gold18K.toFixed(2)
-        ),
+  // SILVER
+  const silver999PerGram =
+    (silverUsdPerOunce /
+      ounceToGram) *
+    usdToInr;
 
-        silver_rate: Number(
-          silver925.toFixed(2)
-        ),
+  const silver925PerGram =
+    silver999PerGram * 0.925;
 
-        gold_change_percent: 0,
-        silver_change_percent: 0,
+  liveRate = {
+    // per 10 gram
+    gold_price: Number(
+      (gold24KPerGram * 10).toFixed(2)
+    ),
 
-        gold_trend: "up",
-        silver_trend: "up",
+    // per gram
+    silver_price: Number(
+      silver925PerGram.toFixed(2)
+    ),
 
-        currency: "INR",
+    gold_rate_24k: Number(
+      gold24KPerGram.toFixed(2)
+    ),
 
-        updated_at:
-          new Date().toISOString(),
-      };
-    } catch (err) {
-      console.log(
-        "Gold/Silver API Error:",
-        err.message
-      );
-    }
+    gold_rate_22k: Number(
+      gold22KPerGram.toFixed(2)
+    ),
+
+    gold_rate_18k: Number(
+      gold18KPerGram.toFixed(2)
+    ),
+
+    silver_rate: Number(
+      silver925PerGram.toFixed(2)
+    ),
+
+    gold_change_percent: Number(
+      goldRes?.data?.change_percent || 0
+    ),
+
+    silver_change_percent: Number(
+      silverRes?.data?.change_percent || 0
+    ),
+
+    gold_trend:
+      Number(
+        goldRes?.data?.change_percent || 0
+      ) >= 0
+        ? "up"
+        : "down",
+
+    silver_trend:
+      Number(
+        silverRes?.data?.change_percent || 0
+      ) >= 0
+        ? "up"
+        : "down",
+
+    currency: "INR",
+
+    updated_at:
+      new Date().toISOString(),
+  };
+} catch (err) {
+  console.log(
+    "Gold/Silver API Full Error =>",
+    err?.response?.data || err.message
+  );
+}
 
     // =====================================================
     // DISTRICT RETAIL STORES

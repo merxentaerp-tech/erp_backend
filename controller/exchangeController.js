@@ -57,6 +57,7 @@ export const getInvoiceForExchange = async (req, res) => {
 
       LEFT JOIN invoice_items ii
         ON ii.invoice_id = i.id
+       AND ii.is_active = true
 
       WHERE i.invoice_number = :invoice_number
 
@@ -131,7 +132,9 @@ export const getInvoiceForExchange = async (req, res) => {
   }
 };
 
-
+// ==============================
+//  CREATE EXCHANGE
+// ==============================
 export const createExchange = async (req, res) => {
   const t = await sequelize.transaction();
 
@@ -149,19 +152,12 @@ export const createExchange = async (req, res) => {
 
     if (!storeCode) {
       await t.rollback();
+
       return res.status(400).json({
         success: false,
         message: "Store code missing in token",
       });
     }
-
-    // if (!original_products.length || !new_products.length) {
-    //   await t.rollback();
-    //   return res.status(400).json({
-    //     success: false,
-    //     message: "Products are required for exchange",
-    //   });
-    // }
 
     // ================= FETCH INVOICE =================
     const invoice = await sequelize.query(
@@ -174,7 +170,10 @@ export const createExchange = async (req, res) => {
       FOR UPDATE
       `,
       {
-        replacements: { invoice_number, store_code: storeCode },
+        replacements: {
+          invoice_number,
+          store_code: storeCode,
+        },
         type: QueryTypes.SELECT,
         transaction: t,
       }
@@ -182,6 +181,7 @@ export const createExchange = async (req, res) => {
 
     if (!invoice.length) {
       await t.rollback();
+
       return res.status(404).json({
         success: false,
         message: "Invoice not found",
@@ -190,15 +190,22 @@ export const createExchange = async (req, res) => {
 
     const inv = invoice[0];
 
-    // ================= FETCH ITEMS =================
+    // ================= FETCH ACTIVE ITEMS =================
     const items = await sequelize.query(
       `
-      SELECT id, product_code, description, total_amount
+      SELECT 
+        id,
+        product_code,
+        description,
+        total_amount
       FROM invoice_items
-      WHERE invoice_id = :invoice_id AND is_active = true
+      WHERE invoice_id = :invoice_id
+      AND is_active = true
       `,
       {
-        replacements: { invoice_id: inv.id },
+        replacements: {
+          invoice_id: inv.id,
+        },
         type: QueryTypes.SELECT,
         transaction: t,
       }
@@ -206,6 +213,7 @@ export const createExchange = async (req, res) => {
 
     if (!items.length) {
       await t.rollback();
+
       return res.status(400).json({
         success: false,
         message: "No items found for this invoice",
@@ -215,25 +223,31 @@ export const createExchange = async (req, res) => {
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
-    // ================= MATCH + CALCULATE OLD VALUE =================
+    // ================= MATCH ITEMS =================
     let oldValue = 0;
     let matchedItems = [];
 
     for (const original of original_products) {
       const matched = items.find(
         (item) =>
-          normalize(item.product_code) === normalize(original.product_code)
+          normalize(item.product_code) ===
+          normalize(original.product_code)
       );
 
       if (!matched) {
         await t.rollback();
+
         return res.status(400).json({
           success: false,
           message: `Invalid product in invoice: ${original.product_code}`,
         });
       }
 
-      matchedItems.push({ matched, original });
+      matchedItems.push({
+        matched,
+        original,
+      });
+
       oldValue += parseFloat(original.value || 0);
     }
 
@@ -246,13 +260,19 @@ export const createExchange = async (req, res) => {
 
     // ================= CALCULATIONS =================
     const diffDays = Math.floor(
-      (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
+      (new Date() - new Date(inv.invoice_date)) /
+        (1000 * 60 * 60 * 24)
     );
 
     const isFree = diffDays <= 7;
 
-    const makingCharges = isFree ? 0 : making_charge + stone_amount;
+    const makingCharges = isFree
+      ? 0
+      : parseFloat(making_charge || 0) +
+        parseFloat(stone_amount || 0);
+
     const difference = newValue - oldValue;
+
     const finalAmount = newValue + makingCharges;
 
     // ================= UPDATE INVOICE =================
@@ -265,7 +285,8 @@ export const createExchange = async (req, res) => {
         is_exchanged = TRUE,
         "updatedAt" = NOW(),
         status = CASE
-          WHEN :difference <= 0 THEN 'PAID'::enum_invoices_status
+          WHEN :difference <= 0
+          THEN 'PAID'::enum_invoices_status
           ELSE 'PARTIAL'::enum_invoices_status
         END
       WHERE id = :invoice_id
@@ -280,22 +301,29 @@ export const createExchange = async (req, res) => {
       }
     );
 
-    // ================= DEACTIVATE OLD ITEMS =================
+    // ================= DEACTIVATE OLD PRODUCTS =================
     for (const m of matchedItems) {
       await sequelize.query(
         `
         UPDATE invoice_items
-        SET is_active = false
-        WHERE id = :item_id
+        SET 
+          is_active = false,
+          "updatedAt" = NOW()
+        WHERE invoice_id = :invoice_id
+        AND product_code = :product_code
+        AND is_active = true
         `,
         {
-          replacements: { item_id: m.matched.id },
+          replacements: {
+            invoice_id: inv.id,
+            product_code: m.matched.product_code,
+          },
           transaction: t,
         }
       );
     }
 
-    // ================= INSERT NEW ITEMS =================
+    // ================= INSERT NEW PRODUCTS =================
     for (const newItem of new_products) {
       await sequelize.query(
         `
@@ -325,7 +353,12 @@ export const createExchange = async (req, res) => {
           :rate,
           :total_amount,
           true,
-          (SELECT id FROM items WHERE article_code = :product_code LIMIT 1),
+          (
+            SELECT id
+            FROM items
+            WHERE article_code = :product_code
+            LIMIT 1
+          ),
           NOW(),
           NOW()
         )
@@ -341,7 +374,11 @@ export const createExchange = async (req, res) => {
             stone_weight: newItem.stone_weight || 0,
             total_amount: parseFloat(newItem.value || 0),
             rate: newItem.net_weight
-              ? parseFloat((newItem.value / newItem.net_weight).toFixed(2))
+              ? parseFloat(
+                  (
+                    newItem.value / newItem.net_weight
+                  ).toFixed(2)
+                )
               : 0,
           },
           transaction: t,
@@ -392,7 +429,9 @@ export const createExchange = async (req, res) => {
             new_product_code: newP.product_code,
             new_product_name: newP.product_name,
             new_value: newP.value,
-            difference: (newP.value || 0) - (old.value || 0),
+            difference:
+              parseFloat(newP.value || 0) -
+              parseFloat(old.value || 0),
             making_charges: makingCharges,
           },
           transaction: t,
@@ -416,12 +455,17 @@ export const createExchange = async (req, res) => {
     });
   } catch (err) {
     await t.rollback();
+
     return res.status(500).json({
       success: false,
       error: err.message,
     });
   }
 };
+
+// ==============================
+//  EXCHANGE DASHBOARD
+// ==============================
 export const getExchangeDashboard = async (req, res) => {
   try {
     const { filter = "all" } = req.query;
@@ -529,7 +573,6 @@ export const getExchangeDashboard = async (req, res) => {
           END
         ) AS after_7_days,
 
-        -- 🔥 FIX APPLIED HERE ONLY
         COALESCE(
           SUM(
             CASE 

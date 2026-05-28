@@ -22,7 +22,7 @@ import tracklocation from "./routes/transferlocation.js";
 import staff from "./routes/staffroutes.js";
 import profile from "./routes/profileRoute.js";
 import ledger from "./routes/headladger.js";
-import itemTracker from "./routes/itemtracker.js
+import itemTracker from "./routes/itemtracker.js";
 import { getGoldRate } from "./service/goldService.js";
 
 import {

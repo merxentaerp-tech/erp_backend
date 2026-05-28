@@ -10,13 +10,21 @@ export const getInvoiceForExchange = async (req, res) => {
   try {
     const { invoice_number } = req.params;
 
+    if (!invoice_number || !String(invoice_number).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "invoice_number is required",
+      });
+    }
+
     const data = await sequelize.query(
       `
       SELECT 
-        i.id,
+        i.id AS invoice_id,
         i.invoice_number,
-        c.name,
-        c.phone,
+
+        c.name AS customer_name,
+        c.phone AS customer_phone,
 
         e.old_product_code,
         e.old_product_name,
@@ -35,67 +43,93 @@ export const getInvoiceForExchange = async (req, res) => {
         ii.total_amount
 
       FROM invoices i
-      LEFT JOIN customers c ON i.customer_id = c.id
+
+      LEFT JOIN customers c 
+        ON i.customer_id = c.id
 
       LEFT JOIN LATERAL (
-        SELECT * FROM exchange_logs 
-        WHERE invoice_id = i.id 
-        ORDER BY id DESC LIMIT 1
+        SELECT *
+        FROM exchange_logs 
+        WHERE invoice_id = i.id
+        ORDER BY id DESC
+        LIMIT 1
       ) e ON true
 
-      LEFT JOIN invoice_items ii ON ii.invoice_id = i.id
+      LEFT JOIN invoice_items ii
+        ON ii.invoice_id = i.id
 
       WHERE i.invoice_number = :invoice_number
-     
+
+      ORDER BY ii.id ASC
       `,
       {
-        replacements: { invoice_number },
-        type: QueryTypes.SELECT
+        replacements: {
+          invoice_number: String(invoice_number).trim(),
+        },
+        type: QueryTypes.SELECT,
       }
     );
 
     if (!data.length) {
-      return res.status(404).json({ message: "Invoice not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Invoice not found",
+      });
     }
 
-    const item = data[0];
+    const invoice = data[0];
 
-    const original_product = item.old_product_code
+    const items = data
+      .filter((row) => row.product_code)
+      .map((row) => ({
+        invoice_id: row.invoice_id,
+        product_code: row.product_code,
+        product_name: row.description,
+        purity: row.purity,
+        gross_weight: row.gross_weight,
+        net_weight: row.net_weight,
+        stone_weight: row.stone_weight,
+        value: row.total_amount,
+      }));
+
+    const latest_exchange_product = invoice.old_product_code
       ? {
-          product_code: item.old_product_code,
-          product_name: item.old_product_name,
-          purity: item.old_purity,
-          gross_weight: item.old_gross_weight,
-          net_weight: item.old_net_weight,
-          stone_weight: item.old_stone_weight,
-          value: item.old_value
+          product_code: invoice.old_product_code,
+          product_name: invoice.old_product_name,
+          purity: invoice.old_purity,
+          gross_weight: invoice.old_gross_weight,
+          net_weight: invoice.old_net_weight,
+          stone_weight: invoice.old_stone_weight,
+          value: invoice.old_value,
         }
-      : {
-          product_code: item.product_code,
-          product_name: item.description,
-          purity: item.purity,
-          gross_weight: item.gross_weight,
-          net_weight: item.net_weight,
-          stone_weight: item.stone_weight,
-          value: item.total_amount
-        };
+      : null;
 
-    return res.json({
+    return res.status(200).json({
       success: true,
+      message: "Invoice fetched successfully",
       data: {
-        invoice_id: item.id,
-        invoice_number: item.invoice_number,
-        customer_name: item.name,
-        phone: item.phone,
-        original_product
-      }
-    });
+        invoice_id: invoice.invoice_id,
+        invoice_number: invoice.invoice_number,
+        customer_name: invoice.customer_name,
+        phone: invoice.customer_phone,
 
+        total_items: items.length,
+
+        items,
+
+        latest_exchange_product,
+      },
+    });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("getInvoiceForExchange error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch invoice for exchange",
+      error: err.message,
+    });
   }
 };
-
 
 
 export const createExchange = async (req, res) => {
@@ -111,27 +145,23 @@ export const createExchange = async (req, res) => {
     } = req.body;
 
     const storeCode =
-      req.user?.store_code ||
-      req.user?.storeCode ||
-      req.headers.store_code;
+      req.user?.store_code || req.user?.storeCode || req.headers.store_code;
 
     if (!storeCode) {
       await t.rollback();
-
       return res.status(400).json({
         success: false,
         message: "Store code missing in token",
       });
     }
 
-    if (!original_products.length || !new_products.length) {
-      await t.rollback();
-
-      return res.status(400).json({
-        success: false,
-        message: "Products are required for exchange",
-      });
-    }
+    // if (!original_products.length || !new_products.length) {
+    //   await t.rollback();
+    //   return res.status(400).json({
+    //     success: false,
+    //     message: "Products are required for exchange",
+    //   });
+    // }
 
     // ================= FETCH INVOICE =================
     const invoice = await sequelize.query(
@@ -144,10 +174,7 @@ export const createExchange = async (req, res) => {
       FOR UPDATE
       `,
       {
-        replacements: {
-          invoice_number,
-          store_code: storeCode,
-        },
+        replacements: { invoice_number, store_code: storeCode },
         type: QueryTypes.SELECT,
         transaction: t,
       }
@@ -155,7 +182,6 @@ export const createExchange = async (req, res) => {
 
     if (!invoice.length) {
       await t.rollback();
-
       return res.status(404).json({
         success: false,
         message: "Invoice not found",
@@ -164,23 +190,15 @@ export const createExchange = async (req, res) => {
 
     const inv = invoice[0];
 
-    // ================= FETCH ACTIVE ITEMS =================
+    // ================= FETCH ITEMS =================
     const items = await sequelize.query(
       `
-      SELECT 
-        id,
-        product_code,
-        description,
-        total_amount,
-        is_active
+      SELECT id, product_code, description, total_amount
       FROM invoice_items
-      WHERE invoice_id = :invoice_id
-      AND is_active = true
+      WHERE invoice_id = :invoice_id AND is_active = true
       `,
       {
-        replacements: {
-          invoice_id: inv.id,
-        },
+        replacements: { invoice_id: inv.id },
         type: QueryTypes.SELECT,
         transaction: t,
       }
@@ -188,45 +206,38 @@ export const createExchange = async (req, res) => {
 
     if (!items.length) {
       await t.rollback();
-
       return res.status(400).json({
         success: false,
-        message: "No active items found for this invoice",
+        message: "No items found for this invoice",
       });
     }
 
     const normalize = (str) =>
       str?.toString().trim().toLowerCase().replace(/\s+/g, " ");
 
-    // ================= MATCH OLD PRODUCTS =================
+    // ================= MATCH + CALCULATE OLD VALUE =================
     let oldValue = 0;
     let matchedItems = [];
 
     for (const original of original_products) {
       const matched = items.find(
         (item) =>
-          normalize(item.product_code) ===
-          normalize(original.product_code)
+          normalize(item.product_code) === normalize(original.product_code)
       );
 
       if (!matched) {
         await t.rollback();
-
         return res.status(400).json({
           success: false,
-          message: `Invalid active product in invoice: ${original.product_code}`,
+          message: `Invalid product in invoice: ${original.product_code}`,
         });
       }
 
-      matchedItems.push({
-        matched,
-        original,
-      });
-
+      matchedItems.push({ matched, original });
       oldValue += parseFloat(original.value || 0);
     }
 
-    // ================= CALCULATE NEW VALUE =================
+    // ================= NEW VALUE =================
     let newValue = 0;
 
     for (const np of new_products) {
@@ -235,32 +246,26 @@ export const createExchange = async (req, res) => {
 
     // ================= CALCULATIONS =================
     const diffDays = Math.floor(
-      (new Date() - new Date(inv.invoice_date)) /
-        (1000 * 60 * 60 * 24)
+      (new Date() - new Date(inv.invoice_date)) / (1000 * 60 * 60 * 24)
     );
 
     const isFree = diffDays <= 7;
 
-    const makingCharges = isFree
-      ? 0
-      : Number(making_charge) + Number(stone_amount);
-
+    const makingCharges = isFree ? 0 : making_charge + stone_amount;
     const difference = newValue - oldValue;
-
     const finalAmount = newValue + makingCharges;
 
     // ================= UPDATE INVOICE =================
     await sequelize.query(
       `
       UPDATE invoices
-      SET
+      SET 
         total_amount = :finalAmount,
         pending_amount = GREATEST(:difference, 0),
         is_exchanged = TRUE,
         "updatedAt" = NOW(),
         status = CASE
-          WHEN :difference <= 0
-          THEN 'PAID'::enum_invoices_status
+          WHEN :difference <= 0 THEN 'PAID'::enum_invoices_status
           ELSE 'PARTIAL'::enum_invoices_status
         END
       WHERE id = :invoice_id
@@ -280,15 +285,11 @@ export const createExchange = async (req, res) => {
       await sequelize.query(
         `
         UPDATE invoice_items
-        SET
-          is_active = false,
-          "updatedAt" = NOW()
+        SET is_active = false
         WHERE id = :item_id
         `,
         {
-          replacements: {
-            item_id: m.matched.id,
-          },
+          replacements: { item_id: m.matched.id },
           transaction: t,
         }
       );
@@ -324,12 +325,7 @@ export const createExchange = async (req, res) => {
           :rate,
           :total_amount,
           true,
-          (
-            SELECT id
-            FROM items
-            WHERE article_code = :product_code
-            LIMIT 1
-          ),
+          (SELECT id FROM items WHERE article_code = :product_code LIMIT 1),
           NOW(),
           NOW()
         )
@@ -344,13 +340,8 @@ export const createExchange = async (req, res) => {
             net_weight: newItem.net_weight,
             stone_weight: newItem.stone_weight || 0,
             total_amount: parseFloat(newItem.value || 0),
-
             rate: newItem.net_weight
-              ? parseFloat(
-                  (
-                    newItem.value / newItem.net_weight
-                  ).toFixed(2)
-                )
+              ? parseFloat((newItem.value / newItem.net_weight).toFixed(2))
               : 0,
           },
           transaction: t,
@@ -395,19 +386,13 @@ export const createExchange = async (req, res) => {
         {
           replacements: {
             invoice_id: inv.id,
-
             old_product_code: old.product_code,
             old_product_name: old.product_name,
             old_value: old.value,
-
             new_product_code: newP.product_code,
             new_product_name: newP.product_name,
             new_value: newP.value,
-
-            difference:
-              parseFloat(newP.value || 0) -
-              parseFloat(old.value || 0),
-
+            difference: (newP.value || 0) - (old.value || 0),
             making_charges: makingCharges,
           },
           transaction: t,
@@ -417,9 +402,9 @@ export const createExchange = async (req, res) => {
 
     await t.commit();
 
-    return res.status(200).json({
+    return res.json({
       success: true,
-      message: "Exchange completed successfully",
+      message: "Multiple Exchange Done Successfully",
       data: {
         invoice_number: inv.invoice_number,
         total_old_value: oldValue,
@@ -431,12 +416,8 @@ export const createExchange = async (req, res) => {
     });
   } catch (err) {
     await t.rollback();
-
-    console.error("createExchange error:", err);
-
     return res.status(500).json({
       success: false,
-      message: "Failed to create exchange",
       error: err.message,
     });
   }

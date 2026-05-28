@@ -56,10 +56,14 @@ const corsOptions = {
     "PATCH",
   ],
 
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-  ],
+allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "store_code",
+      "x-store-code",
+      "organization_id",
+      "x-organization-id",
+    ],
 
   credentials: true,
 };

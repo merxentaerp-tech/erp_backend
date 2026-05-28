@@ -128,7 +128,7 @@ app.use("/headstore/manage", storemanage);
 app.use("/staff", staff);
 
 app.use("/headledger", ledger);
-
+app.use("/item-tracker",itemTracker);
 /**
  * HEALTH CHECK
  */

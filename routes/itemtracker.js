@@ -8,8 +8,9 @@ import {
   getItemTrackerBatches,
   distributeBatch,
   getBatchFinalDestinations,
-  getBatchNodeRoute,searchBatchTracker,getAllTrackerBatches,getBatchMovementHistory,getBatchMovementHistoryByBatchNo,getItemFinalDestinations
+  getBatchNodeRoute,searchBatchTracker,getAllTrackerBatches,getBatchMovementHistory,getBatchMovementHistoryByBatchNo,getItemFinalDestinations,getItemBatchesByDate
 } from "../controller/headoffice/itemtrackker.js";
+
 const router = express.Router();
 
 // router.use(authMiddleware);
@@ -19,6 +20,11 @@ router.get("/items", auth,getTrackerItems);
 
 // item ke root batches
 router.get("/items/:item_id/batches", auth,getItemTrackerBatches);
+router.get(
+  "/items/:item_id/batches-by-date",
+  auth,
+  getItemBatchesByDate
+);
 
 // manual/test distribution
 router.post("/batches/distribute",auth, distributeBatch);

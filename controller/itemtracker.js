@@ -656,64 +656,50 @@ export const getBatchFinalDestinations = async (req, res) => {
     );
 
     // ================= FINAL DESTINATIONS =================
-    const destinations = await sequelize.query(
-      `
-      SELECT
-        b.current_organization_id AS organization_id,
+const destinations = await sequelize.query(
+  `
+  SELECT
+    b.current_organization_id AS organization_id,
 
-        st.store_name,
-        st.store_code,
-        st.organization_level,
-        st.address,
+    st.store_name,
+    st.store_code,
+    st.organization_level,
+    st.address,
 
-        SUM(COALESCE(b.available_qty, 0)) AS quantity,
+    SUM(COALESCE(b.available_qty, 0)) AS quantity,
 
-        SUM(COALESCE(b.available_weight, 0)) AS weight,
+    SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-        MAX(b.updated_at) AS last_updated_at,
+    MAX(b.updated_at) AS last_updated_at
 
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'batch_id', b.id,
-            'batch_no', b.batch_no,
-            'parent_batch_id', b.parent_batch_id,
-            'root_batch_id', b.root_batch_id,
-            'quantity', b.available_qty,
-            'weight', b.available_weight,
-            'split_level', b.split_level,
-            'status', b.status,
-            'updated_at', b.updated_at
-          )
-        ) AS batch_nodes
+  FROM public.inventory_batches b
 
-      FROM public.inventory_batches b
+  LEFT JOIN public.stores st
+    ON st.id = b.current_organization_id
 
-      LEFT JOIN public.stores st
-        ON st.id = b.current_organization_id
+  WHERE
+    (
+      b.root_batch_id = :root_batch_id
+      OR b.id = :root_batch_id
+    )
+    AND COALESCE(b.available_qty, 0) > 0
 
-      WHERE
-        (
-          b.root_batch_id = :root_batch_id
-          OR b.id = :root_batch_id
-        )
-        AND COALESCE(b.available_qty, 0) > 0
+  GROUP BY
+    b.current_organization_id,
+    st.store_name,
+    st.store_code,
+    st.organization_level,
+    st.address
 
-      GROUP BY
-        b.current_organization_id,
-        st.store_name,
-        st.store_code,
-        st.organization_level,
-        st.address
-
-      ORDER BY st.store_name ASC NULLS LAST
-      `,
-      {
-        replacements: {
-          root_batch_id: rootBatchId,
-        },
-        type: QueryTypes.SELECT,
-      }
-    );
+  ORDER BY st.store_name ASC
+  `,
+  {
+    replacements: {
+      root_batch_id: rootBatchId,
+    },
+    type: QueryTypes.SELECT,
+  }
+);
 
     // ================= MOVEMENT HISTORY =================
     const movementRows = await sequelize.query(

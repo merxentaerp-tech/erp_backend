@@ -2339,12 +2339,14 @@ export const getItemFinalDestinations = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("getItemFinalDestinations error:", error);
+  console.error("getBatchFinalDestinations error:", error);
+  console.error("ERROR MESSAGE:", error?.message);
+  console.error("ERROR PARENT:", error?.parent);
+  console.error("ERROR ORIGINAL:", error?.original);
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch item final destinations",
-      error: error.message,
-    });
-  }
-};
+  return res.status(500).json({
+    success: false,
+    message: "Failed to fetch batch final destinations",
+    error: error.message,
+  });
+}

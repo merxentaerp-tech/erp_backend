@@ -666,19 +666,18 @@ export const getBatchFinalDestinations = async (req, res) => {
 
     MAX(b.updated_at) AS last_updated_at,
 
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'batch_id', b.id,
-        'batch_no', b.batch_no,
-        'parent_batch_id', b.parent_batch_id,
-        'root_batch_id', b.root_batch_id,
-        'quantity', b.available_qty,
-        'weight', b.available_weight,
-        'split_level', b.split_level,
-        'status', b.status
-      )
-      ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
-    ) AS batch_nodes
+   JSONB_AGG(
+  JSONB_BUILD_OBJECT(
+    'batch_id', b.id,
+    'batch_no', b.batch_no,
+    'parent_batch_id', b.parent_batch_id,
+    'root_batch_id', b.root_batch_id,
+    'quantity', b.available_qty,
+    'weight', b.available_weight,
+    'split_level', b.split_level,
+    'status', b.status
+  )
+) AS batch_nodes
 
   FROM public.inventory_batches b
 

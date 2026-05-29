@@ -651,60 +651,61 @@ export const getBatchFinalDestinations = async (req, res) => {
 
     const rootBatchId = Number(batch.root_batch_id || batch.batch_id);
 
-    const destinations = await sequelize.query(
-      `
-      SELECT
-        b.current_organization_id AS organization_id,
+  const destinations = await sequelize.query(
+  `
+  SELECT
+    b.current_organization_id AS organization_id,
 
-        st.store_name,
-        st.store_code,
-        st.organization_level,
-        st.address
-        SUM(COALESCE(b.available_qty, 0)) AS quantity,
-        SUM(COALESCE(b.available_weight, 0)) AS weight,
+    st.store_name,
+    st.store_code,
+    st.organization_level,
+    st.address,
 
-        MAX(b.updated_at) AS last_updated_at,
+    SUM(COALESCE(b.available_qty, 0)) AS quantity,
+    SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'batch_id', b.id,
-            'batch_no', b.batch_no,
-            'parent_batch_id', b.parent_batch_id,
-            'root_batch_id', b.root_batch_id,
-            'quantity', b.available_qty,
-            'weight', b.available_weight,
-            'split_level', b.split_level,
-            'status', b.status
-          )
-          ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
-        ) AS batch_nodes
+    MAX(b.updated_at) AS last_updated_at,
 
-      FROM public.inventory_batches b
-    
-      LEFT JOIN public.stores st
-        ON st.id = b.current_organization_id
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'batch_id', b.id,
+        'batch_no', b.batch_no,
+        'parent_batch_id', b.parent_batch_id,
+        'root_batch_id', b.root_batch_id,
+        'quantity', b.available_qty,
+        'weight', b.available_weight,
+        'split_level', b.split_level,
+        'status', b.status
+      )
+      ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
+    ) AS batch_nodes
 
-      WHERE
-        (
-          b.root_batch_id = :root_batch_id
-          OR b.id = :root_batch_id
-        )
-        AND COALESCE(b.available_qty, 0) > 0
+  FROM public.inventory_batches b
 
-      GROUP BY
-        b.current_organization_id,
-        st.store_name,
-        st.store_code,
-        st.organization_level,
-        st.address
+  LEFT JOIN public.stores st
+    ON st.id = b.current_organization_id
 
-      ORDER BY st.store_name ASC NULLS LAST
-      `,
-      {
-        replacements: { root_batch_id: rootBatchId },
-        type: QueryTypes.SELECT,
-      }
-    );
+  WHERE
+    (
+      b.root_batch_id = :root_batch_id
+      OR b.id = :root_batch_id
+    )
+    AND COALESCE(b.available_qty, 0) > 0
+
+  GROUP BY
+    b.current_organization_id,
+    st.store_name,
+    st.store_code,
+    st.organization_level,
+    st.address
+
+  ORDER BY st.store_name ASC NULLS LAST
+  `,
+  {
+    replacements: { root_batch_id: rootBatchId },
+    type: QueryTypes.SELECT,
+  }
+);
 
     const movementRows = await sequelize.query(
       `

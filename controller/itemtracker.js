@@ -1990,7 +1990,7 @@ export const getItemFinalDestinations = async (req, res) => {
 
         MAX(b.updated_at) AS last_updated_at,
 
-       JSON_AGG(
+  JSON_AGG(
   JSON_BUILD_OBJECT(
     'batch_id', b.id,
     'batch_no', b.batch_no,

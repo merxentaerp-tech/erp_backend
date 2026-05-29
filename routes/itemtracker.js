@@ -9,7 +9,7 @@ import {
   distributeBatch,
   getBatchFinalDestinations,
   getBatchNodeRoute,searchBatchTracker,getAllTrackerBatches,getBatchMovementHistory,getBatchMovementHistoryByBatchNo,getItemFinalDestinations
-} from "../controller/headoffice/itemtrackker.js";
+} from "../controller/itemtrackker.js";
 
 const router = express.Router();
 

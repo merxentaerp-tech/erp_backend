@@ -2347,3 +2347,178 @@ export const getItemFinalDestinations = async (req, res) => {
     });
   }
 };
+
+
+export const getItemBatchesByDate = async (req, res) => {
+  try {
+    const itemId = Number(req.params.item_id);
+
+    const dateFrom = normalizeDateFrom(
+      req.query.date_from || req.query.from || req.query.date
+    );
+
+    const dateTo = normalizeDateTo(
+      req.query.date_to || req.query.to || req.query.date
+    );
+
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid item_id is required",
+      });
+    }
+
+    if (!dateFrom && !dateTo) {
+      return res.status(400).json({
+        success: false,
+        message: "date/from/to is required",
+      });
+    }
+
+    const whereClauses = [
+      "b.item_id = :item_id",
+    ];
+
+    const replacements = {
+      item_id: itemId,
+      date_from: dateFrom,
+      date_to: dateTo,
+    };
+
+    if (dateFrom) {
+      whereClauses.push(`
+        b.created_at >= :date_from::timestamptz
+      `);
+    }
+
+    if (dateTo) {
+      whereClauses.push(`
+        b.created_at <= :date_to::timestamptz
+      `);
+    }
+
+    const whereSql = whereClauses.join(" AND ");
+
+    const rows = await sequelize.query(
+      `
+      SELECT
+        b.id AS batch_id,
+        b.batch_no,
+        b.root_batch_id,
+        b.parent_batch_id,
+        b.item_id,
+
+        b.total_qty,
+        b.available_qty,
+
+        b.total_weight,
+        b.available_weight,
+
+        b.status,
+        b.split_level,
+
+        b.current_organization_id,
+
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+
+        i.item_name,
+        i.article_code,
+        i.sku_code,
+        i.category,
+        i.metal_type,
+        i.purity,
+
+        b.created_at,
+        b.updated_at
+
+      FROM public.inventory_batches b
+
+      INNER JOIN public.items i
+        ON i.id = b.item_id
+
+      LEFT JOIN public.stores st
+        ON st.id = b.current_organization_id
+
+      WHERE ${whereSql}
+
+      ORDER BY
+        b.created_at DESC,
+        b.id DESC
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Item batches fetched successfully",
+
+      filters: {
+        item_id: itemId,
+        from: dateFrom,
+        to: dateTo,
+      },
+
+      total_batches: rows.length,
+
+      batch_ids: rows.map((b) => Number(b.batch_id)),
+
+      batch_numbers: rows.map((b) => b.batch_no),
+
+      data: rows.map((b) => ({
+        batch_id: Number(b.batch_id),
+        batch_no: b.batch_no,
+
+        root_batch_id: b.root_batch_id
+          ? Number(b.root_batch_id)
+          : null,
+
+        parent_batch_id: b.parent_batch_id
+          ? Number(b.parent_batch_id)
+          : null,
+
+        item_id: Number(b.item_id),
+
+        item_name: b.item_name,
+        article_code: b.article_code,
+        sku_code: b.sku_code,
+        category: b.category,
+        metal_type: b.metal_type,
+        purity: b.purity,
+
+        total_qty: toNumber(b.total_qty),
+        available_qty: toNumber(b.available_qty),
+
+        total_weight: toNumber(b.total_weight),
+        available_weight: toNumber(b.available_weight),
+
+        split_level: toNumber(b.split_level),
+
+        organization_id: b.current_organization_id
+          ? Number(b.current_organization_id)
+          : null,
+
+        store_name: b.store_name || null,
+        store_code: b.store_code || null,
+        organization_level: b.organization_level || null,
+
+        status: b.status,
+
+        created_at: b.created_at,
+        updated_at: b.updated_at,
+      })),
+    });
+  } catch (error) {
+    console.error("getItemBatchesByDate error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch item batches",
+      error: error.message,
+    });
+  }
+};

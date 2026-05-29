@@ -602,6 +602,7 @@ export const getBatchFinalDestinations = async (req, res) => {
       });
     }
 
+    // ================= FETCH MAIN BATCH =================
     const batchRows = await sequelize.query(
       `
       SELECT
@@ -649,73 +650,83 @@ export const getBatchFinalDestinations = async (req, res) => {
       });
     }
 
-    const rootBatchId = Number(batch.root_batch_id || batch.batch_id);
+    const rootBatchId = Number(
+      batch.root_batch_id || batch.batch_id
+    );
 
-  const destinations = await sequelize.query(
-  `
-  SELECT
-    b.current_organization_id AS organization_id,
+    // ================= FINAL DESTINATIONS =================
+    const destinations = await sequelize.query(
+      `
+      SELECT
+        b.current_organization_id AS organization_id,
 
-    st.store_name,
-    st.store_code,
-    st.organization_level,
-    st.address,
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+        st.address,
 
-    SUM(COALESCE(b.available_qty, 0)) AS quantity,
-    SUM(COALESCE(b.available_weight, 0)) AS weight,
+        SUM(COALESCE(b.available_qty, 0)) AS quantity,
+        SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-    MAX(b.updated_at) AS last_updated_at,
+        MAX(b.updated_at) AS last_updated_at,
 
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'batch_id', b.id,
-        'batch_no', b.batch_no,
-        'parent_batch_id', b.parent_batch_id,
-        'root_batch_id', b.root_batch_id,
-        'quantity', b.available_qty,
-        'weight', b.available_weight,
-        'split_level', b.split_level,
-        'status', b.status
-      )
-      ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
-    ) AS batch_nodes
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'batch_id', b.id,
+            'batch_no', b.batch_no,
+            'parent_batch_id', b.parent_batch_id,
+            'root_batch_id', b.root_batch_id,
+            'quantity', b.available_qty,
+            'weight', b.available_weight,
+            'split_level', b.split_level,
+            'status', b.status,
+            'updated_at', b.updated_at
+          )
+          ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
+        ) AS batch_nodes
 
-  FROM public.inventory_batches b
+      FROM public.inventory_batches b
 
-  LEFT JOIN public.stores st
-    ON st.id = b.current_organization_id
+      LEFT JOIN public.stores st
+        ON st.id = b.current_organization_id
 
-  WHERE
-    (
-      b.root_batch_id = :root_batch_id
-      OR b.id = :root_batch_id
-    )
-    AND COALESCE(b.available_qty, 0) > 0
+      WHERE
+        (
+          b.root_batch_id = :root_batch_id
+          OR b.id = :root_batch_id
+        )
+        AND COALESCE(b.available_qty, 0) > 0
 
-  GROUP BY
-    b.current_organization_id,
-    st.store_name,
-    st.store_code,
-    st.organization_level,
-    st.address
+      GROUP BY
+        b.current_organization_id,
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+        st.address
 
-  ORDER BY st.store_name ASC NULLS LAST
-  `,
-  {
-    replacements: { root_batch_id: rootBatchId },
-    type: QueryTypes.SELECT,
-  }
-);
+      ORDER BY st.store_name ASC NULLS LAST
+      `,
+      {
+        replacements: {
+          root_batch_id: rootBatchId,
+        },
+        type: QueryTypes.SELECT,
+      }
+    );
 
+    // ================= MOVEMENT HISTORY =================
     const movementRows = await sequelize.query(
       `
       SELECT
         bs.id AS split_id,
         bs.root_batch_id,
         bs.parent_batch_id,
+
         pb.batch_no AS parent_batch_no,
+
         bs.child_batch_id,
         cb.batch_no AS child_batch_no,
+
         bs.item_id,
 
         bs.from_organization_id,
@@ -727,7 +738,7 @@ export const getBatchFinalDestinations = async (req, res) => {
         to_store.store_name AS to_store_name,
         to_store.store_code AS to_store_code,
         to_store.organization_level AS to_organization_level,
-        
+
         bs.quantity,
         bs.weight,
         bs.reference_type,
@@ -755,57 +766,93 @@ export const getBatchFinalDestinations = async (req, res) => {
       ORDER BY bs.created_at ASC, bs.id ASC
       `,
       {
-        replacements: { root_batch_id: rootBatchId },
+        replacements: {
+          root_batch_id: rootBatchId,
+        },
         type: QueryTypes.SELECT,
       }
     );
 
-    const finalDestinations = destinations.map(formatDestination);
-    const movementHistory = movementRows.map(formatMovementHistory);
+    // ================= FORMAT DATA =================
+    const finalDestinations = Array.isArray(destinations)
+      ? destinations.map(formatDestination)
+      : [];
 
+    const movementHistory = Array.isArray(movementRows)
+      ? movementRows.map(formatMovementHistory)
+      : [];
+
+    // ================= RESPONSE =================
     return res.status(200).json({
       success: true,
       message: "Batch final destinations fetched successfully",
+
       data: {
         batch: {
           batch_id: Number(batch.batch_id),
           batch_no: batch.batch_no,
+
+          root_batch_id: batch.root_batch_id
+            ? Number(batch.root_batch_id)
+            : null,
+
+          parent_batch_id: batch.parent_batch_id
+            ? Number(batch.parent_batch_id)
+            : null,
+
           item_id: Number(batch.item_id),
+
           item_name: batch.item_name,
           article_code: batch.article_code,
           sku_code: batch.sku_code,
           category: batch.category,
           metal_type: batch.metal_type,
           purity: batch.purity,
+
           total_qty: toNumber(batch.total_qty),
           available_qty: toNumber(batch.available_qty),
+
           total_weight: toNumber(batch.total_weight),
           available_weight: toNumber(batch.available_weight),
+
           status: batch.status,
+
           created_at: batch.created_at,
           updated_at: batch.updated_at,
         },
+
         summary: {
           root_batch_id: rootBatchId,
+
           total_qty: toNumber(batch.total_qty),
           total_weight: toNumber(batch.total_weight),
+
           current_available_qty: finalDestinations.reduce(
-            (sum, d) => sum + d.quantity,
+            (sum, d) => sum + toNumber(d.quantity),
             0
           ),
+
           current_available_weight: finalDestinations.reduce(
-            (sum, d) => sum + d.weight,
+            (sum, d) => sum + toNumber(d.weight),
             0
           ),
+
           location_count: finalDestinations.length,
+
           movement_count: movementHistory.length,
         },
+
         final_destinations: finalDestinations,
+
         movement_history: movementHistory,
       },
     });
   } catch (error) {
-    console.error("getBatchFinalDestinations error:", error);
+    console.error(
+      "getBatchFinalDestinations error:",
+      error
+    );
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch batch final destinations",

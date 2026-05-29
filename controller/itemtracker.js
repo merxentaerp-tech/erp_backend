@@ -595,7 +595,6 @@ export const getBatchFinalDestinations = async (req, res) => {
   try {
     const batchId = Number(req.params.batch_id);
 
-    // ================= VALIDATION =================
     if (!Number.isInteger(batchId) || batchId <= 0) {
       return res.status(400).json({
         success: false,
@@ -603,7 +602,6 @@ export const getBatchFinalDestinations = async (req, res) => {
       });
     }
 
-    // ================= FETCH MAIN BATCH =================
     const batchRows = await sequelize.query(
       `
       SELECT
@@ -651,12 +649,9 @@ export const getBatchFinalDestinations = async (req, res) => {
       });
     }
 
-    const rootBatchId = Number(
-      batch.root_batch_id || batch.batch_id
-    );
+    const rootBatchId = Number(batch.root_batch_id || batch.batch_id);
 
-    // ================= FINAL DESTINATIONS =================
-const destinations = await sequelize.query(
+  const destinations = await sequelize.query(
   `
   SELECT
     b.current_organization_id AS organization_id,
@@ -667,10 +662,23 @@ const destinations = await sequelize.query(
     st.address,
 
     SUM(COALESCE(b.available_qty, 0)) AS quantity,
-
     SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-    MAX(b.updated_at) AS last_updated_at
+    MAX(b.updated_at) AS last_updated_at,
+
+    JSON_AGG(
+      JSON_BUILD_OBJECT(
+        'batch_id', b.id,
+        'batch_no', b.batch_no,
+        'parent_batch_id', b.parent_batch_id,
+        'root_batch_id', b.root_batch_id,
+        'quantity', b.available_qty,
+        'weight', b.available_weight,
+        'split_level', b.split_level,
+        'status', b.status
+      )
+      ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
+    ) AS batch_nodes
 
   FROM public.inventory_batches b
 
@@ -691,29 +699,23 @@ const destinations = await sequelize.query(
     st.organization_level,
     st.address
 
-  ORDER BY st.store_name ASC
+  ORDER BY st.store_name ASC NULLS LAST
   `,
   {
-    replacements: {
-      root_batch_id: rootBatchId,
-    },
+    replacements: { root_batch_id: rootBatchId },
     type: QueryTypes.SELECT,
   }
 );
 
-    // ================= MOVEMENT HISTORY =================
     const movementRows = await sequelize.query(
       `
       SELECT
         bs.id AS split_id,
         bs.root_batch_id,
         bs.parent_batch_id,
-
         pb.batch_no AS parent_batch_no,
-
         bs.child_batch_id,
         cb.batch_no AS child_batch_no,
-
         bs.item_id,
 
         bs.from_organization_id,
@@ -725,7 +727,7 @@ const destinations = await sequelize.query(
         to_store.store_name AS to_store_name,
         to_store.store_code AS to_store_code,
         to_store.organization_level AS to_organization_level,
-
+        
         bs.quantity,
         bs.weight,
         bs.reference_type,
@@ -753,93 +755,57 @@ const destinations = await sequelize.query(
       ORDER BY bs.created_at ASC, bs.id ASC
       `,
       {
-        replacements: {
-          root_batch_id: rootBatchId,
-        },
+        replacements: { root_batch_id: rootBatchId },
         type: QueryTypes.SELECT,
       }
     );
 
-    // ================= FORMAT DATA =================
-    const finalDestinations = Array.isArray(destinations)
-      ? destinations.map((d) => formatDestination(d))
-      : [];
+    const finalDestinations = destinations.map(formatDestination);
+    const movementHistory = movementRows.map(formatMovementHistory);
 
-    const movementHistory = Array.isArray(movementRows)
-      ? movementRows.map((m) => formatMovementHistory(m))
-      : [];
-
-    // ================= RESPONSE =================
     return res.status(200).json({
       success: true,
       message: "Batch final destinations fetched successfully",
-
       data: {
         batch: {
           batch_id: Number(batch.batch_id),
           batch_no: batch.batch_no,
-
-          root_batch_id: batch.root_batch_id
-            ? Number(batch.root_batch_id)
-            : null,
-
-          parent_batch_id: batch.parent_batch_id
-            ? Number(batch.parent_batch_id)
-            : null,
-
           item_id: Number(batch.item_id),
-
           item_name: batch.item_name,
           article_code: batch.article_code,
           sku_code: batch.sku_code,
           category: batch.category,
           metal_type: batch.metal_type,
           purity: batch.purity,
-
           total_qty: toNumber(batch.total_qty),
           available_qty: toNumber(batch.available_qty),
-
           total_weight: toNumber(batch.total_weight),
           available_weight: toNumber(batch.available_weight),
-
           status: batch.status,
-
           created_at: batch.created_at,
           updated_at: batch.updated_at,
         },
-
         summary: {
           root_batch_id: rootBatchId,
-
           total_qty: toNumber(batch.total_qty),
           total_weight: toNumber(batch.total_weight),
-
           current_available_qty: finalDestinations.reduce(
-            (sum, d) => sum + toNumber(d.quantity),
+            (sum, d) => sum + d.quantity,
             0
           ),
-
           current_available_weight: finalDestinations.reduce(
-            (sum, d) => sum + toNumber(d.weight),
+            (sum, d) => sum + d.weight,
             0
           ),
-
           location_count: finalDestinations.length,
-
           movement_count: movementHistory.length,
         },
-
         final_destinations: finalDestinations,
-
         movement_history: movementHistory,
       },
     });
   } catch (error) {
-    console.error(
-      "getBatchFinalDestinations error:",
-      error
-    );
-
+    console.error("getBatchFinalDestinations error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to fetch batch final destinations",
@@ -847,6 +813,7 @@ const destinations = await sequelize.query(
     });
   }
 };
+
 export const getBatchNodeRoute = async (req, res) => {
   try {
     const batchId = Number(req.params.batch_id);
@@ -1914,225 +1881,470 @@ const buildBatchLocations = (finalDestinations = []) => {
   return rows;
 };
 
-// export const getBatchFinalDestinations = async (req, res) => {
-//   try {
-//     const batchId = Number(req.params.batch_id);
+export const getItemFinalDestinations = async (req, res) => {
+  try {
+    const itemId = Number(req.params.item_id);
 
-//     if (!Number.isInteger(batchId) || batchId <= 0) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Valid batch_id is required",
-//       });
-//     }
+    const singleDate = String(req.query.date || "").trim();
 
-//     const batchRows = await sequelize.query(
-//       `
-//       SELECT
-//         b.id AS batch_id,
-//         b.batch_no,
-//         b.root_batch_id,
-//         b.parent_batch_id,
-//         b.item_id,
-//         b.total_qty,
-//         b.available_qty,
-//         b.total_weight,
-//         b.available_weight,
-//         b.status,
-//         b.created_at,
-//         b.updated_at,
+    const dateFrom = normalizeDateFrom(
+      req.query.date_from || req.query.from || singleDate
+    );
 
-//         i.item_name,
-//         i.article_code,
-//         i.sku_code,
-//         i.category,
-//         i.metal_type,
-//         i.purity
+    const dateTo = normalizeDateTo(
+      req.query.date_to || req.query.to || singleDate
+    );
 
-//       FROM public.inventory_batches b
+    const search = String(req.query.search || req.query.batch_no || "").trim();
 
-//       INNER JOIN public.items i
-//         ON i.id = b.item_id
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid item_id is required",
+      });
+    }
 
-//       WHERE b.id = :batch_id
+    const itemRows = await sequelize.query(
+      `
+      SELECT
+        id AS item_id,
+        item_name,
+        article_code,
+        sku_code,
+        category,
+        metal_type,
+        purity,
+        current_status
+      FROM public.items
+      WHERE id = :item_id
+      LIMIT 1
+      `,
+      {
+        replacements: { item_id: itemId },
+        type: QueryTypes.SELECT,
+      }
+    );
 
-//       LIMIT 1
-//       `,
-//       {
-//         replacements: { batch_id: batchId },
-//         type: QueryTypes.SELECT,
-//       }
-//     );
+    const item = itemRows?.[0];
 
-//     const batch = batchRows?.[0];
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Item not found",
+      });
+    }
 
-//     if (!batch) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Batch not found",
-//       });
-//     }
+    const whereClauses = [
+      "b.item_id = :item_id",
+      "COALESCE(i.is_active, true) = true",
+      "COALESCE(b.available_qty, 0) > 0",
+    ];
 
-//     const rootBatchId = Number(batch.root_batch_id || batch.batch_id);
+    const replacements = {
+      item_id: itemId,
+      date_from: dateFrom,
+      date_to: dateTo,
+      search,
+      searchLike: `%${search}%`,
+    };
 
-//   const destinations = await sequelize.query(
-//   `
-//   SELECT
-//     b.current_organization_id AS organization_id,
+    if (dateFrom) {
+      whereClauses.push("root_b.created_at >= :date_from::timestamptz");
+    }
 
-//     st.store_name,
-//     st.store_code,
-//     st.organization_level,
-//     st.address,
+    if (dateTo) {
+      whereClauses.push("root_b.created_at <= :date_to::timestamptz");
+    }
 
-//     SUM(COALESCE(b.available_qty, 0)) AS quantity,
-//     SUM(COALESCE(b.available_weight, 0)) AS weight,
+    if (search) {
+      whereClauses.push(`
+        (
+          b.batch_no ILIKE :searchLike
+          OR root_b.batch_no ILIKE :searchLike
+          OR i.item_name ILIKE :searchLike
+          OR i.article_code ILIKE :searchLike
+          OR i.sku_code ILIKE :searchLike
+          OR st.store_name ILIKE :searchLike
+          OR st.store_code ILIKE :searchLike
+        )
+      `);
+    }
 
-//     MAX(b.updated_at) AS last_updated_at,
+    const whereSql = whereClauses.join(" AND ");
 
-//     JSON_AGG(
-//       JSON_BUILD_OBJECT(
-//         'batch_id', b.id,
-//         'batch_no', b.batch_no,
-//         'parent_batch_id', b.parent_batch_id,
-//         'root_batch_id', b.root_batch_id,
-//         'quantity', b.available_qty,
-//         'weight', b.available_weight,
-//         'split_level', b.split_level,
-//         'status', b.status
-//       )
-//       ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
-//     ) AS batch_nodes
+    const destinationRows = await sequelize.query(
+      `
+      SELECT
+        b.current_organization_id AS organization_id,
 
-//   FROM public.inventory_batches b
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+        st.address,
 
-//   LEFT JOIN public.stores st
-//     ON st.id = b.current_organization_id
+        SUM(COALESCE(b.available_qty, 0)) AS quantity,
+        SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-//   WHERE
-//     (
-//       b.root_batch_id = :root_batch_id
-//       OR b.id = :root_batch_id
-//     )
-//     AND COALESCE(b.available_qty, 0) > 0
+        COUNT(DISTINCT COALESCE(b.root_batch_id, b.id))::INT AS root_batch_count,
+        COUNT(DISTINCT b.id)::INT AS batch_node_count,
 
-//   GROUP BY
-//     b.current_organization_id,
-//     st.store_name,
-//     st.store_code,
-//     st.organization_level,
-//     st.address
+        MAX(b.updated_at) AS last_updated_at,
 
-//   ORDER BY st.store_name ASC NULLS LAST
-//   `,
-//   {
-//     replacements: { root_batch_id: rootBatchId },
-//     type: QueryTypes.SELECT,
-//   }
-// );
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'batch_id', b.id,
+            'batch_no', b.batch_no,
 
-//     const movementRows = await sequelize.query(
-//       `
-//       SELECT
-//         bs.id AS split_id,
-//         bs.root_batch_id,
-//         bs.parent_batch_id,
-//         pb.batch_no AS parent_batch_no,
-//         bs.child_batch_id,
-//         cb.batch_no AS child_batch_no,
-//         bs.item_id,
+            'root_batch_id', COALESCE(b.root_batch_id, b.id),
+            'root_batch_no', root_b.batch_no,
 
-//         bs.from_organization_id,
-//         from_store.store_name AS from_store_name,
-//         from_store.store_code AS from_store_code,
-//         from_store.organization_level AS from_organization_level,
+            'parent_batch_id', b.parent_batch_id,
 
-//         bs.to_organization_id,
-//         to_store.store_name AS to_store_name,
-//         to_store.store_code AS to_store_code,
-//         to_store.organization_level AS to_organization_level,
-        
-//         bs.quantity,
-//         bs.weight,
-//         bs.reference_type,
-//         bs.reference_id,
-//         bs.remarks,
-//         bs.created_by,
-//         bs.created_at
+            'quantity', b.available_qty,
+            'weight', b.available_weight,
 
-//       FROM public.batch_splits bs
+            'split_level', b.split_level,
+            'status', b.status,
 
-//       LEFT JOIN public.inventory_batches pb
-//         ON pb.id = bs.parent_batch_id
+            'created_at', b.created_at,
+            'updated_at', b.updated_at
+          )
+          ORDER BY
+            root_b.created_at DESC NULLS LAST,
+            COALESCE(b.split_level, 0) ASC,
+            b.id ASC
+        ) AS batch_nodes
 
-//       LEFT JOIN public.inventory_batches cb
-//         ON cb.id = bs.child_batch_id
+      FROM public.inventory_batches b
 
-//       LEFT JOIN public.stores from_store
-//         ON from_store.id = bs.from_organization_id
+      INNER JOIN public.items i
+        ON i.id = b.item_id
 
-//       LEFT JOIN public.stores to_store
-//         ON to_store.id = bs.to_organization_id
+      INNER JOIN public.inventory_batches root_b
+        ON root_b.id = COALESCE(b.root_batch_id, b.id)
 
-//       WHERE bs.root_batch_id = :root_batch_id
+      LEFT JOIN public.stores st
+        ON st.id = b.current_organization_id
 
-//       ORDER BY bs.created_at ASC, bs.id ASC
-//       `,
-//       {
-//         replacements: { root_batch_id: rootBatchId },
-//         type: QueryTypes.SELECT,
-//       }
-//     );
+      WHERE ${whereSql}
 
-//     const finalDestinations = destinations.map(formatDestination);
-//     const movementHistory = movementRows.map(formatMovementHistory);
+      GROUP BY
+        b.current_organization_id,
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+        st.address
 
-//     return res.status(200).json({
-//       success: true,
-//       message: "Batch final destinations fetched successfully",
-//       data: {
-//         batch: {
-//           batch_id: Number(batch.batch_id),
-//           batch_no: batch.batch_no,
-//           item_id: Number(batch.item_id),
-//           item_name: batch.item_name,
-//           article_code: batch.article_code,
-//           sku_code: batch.sku_code,
-//           category: batch.category,
-//           metal_type: batch.metal_type,
-//           purity: batch.purity,
-//           total_qty: toNumber(batch.total_qty),
-//           available_qty: toNumber(batch.available_qty),
-//           total_weight: toNumber(batch.total_weight),
-//           available_weight: toNumber(batch.available_weight),
-//           status: batch.status,
-//           created_at: batch.created_at,
-//           updated_at: batch.updated_at,
-//         },
-//         summary: {
-//           root_batch_id: rootBatchId,
-//           total_qty: toNumber(batch.total_qty),
-//           total_weight: toNumber(batch.total_weight),
-//           current_available_qty: finalDestinations.reduce(
-//             (sum, d) => sum + d.quantity,
-//             0
-//           ),
-//           current_available_weight: finalDestinations.reduce(
-//             (sum, d) => sum + d.weight,
-//             0
-//           ),
-//           location_count: finalDestinations.length,
-//           movement_count: movementHistory.length,
-//         },
-//         final_destinations: finalDestinations,
-//         movement_history: movementHistory,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("getBatchFinalDestinations error:", error);
-//     return res.status(500).json({
-//       success: false,
-//       message: "Failed to fetch batch final destinations",
-//       error: error.message,
-//     });
-//   }
-// };
+      ORDER BY
+        st.store_name ASC NULLS LAST,
+        b.current_organization_id ASC NULLS LAST
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const summaryRows = await sequelize.query(
+      `
+      SELECT
+        COUNT(DISTINCT COALESCE(b.root_batch_id, b.id))::INT AS total_root_batches,
+        COUNT(DISTINCT b.id)::INT AS total_batch_nodes,
+
+        COUNT(DISTINCT b.current_organization_id) FILTER (
+          WHERE COALESCE(b.available_qty, 0) > 0
+        )::INT AS location_count,
+
+        SUM(COALESCE(b.available_qty, 0)) AS current_available_qty,
+        SUM(COALESCE(b.available_weight, 0)) AS current_available_weight
+
+      FROM public.inventory_batches b
+
+      INNER JOIN public.items i
+        ON i.id = b.item_id
+
+      INNER JOIN public.inventory_batches root_b
+        ON root_b.id = COALESCE(b.root_batch_id, b.id)
+
+      LEFT JOIN public.stores st
+        ON st.id = b.current_organization_id
+
+      WHERE ${whereSql}
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const summary = summaryRows?.[0] || {};
+
+    const movementRows = await sequelize.query(
+      `
+      WITH stock_movement_rows AS (
+        SELECT
+          'stock_movement'::text AS movement_source,
+          sm.id AS movement_id,
+
+          NULL::integer AS split_id,
+          NULL::integer AS root_batch_id,
+          NULL::text AS root_batch_no,
+          NULL::integer AS parent_batch_id,
+          NULL::text AS parent_batch_no,
+          NULL::integer AS child_batch_id,
+          NULL::text AS child_batch_no,
+
+          sm.item_id,
+
+          NULL::integer AS from_organization_id,
+          NULL::text AS from_store_name,
+          NULL::text AS from_store_code,
+          NULL::text AS from_organization_level,
+
+          sm.organization_id AS to_organization_id,
+          to_store.store_name AS to_store_name,
+          to_store.store_code AS to_store_code,
+          to_store.organization_level::text AS to_organization_level,
+
+          COALESCE(sm.qty, 0) AS quantity,
+          COALESCE(sm.weight, 0) AS weight,
+
+          sm.movement_type::text AS movement_type,
+          sm.reference_type::text AS reference_type,
+          sm.reference_id,
+          NULL::text AS reference_no,
+
+          sm.remarks,
+          sm.created_by,
+          sm.created_at
+
+        FROM public.stock_movements sm
+
+        LEFT JOIN public.stores to_store
+          ON to_store.id = sm.organization_id
+
+        WHERE sm.item_id = :item_id
+      ),
+
+      batch_split_rows AS (
+        SELECT
+          'batch_split'::text AS movement_source,
+          bs.id AS movement_id,
+
+          bs.id AS split_id,
+          bs.root_batch_id,
+          root_b.batch_no AS root_batch_no,
+          bs.parent_batch_id,
+          parent_b.batch_no AS parent_batch_no,
+          bs.child_batch_id,
+          child_b.batch_no AS child_batch_no,
+
+          bs.item_id,
+
+          bs.from_organization_id,
+          from_store.store_name AS from_store_name,
+          from_store.store_code AS from_store_code,
+          from_store.organization_level::text AS from_organization_level,
+
+          bs.to_organization_id,
+          to_store.store_name AS to_store_name,
+          to_store.store_code AS to_store_code,
+          to_store.organization_level::text AS to_organization_level,
+
+          COALESCE(bs.quantity, 0) AS quantity,
+          COALESCE(bs.weight, 0) AS weight,
+
+          'transfer'::text AS movement_type,
+          bs.reference_type::text AS reference_type,
+          bs.reference_id,
+          NULL::text AS reference_no,
+
+          bs.remarks,
+          bs.created_by,
+          bs.created_at
+
+        FROM public.batch_splits bs
+
+        LEFT JOIN public.inventory_batches root_b
+          ON root_b.id = bs.root_batch_id
+
+        LEFT JOIN public.inventory_batches parent_b
+          ON parent_b.id = bs.parent_batch_id
+
+        LEFT JOIN public.inventory_batches child_b
+          ON child_b.id = bs.child_batch_id
+
+        LEFT JOIN public.stores from_store
+          ON from_store.id = bs.from_organization_id
+
+        LEFT JOIN public.stores to_store
+          ON to_store.id = bs.to_organization_id
+
+        WHERE bs.item_id = :item_id
+      )
+
+      SELECT *
+      FROM (
+        SELECT * FROM stock_movement_rows
+        UNION ALL
+        SELECT * FROM batch_split_rows
+      ) movement_data
+
+      WHERE
+        (
+          :date_from IS NULL
+          OR movement_data.created_at >= :date_from::timestamptz
+        )
+        AND (
+          :date_to IS NULL
+          OR movement_data.created_at <= :date_to::timestamptz
+        )
+        AND (
+          :search = ''
+          OR movement_data.root_batch_no ILIKE :searchLike
+          OR movement_data.parent_batch_no ILIKE :searchLike
+          OR movement_data.child_batch_no ILIKE :searchLike
+          OR movement_data.from_store_name ILIKE :searchLike
+          OR movement_data.from_store_code ILIKE :searchLike
+          OR movement_data.to_store_name ILIKE :searchLike
+          OR movement_data.to_store_code ILIKE :searchLike
+          OR movement_data.reference_id::text ILIKE :searchLike
+          OR movement_data.reference_type ILIKE :searchLike
+          OR movement_data.movement_type ILIKE :searchLike
+        )
+
+      ORDER BY movement_data.created_at ASC, movement_data.movement_id ASC
+      `,
+      {
+        replacements,
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const finalDestinations = destinationRows.map((d) => ({
+      organization_id: d.organization_id ? Number(d.organization_id) : null,
+
+      store_name: d.store_name || "Unknown Location",
+      store_code: d.store_code || null,
+      address: d.address,
+      organization_level: d.organization_level || null,
+
+      quantity: safeNumber(d.quantity),
+      weight: safeNumber(d.weight),
+
+      last_updated_at: d.last_updated_at || null,
+
+      batch_nodes: Array.isArray(d.batch_nodes) ? d.batch_nodes : [],
+    }));
+
+    const movementHistory = movementRows.map((m) => ({
+      movement_source: m.movement_source,
+      movement_id: Number(m.movement_id),
+
+      split_id: m.split_id ? Number(m.split_id) : null,
+
+      root_batch_id: m.root_batch_id ? Number(m.root_batch_id) : null,
+      root_batch_no: m.root_batch_no || null,
+
+      parent_batch_id: m.parent_batch_id ? Number(m.parent_batch_id) : null,
+      parent_batch_no: m.parent_batch_no || null,
+
+      child_batch_id: m.child_batch_id ? Number(m.child_batch_id) : null,
+      child_batch_no: m.child_batch_no || null,
+
+      item_id: Number(m.item_id),
+
+      from: m.from_organization_id
+        ? {
+            organization_id: Number(m.from_organization_id),
+            store_name: m.from_store_name,
+            store_code: m.from_store_code,
+            organization_level: m.from_organization_level,
+          }
+        : null,
+
+      to: m.to_organization_id
+        ? {
+            organization_id: Number(m.to_organization_id),
+            store_name: m.to_store_name,
+            store_code: m.to_store_code,
+            organization_level: m.to_organization_level,
+          }
+        : null,
+
+      quantity: safeNumber(m.quantity),
+      weight: safeNumber(m.weight),
+
+      movement_type: m.movement_type,
+      reference_type: m.reference_type,
+      reference_id: m.reference_id ? Number(m.reference_id) : null,
+      reference_no: m.reference_no || null,
+
+      remarks: m.remarks || null,
+      created_by: m.created_by ? Number(m.created_by) : null,
+      created_at: m.created_at,
+    }));
+
+    const currentLocations = buildCurrentLocations(finalDestinations);
+    const batchLocations = buildBatchLocations(finalDestinations);
+    const journeyTimeline = buildCleanJourneyTimeline(movementHistory);
+
+    return res.status(200).json({
+      success: true,
+      message: "Item final destinations fetched successfully",
+      data: {
+        item: {
+          item_id: Number(item.item_id),
+          item_name: item.item_name,
+          article_code: item.article_code,
+          sku_code: item.sku_code,
+          category: item.category,
+          metal_type: item.metal_type,
+          purity: item.purity,
+          current_status: item.current_status,
+        },
+
+        filters: {
+          date_from: dateFrom,
+          date_to: dateTo,
+          search: search || null,
+        },
+
+        summary: {
+          item_id: itemId,
+
+          location_count: safeNumber(summary.location_count),
+          current_available_qty: safeNumber(summary.current_available_qty),
+          current_available_weight: safeNumber(summary.current_available_weight),
+
+          total_root_batches: safeNumber(summary.total_root_batches),
+          total_batch_nodes: safeNumber(summary.total_batch_nodes),
+
+          movement_count: movementHistory.length,
+          journey_step_count: journeyTimeline.length,
+          current_location_count: currentLocations.length,
+          batch_location_count: batchLocations.length,
+        },
+
+        current_locations: currentLocations,
+
+        batch_locations: batchLocations,
+
+        journey_timeline: journeyTimeline,
+
+        raw: {
+          final_destinations: finalDestinations,
+          movement_history: movementHistory,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("getItemFinalDestinations error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch item final destinations",
+      error: error.message,
+    });
+  }
+};

@@ -659,7 +659,7 @@ export const getBatchFinalDestinations = async (req, res) => {
         st.store_name,
         st.store_code,
         st.organization_level,
-        st.address
+        st.address,
         SUM(COALESCE(b.available_qty, 0)) AS quantity,
         SUM(COALESCE(b.available_weight, 0)) AS weight,
 

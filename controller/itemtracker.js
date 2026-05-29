@@ -1990,31 +1990,18 @@ export const getItemFinalDestinations = async (req, res) => {
 
         MAX(b.updated_at) AS last_updated_at,
 
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'batch_id', b.id,
-            'batch_no', b.batch_no,
-
-            'root_batch_id', COALESCE(b.root_batch_id, b.id),
-            'root_batch_no', root_b.batch_no,
-
-            'parent_batch_id', b.parent_batch_id,
-
-            'quantity', b.available_qty,
-            'weight', b.available_weight,
-
-            'split_level', b.split_level,
-            'status', b.status,
-
-            'created_at', b.created_at,
-            'updated_at', b.updated_at
-          )
-          ORDER BY
-            root_b.created_at DESC NULLS LAST,
-            COALESCE(b.split_level, 0) ASC,
-            b.id ASC
-        ) AS batch_nodes
-
+       JSON_AGG(
+  JSON_BUILD_OBJECT(
+    'batch_id', b.id,
+    'batch_no', b.batch_no,
+    'parent_batch_id', b.parent_batch_id,
+    'root_batch_id', b.root_batch_id,
+    'quantity', b.available_qty,
+    'weight', b.available_weight,
+    'split_level', b.split_level,
+    'status', b.status
+  )
+) AS batch_nodes
       FROM public.inventory_batches b
 
       INNER JOIN public.items i

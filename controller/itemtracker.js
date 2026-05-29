@@ -803,7 +803,7 @@ export const getBatchFinalDestinations = async (req, res) => {
         movement_history: movementHistory,
       },
     });
-  }catch (error) {
+  } catch (error) {
   console.error("ERROR MESSAGE:", error?.message);
   console.error("ERROR POSITION:", error?.parent?.position);
   console.error("ERROR SQL:", error?.sql);
@@ -814,6 +814,7 @@ export const getBatchFinalDestinations = async (req, res) => {
     error: error.message,
     position: error?.parent?.position,
   });
+}
 };
 export const getBatchNodeRoute = async (req, res) => {
   try {

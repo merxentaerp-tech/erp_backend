@@ -595,6 +595,7 @@ export const getBatchFinalDestinations = async (req, res) => {
   try {
     const batchId = Number(req.params.batch_id);
 
+    // ================= VALIDATION =================
     if (!Number.isInteger(batchId) || batchId <= 0) {
       return res.status(400).json({
         success: false,
@@ -666,6 +667,7 @@ export const getBatchFinalDestinations = async (req, res) => {
         st.address,
 
         SUM(COALESCE(b.available_qty, 0)) AS quantity,
+
         SUM(COALESCE(b.available_weight, 0)) AS weight,
 
         MAX(b.updated_at) AS last_updated_at,
@@ -682,7 +684,6 @@ export const getBatchFinalDestinations = async (req, res) => {
             'status', b.status,
             'updated_at', b.updated_at
           )
-          ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
         ) AS batch_nodes
 
       FROM public.inventory_batches b
@@ -775,11 +776,11 @@ export const getBatchFinalDestinations = async (req, res) => {
 
     // ================= FORMAT DATA =================
     const finalDestinations = Array.isArray(destinations)
-      ? destinations.map(formatDestination)
+      ? destinations.map((d) => formatDestination(d))
       : [];
 
     const movementHistory = Array.isArray(movementRows)
-      ? movementRows.map(formatMovementHistory)
+      ? movementRows.map((m) => formatMovementHistory(m))
       : [];
 
     // ================= RESPONSE =================
@@ -860,7 +861,6 @@ export const getBatchFinalDestinations = async (req, res) => {
     });
   }
 };
-
 export const getBatchNodeRoute = async (req, res) => {
   try {
     const batchId = Number(req.params.batch_id);

@@ -803,14 +803,17 @@ export const getBatchFinalDestinations = async (req, res) => {
         movement_history: movementHistory,
       },
     });
-  } catch (error) {
-    console.error("getBatchFinalDestinations error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch batch final destinations",
-      error: error.message,
-    });
-  }
+  }catch (error) {
+  console.error("ERROR MESSAGE:", error?.message);
+  console.error("ERROR POSITION:", error?.parent?.position);
+  console.error("ERROR SQL:", error?.sql);
+
+  return res.status(500).json({
+    success: false,
+    message: "Failed to fetch batch final destinations",
+    error: error.message,
+    position: error?.parent?.position,
+  });
 };
 export const getBatchNodeRoute = async (req, res) => {
   try {

@@ -3023,3 +3023,98 @@ export const getMyStoreItemQRs = async (req, res) => {
     });
   }
 };
+export const updateItemImage = async (req, res) => {
+  const t = await sequelize.transaction();
+
+  try {
+    const { itemId } = req.params;
+    const user = req.user;
+
+    if (!req.file) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Image file is required",
+      });
+    }
+
+    const where = {
+      id: itemId,
+    };
+
+    // if (user?.role !== "super_admin") {
+    //   where.organization_id = user?.organization_id;
+    // }
+
+    const item = await Item.findOne({
+      where,
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!item) {
+      await t.rollback();
+      return res.status(404).json({
+        success: false,
+        message: "Item not found",
+      });
+    }
+
+    const uploadedImage = await uploadToCloudinary(
+      req.file,
+      "inventory/items"
+    );
+
+    await item.update(
+      {
+        image_url: uploadedImage?.secure_url || null,
+        image_public_id: uploadedImage?.public_id || null,
+      },
+      { transaction: t }
+    );
+
+    await createActivityLog({
+      organization_id: item.organization_id,
+      user_id: user?.id || null,
+      module: "stock",
+      action: "update_item_image",
+      entity_type: "item",
+      entity_id: item.id,
+      title: "Item image updated",
+      description: `${item.item_name} image updated`,
+      metadata: {
+        item_id: item.id,
+        article_code: item.article_code,
+        sku_code: item.sku_code,
+        image_url: uploadedImage?.secure_url || null,
+        image_public_id: uploadedImage?.public_id || null,
+      },
+    });
+
+    await t.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Item image updated successfully",
+      data: {
+        item_id: item.id,
+        item_name: item.item_name,
+        article_code: item.article_code,
+        sku_code: item.sku_code,
+        image_url: item.image_url,
+        image_public_id: item.image_public_id,
+      },
+    });
+  } catch (error) {
+    await t.rollback();
+
+    console.error("updateItemImage error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update item image",
+      error: error.message,
+    });
+  }
+};
+

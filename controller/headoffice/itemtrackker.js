@@ -184,6 +184,7 @@ const formatMovementHistory = (m, index) => ({
   reference_id: m.reference_id ? Number(m.reference_id) : null,
   remarks: m.remarks || null,
   handled_by: m.created_by ? Number(m.created_by) : null,
+  handled_by_image_url: m.handled_by_image_url || null,
   created_at: m.created_at,
 });
 

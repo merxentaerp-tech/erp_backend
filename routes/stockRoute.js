@@ -12,6 +12,7 @@ import {
   getDistrictStockItemsByCategory,
   uploadStockInItems,
   getItemQR,
+  updateItemImage,
 } from "../controller/stock.controller.js";
 
 import {
@@ -135,6 +136,11 @@ router.post(
   auth,
   uploadInventoryFile.single("file"),
   uploadStockInItems
+);
+router.patch(
+  "/item/:itemId/image", auth,
+  upload.single("image"),
+  updateItemImage
 );
 
 /**

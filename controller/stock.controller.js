@@ -271,7 +271,38 @@ export const getRetailInventory = async (req, res) => {
     });
 
     // =================================================
-    // ✅ CATEGORY DUPLICACY REMOVE
+    // ✅ SUMMARY COUNTS ORIGINAL ITEMS SE CALCULATE HONGE
+    // =================================================
+
+    items.forEach((item) => {
+      const stocks = Array.isArray(item.stocks)
+        ? item.stocks
+        : [];
+
+      const available_qty = stocks.reduce(
+        (sum, s) =>
+          sum + Number(s.available_qty || 0),
+        0
+      );
+
+      const transit_qty = stocks.reduce(
+        (sum, s) =>
+          sum + Number(s.transit_qty || 0),
+        0
+      );
+
+      transitGoods += transit_qty;
+
+      if (
+        available_qty > 0 &&
+        available_qty <= 5
+      ) {
+        lowStock++;
+      }
+    });
+
+    // =================================================
+    // ✅ CATEGORY DUPLICACY REMOVE ONLY FOR RESPONSE DATA
     // =================================================
 
     const seenCategories = new Set();
@@ -326,15 +357,6 @@ export const getRetailInventory = async (req, res) => {
           sum + Number(s.dead_qty || 0),
         0
       );
-
-      transitGoods += transit_qty;
-
-      if (
-        available_qty > 0 &&
-        available_qty <= 5
-      ) {
-        lowStock++;
-      }
 
       return {
         id: item.id,

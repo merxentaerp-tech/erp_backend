@@ -133,45 +133,27 @@ import { QueryTypes } from "sequelize";
 
 export const getOverallInventoryDashboard = async (req, res) => {
   try {
-
     // ================= CARDS =================
     const [cards] = await sequelize.query(
       `
       SELECT 
+        COALESCE(SUM(s.available_qty), 0) AS total_stock_items,
 
-        -- TOTAL LIVE STOCK QTY
-        COALESCE(SUM(s.available_qty), 0) 
-        AS total_stock_items,
-
-        -- DEAD STOCK
         COUNT(
           DISTINCT CASE
-            WHEN 
-              s.available_qty > 0
-
-              AND i."createdAt"
-              < NOW() - INTERVAL '30 days'
-
-              AND NOT EXISTS (
-
-                SELECT 1
-
-                FROM invoice_items ii
-
-                JOIN invoices inv
-                ON inv.id = ii.invoice_id
-
-                WHERE ii.item_id = i.id
-
-                AND inv."createdAt"
-                > NOW() - INTERVAL '30 days'
-              )
-
+            WHEN s.available_qty > 0
+            AND i."createdAt" < NOW() - INTERVAL '30 days'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM invoice_items ii
+              JOIN invoices inv ON inv.id = ii.invoice_id
+              WHERE ii.item_id = i.id
+              AND inv."createdAt" > NOW() - INTERVAL '30 days'
+            )
             THEN i.id
           END
         ) AS dead_stock_items,
 
-        -- LOW STOCK
         COUNT(
           DISTINCT CASE
             WHEN s.available_qty < 5
@@ -180,147 +162,77 @@ export const getOverallInventoryDashboard = async (req, res) => {
           END
         ) AS low_stock,
 
-        -- TRANSIT STOCK
-        COALESCE(SUM(s.transit_qty), 0)
-        AS transit_goods
+        COALESCE(SUM(s.transit_qty), 0) AS transit_goods
 
       FROM items i
-
-      LEFT JOIN stocks s
-      ON s.item_id = i.id
+      LEFT JOIN stocks s ON s.item_id = i.id
       `,
-      {
-        type: QueryTypes.SELECT,
-      }
+      { type: QueryTypes.SELECT }
     );
 
     // ================= TABLE DATA =================
     const tableData = await sequelize.query(
       `
       SELECT 
+        MIN(i.id) AS id,
 
-        i.id,
+        i.category AS category,
 
-        i.item_name AS item,
+        i.category AS item,
 
-        i.sku_code AS code,
+        COUNT(DISTINCT i.id) AS total_items,
 
-        i.article_code,
+        COALESCE(SUM(s.available_qty), 0) AS quantity,
 
-        COALESCE(
-          SUM(s.available_qty),
-          0
-        ) AS quantity,
+        COALESCE(SUM(s.transit_qty), 0) AS transit_quantity,
 
-        COALESCE(
-          SUM(s.transit_qty),
-          0
-        ) AS transit_quantity,
+        AVG(i.purchase_rate) AS purchase_rate,
 
-        AVG(i.purchase_rate)
-        AS purchase_rate,
+        AVG(i.sale_rate) AS selling_price,
 
-        AVG(i.sale_rate)
-        AS selling_price,
+        AVG(i.making_charge) AS making_charge,
 
-        AVG(i.making_charge)
-        AS making_charge,
+        ROUND(SUM(i.net_weight)::numeric, 3) AS net_weight,
 
-        i.purity,
+        ROUND(SUM(i.stone_weight)::numeric, 3) AS stone_weight,
 
-        ROUND(
-          SUM(i.net_weight)::numeric,
-          3
-        ) AS net_weight,
-
-        ROUND(
-          SUM(i.stone_weight)::numeric,
-          3
-        ) AS stone_weight,
-
-        ROUND(
-          SUM(i.gross_weight)::numeric,
-          3
-        ) AS gross_weight,
+        ROUND(SUM(i.gross_weight)::numeric, 3) AS gross_weight,
 
         CASE
-          WHEN 
-            COALESCE(
-              SUM(s.available_qty),
-              0
-            ) < 5
-
-            AND COALESCE(
-              SUM(s.available_qty),
-              0
-            ) > 0
-
+          WHEN COALESCE(SUM(s.available_qty), 0) < 5
+          AND COALESCE(SUM(s.available_qty), 0) > 0
           THEN 'LOW STOCK'
 
-          WHEN
-            COALESCE(
-              SUM(s.available_qty),
-              0
-            ) = 0
-
+          WHEN COALESCE(SUM(s.available_qty), 0) = 0
           THEN 'OUT OF STOCK'
 
           ELSE 'IN STOCK'
         END AS stock_status
 
       FROM items i
+      LEFT JOIN stocks s ON s.item_id = i.id
 
-      LEFT JOIN stocks s
-      ON s.item_id = i.id
+      GROUP BY i.category
 
-      GROUP BY
-        i.id,
-        i.item_name,
-        i.sku_code,
-        i.article_code,
-        i.purity
-
-      ORDER BY i."createdAt" DESC
+      ORDER BY MAX(i."createdAt") DESC
       `,
-      {
-        type: QueryTypes.SELECT,
-      }
+      { type: QueryTypes.SELECT }
     );
 
     return res.json({
       success: true,
-
       data: {
-
         cards: {
-
-          // TOTAL LIVE STOCK QTY
-          totalStocksItems:
-            Number(cards.total_stock_items),
-
-          // DEAD STOCK ITEMS
-          deadStockItems:
-            Number(cards.dead_stock_items),
-
-          // LOW STOCK ITEMS
-          lowStock:
-            Number(cards.low_stock),
-
-          // TRANSIT QTY
-          transitGoods:
-            Number(cards.transit_goods),
+          totalStocksItems: Number(cards.total_stock_items),
+          deadStockItems: Number(cards.dead_stock_items),
+          lowStock: Number(cards.low_stock),
+          transitGoods: Number(cards.transit_goods),
         },
-
         table: tableData,
       },
     });
-
   } catch (error) {
-
-    console.error(
-      "Dashboard Error:",
-      error
-    );
+    console.error("Dashboard Error:", error);
 
     res.status(500).json({
       success: false,

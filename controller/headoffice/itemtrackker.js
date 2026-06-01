@@ -733,6 +733,8 @@ export const getBatchFinalDestinations = async (req, res) => {
         bs.reference_id,
         bs.remarks,
         bs.created_by,
+        u.name AS handled_by_name,
+        u.profile_image AS handled_by_image_url,
         bs.created_at
 
       FROM public.batch_splits bs
@@ -748,6 +750,9 @@ export const getBatchFinalDestinations = async (req, res) => {
 
       LEFT JOIN public.stores to_store
         ON to_store.id = bs.to_organization_id
+
+      LEFT JOIN public.users u
+        ON u.id = bs.created_by
 
       WHERE bs.root_batch_id = :root_batch_id
 
@@ -812,7 +817,6 @@ export const getBatchFinalDestinations = async (req, res) => {
     });
   }
 };
-
 export const getBatchNodeRoute = async (req, res) => {
   try {
     const batchId = Number(req.params.batch_id);

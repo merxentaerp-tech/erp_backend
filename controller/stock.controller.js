@@ -103,36 +103,36 @@ export const getRetailInventory = async (req, res) => {
     ).toLowerCase();
 
     // =================================================
-// ACCESS FILTER
-// =================================================
+    // ACCESS FILTER
+    // =================================================
 
-if (role === "super_admin") {
-  if (organization_id) {
-    itemWhere.organization_id =
-      Number(organization_id);
+    if (role === "super_admin") {
+      if (organization_id) {
+        itemWhere.organization_id =
+          Number(organization_id);
 
-    stockWhere.organization_id =
-      Number(organization_id);
-  }
-} else {
-  // =================================================
-  // STORE BASED FILTER
-  // =================================================
+        stockWhere.organization_id =
+          Number(organization_id);
+      }
+    } else {
+      // =================================================
+      // STORE BASED FILTER
+      // =================================================
 
-  if (user.store_code) {
-    const cleanStoreCode = String(
-      user.store_code
-    )
-      .trim()
-      .toUpperCase();
+      if (user.store_code) {
+        const cleanStoreCode = String(
+          user.store_code
+        )
+          .trim()
+          .toUpperCase();
 
-    itemWhere.storeCode =
-      cleanStoreCode;
+        itemWhere.storeCode =
+          cleanStoreCode;
 
-    stockWhere.store_code =
-      cleanStoreCode;
-  }
-}
+        stockWhere.store_code =
+          cleanStoreCode;
+      }
+    }
 
     // =================================================
     // FILTERS
@@ -270,7 +270,28 @@ if (role === "super_admin") {
         (categoryCounts[key] || 0) + 1;
     });
 
-    const data = items.map((item) => {
+    // =================================================
+    // ✅ CATEGORY DUPLICACY REMOVE
+    // =================================================
+
+    const seenCategories = new Set();
+
+    const filteredItems = items.filter((item) => {
+      const categoryKey = String(
+        item.category || "Others"
+      )
+        .trim()
+        .toLowerCase();
+
+      if (seenCategories.has(categoryKey)) {
+        return false;
+      }
+
+      seenCategories.add(categoryKey);
+      return true;
+    });
+
+    const data = filteredItems.map((item) => {
       const stocks = Array.isArray(item.stocks)
         ? item.stocks
         : [];

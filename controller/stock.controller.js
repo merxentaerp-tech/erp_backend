@@ -3012,6 +3012,10 @@ export const getMyStoreItemQRs = async (req, res) => {
     });
   }
 };
+/* =========================================================
+   UPDATE ITEM IMAGE
+========================================================= */
+
 export const updateItemImage = async (req, res) => {
   const t = await sequelize.transaction();
 
@@ -3106,4 +3110,3 @@ export const updateItemImage = async (req, res) => {
     });
   }
 };
-

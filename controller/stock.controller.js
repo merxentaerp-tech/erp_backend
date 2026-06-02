@@ -94,13 +94,8 @@ export const getRetailInventory = async (req, res) => {
     const itemWhere = {};
     const stockWhere = {};
 
-    const level = String(
-      user.organization_level || ""
-    ).toLowerCase();
-
-    const role = String(
-      user.role || ""
-    ).toLowerCase();
+    const level = String(user.organization_level || "").toLowerCase();
+    const role = String(user.role || "").toLowerCase();
 
     // =================================================
     // ACCESS FILTER
@@ -108,11 +103,8 @@ export const getRetailInventory = async (req, res) => {
 
     if (role === "super_admin") {
       if (organization_id) {
-        itemWhere.organization_id =
-          Number(organization_id);
-
-        stockWhere.organization_id =
-          Number(organization_id);
+        itemWhere.organization_id = Number(organization_id);
+        stockWhere.organization_id = Number(organization_id);
       }
     } else {
       // =================================================
@@ -120,17 +112,12 @@ export const getRetailInventory = async (req, res) => {
       // =================================================
 
       if (user.store_code) {
-        const cleanStoreCode = String(
-          user.store_code
-        )
+        const cleanStoreCode = String(user.store_code)
           .trim()
           .toUpperCase();
 
-        itemWhere.storeCode =
-          cleanStoreCode;
-
-        stockWhere.store_code =
-          cleanStoreCode;
+        itemWhere.storeCode = cleanStoreCode;
+        stockWhere.store_code = cleanStoreCode;
       }
     }
 
@@ -153,19 +140,16 @@ export const getRetailInventory = async (req, res) => {
             [Op.iLike]: `%${search}%`,
           },
         },
-
         {
           article_code: {
             [Op.iLike]: `%${search}%`,
           },
         },
-
         {
           sku_code: {
             [Op.iLike]: `%${search}%`,
           },
         },
-
         {
           purity: {
             [Op.iLike]: `%${search}%`,
@@ -179,11 +163,34 @@ export const getRetailInventory = async (req, res) => {
     // =================================================
 
     const pageNumber = Number(page) || 1;
-
     const pageLimit = Number(limit) || 1000;
+    const offset = (pageNumber - 1) * pageLimit;
 
-    const offset =
-      (pageNumber - 1) * pageLimit;
+    // =================================================
+    // AUDIT DATE HELPERS
+    // =================================================
+
+    const getAuditBusinessDate = () => {
+      const indiaNow = new Date(
+        new Date().toLocaleString("en-US", {
+          timeZone: "Asia/Kolkata",
+        })
+      );
+
+      if (indiaNow.getHours() < 8) {
+        indiaNow.setDate(indiaNow.getDate() - 1);
+      }
+
+      return indiaNow.toISOString().slice(0, 10);
+    };
+
+    const isSameDate = (dateValue, targetDate) => {
+      if (!dateValue) return false;
+
+      return new Date(dateValue).toISOString().slice(0, 10) === targetDate;
+    };
+
+    const auditBusinessDate = getAuditBusinessDate();
 
     // =================================================
     // FETCH ITEMS
@@ -208,23 +215,21 @@ export const getRetailInventory = async (req, res) => {
         "current_status",
         "storeCode",
         "organization_id",
+        "isItemAudit",
+        "itemAuditAt",
         "createdAt",
       ],
 
       include: [
         {
           model: Stock,
-
           as: "stocks",
 
           // ✅ IMPORTANT FIX
           // quantity 0 / empty stock items bhi aayenge
           required: false,
 
-          where:
-            Object.keys(stockWhere).length
-              ? stockWhere
-              : undefined,
+          where: Object.keys(stockWhere).length ? stockWhere : undefined,
 
           attributes: [
             "id",
@@ -243,11 +248,8 @@ export const getRetailInventory = async (req, res) => {
       ],
 
       order: [["id", "DESC"]],
-
       limit: pageLimit,
-
       offset,
-
       subQuery: false,
     });
 
@@ -263,11 +265,8 @@ export const getRetailInventory = async (req, res) => {
     const categoryCounts = {};
 
     items.forEach((item) => {
-      const key =
-        item.category || "Others";
-
-      categoryCounts[key] =
-        (categoryCounts[key] || 0) + 1;
+      const key = item.category || "Others";
+      categoryCounts[key] = (categoryCounts[key] || 0) + 1;
     });
 
     // =================================================
@@ -275,28 +274,21 @@ export const getRetailInventory = async (req, res) => {
     // =================================================
 
     items.forEach((item) => {
-      const stocks = Array.isArray(item.stocks)
-        ? item.stocks
-        : [];
+      const stocks = Array.isArray(item.stocks) ? item.stocks : [];
 
       const available_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.available_qty || 0),
+        (sum, s) => sum + Number(s.available_qty || 0),
         0
       );
 
       const transit_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.transit_qty || 0),
+        (sum, s) => sum + Number(s.transit_qty || 0),
         0
       );
 
       transitGoods += transit_qty;
 
-      if (
-        available_qty > 0 &&
-        available_qty <= 5
-      ) {
+      if (available_qty > 0 && available_qty <= 5) {
         lowStock++;
       }
     });
@@ -308,9 +300,7 @@ export const getRetailInventory = async (req, res) => {
     const seenCategories = new Set();
 
     const filteredItems = items.filter((item) => {
-      const categoryKey = String(
-        item.category || "Others"
-      )
+      const categoryKey = String(item.category || "Others")
         .trim()
         .toLowerCase();
 
@@ -323,38 +313,30 @@ export const getRetailInventory = async (req, res) => {
     });
 
     const data = filteredItems.map((item) => {
-      const stocks = Array.isArray(item.stocks)
-        ? item.stocks
-        : [];
+      const stocks = Array.isArray(item.stocks) ? item.stocks : [];
 
       const available_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.available_qty || 0),
+        (sum, s) => sum + Number(s.available_qty || 0),
         0
       );
 
       const available_weight = stocks.reduce(
-        (sum, s) =>
-          sum +
-          Number(s.available_weight || 0),
+        (sum, s) => sum + Number(s.available_weight || 0),
         0
       );
 
       const reserved_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.reserved_qty || 0),
+        (sum, s) => sum + Number(s.reserved_qty || 0),
         0
       );
 
       const transit_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.transit_qty || 0),
+        (sum, s) => sum + Number(s.transit_qty || 0),
         0
       );
 
       const dead_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.dead_qty || 0),
+        (sum, s) => sum + Number(s.dead_qty || 0),
         0
       );
 
@@ -370,10 +352,7 @@ export const getRetailInventory = async (req, res) => {
         category: item.category,
 
         // ✅ FIXED
-        total_category_items:
-          categoryCounts[
-            item.category || "Others"
-          ] || 0,
+        total_category_items: categoryCounts[item.category || "Others"] || 0,
 
         metal_type: item.metal_type,
 
@@ -391,34 +370,25 @@ export const getRetailInventory = async (req, res) => {
 
         dead_qty,
 
-        net_weight: Number(
-          item.net_weight || 0
-        ),
+        net_weight: Number(item.net_weight || 0),
 
-        gross_weight: Number(
-          item.gross_weight || 0
-        ),
+        gross_weight: Number(item.gross_weight || 0),
 
-        stone_weight: Number(
-          item.stone_weight || 0
-        ),
+        stone_weight: Number(item.stone_weight || 0),
 
-        selling_price: Number(
-          item.sale_rate || 0
-        ),
+        selling_price: Number(item.sale_rate || 0),
 
-        making_charge: Number(
-          item.making_charge || 0
-        ),
+        making_charge: Number(item.making_charge || 0),
 
-        current_status:
-          item.current_status,
+        current_status: item.current_status,
 
-        storeCode:
-          item.storeCode || null,
+        storeCode: item.storeCode || null,
 
-        organization_id:
-          item.organization_id,
+        organization_id: item.organization_id,
+
+        audit_done: isSameDate(item.itemAuditAt, auditBusinessDate),
+
+        last_audit_time: item.itemAuditAt || null,
 
         stocks,
       };
@@ -428,9 +398,8 @@ export const getRetailInventory = async (req, res) => {
     // TOTAL STOCK - SAME AS DASHBOARD
     // =================================================
 
-    const totalStockResult =
-      await sequelize.query(
-        `
+    const totalStockResult = await sequelize.query(
+      `
           SELECT
             COALESCE(
               SUM(s.available_qty),
@@ -456,31 +425,24 @@ export const getRetailInventory = async (req, res) => {
               : ""
           }
         `,
-        {
-          replacements: {
-            store_code:
-              itemWhere.storeCode,
+      {
+        replacements: {
+          store_code: itemWhere.storeCode,
+          organization_id: itemWhere.organization_id,
+        },
 
-            organization_id:
-              itemWhere.organization_id,
-          },
-
-          type:
-            sequelize.QueryTypes.SELECT,
-        }
-      );
-
-    const totalStock = Number(
-      totalStockResult?.[0]?.total || 0
+        type: sequelize.QueryTypes.SELECT,
+      }
     );
+
+    const totalStock = Number(totalStockResult?.[0]?.total || 0);
 
     // =================================================
     // DEAD STOCK - SAME AS DASHBOARD
     // =================================================
 
-    const deadStockResult =
-      await sequelize.query(
-        `
+    const deadStockResult = await sequelize.query(
+      `
           SELECT
             COUNT(
               DISTINCT CASE
@@ -528,43 +490,31 @@ export const getRetailInventory = async (req, res) => {
               : ""
           }
         `,
-        {
-          replacements: {
-            store_code:
-              itemWhere.storeCode,
+      {
+        replacements: {
+          store_code: itemWhere.storeCode,
+          organization_id: itemWhere.organization_id,
+        },
 
-            organization_id:
-              itemWhere.organization_id,
-          },
-
-          type:
-            sequelize.QueryTypes.SELECT,
-        }
-      );
-
-    const deadStock = Number(
-      deadStockResult?.[0]
-        ?.dead_stock_items || 0
+        type: sequelize.QueryTypes.SELECT,
+      }
     );
+
+    const deadStock = Number(deadStockResult?.[0]?.dead_stock_items || 0);
 
     return res.status(200).json({
       success: true,
 
-      message:
-        "Retail inventory fetched successfully",
+      message: "Retail inventory fetched successfully",
 
       summary: {
-        total_stock_items:
-          totalStock,
+        total_stock_items: totalStock,
 
-        dead_stock_items:
-          deadStock,
+        dead_stock_items: deadStock,
 
-        low_stock_items:
-          lowStock,
+        low_stock_items: lowStock,
 
-        transit_goods:
-          transitGoods,
+        transit_goods: transitGoods,
       },
 
       pagination: {
@@ -577,16 +527,12 @@ export const getRetailInventory = async (req, res) => {
       data,
     });
   } catch (error) {
-    console.error(
-      "getRetailInventory error:",
-      error
-    );
+    console.error("getRetailInventory error:", error);
 
     return res.status(500).json({
       success: false,
 
-      message:
-        "Failed to fetch retail inventory",
+      message: "Failed to fetch retail inventory",
 
       error: error.message,
     });

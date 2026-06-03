@@ -233,12 +233,16 @@ router.post(
  * Full URL:
  * POST /request/head/available-stores
  */
-router.post(
-  "/head/available-stores",
+// router.post(
+//   "/head/available-stores",
+//   auth,
+//   getAvailableStoresForHeadRequest
+// );
+router.get(
+  "/available-stores/:target_type",
   auth,
   getAvailableStoresForHeadRequest
 );
-
 router.post(
   "/head/create",
   auth,

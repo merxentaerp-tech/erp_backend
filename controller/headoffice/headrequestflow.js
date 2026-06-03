@@ -1738,54 +1738,58 @@ export const  getHeadAllTransfers = async (req, res) => {
 
 
 
-// const HEAD_ACCESS_ROLES = [
-//   "super_admin",
-//   "admin",
-//   "head",
-//   "head_office",
-//   "head_admin",
-//   "stock_manager",
-//   "super_stock_manager",
-//   "inventory_manager",
-//   "super_inventory_manager",
-// ];
+const HEAD_ACCESS_ROLES = [
+  "super_admin",
+  "admin",
+  "head",
+  "head_office",
+  "head_admin",
+  "stock_manager",
+  "super_stock_manager",
+  "inventory_manager",
+  "super_inventory_manager",
+];
 
-// const normalizeRole = (role = "") =>
-//   String(role).trim().toLowerCase().replaceAll("-", "_");
+const normalizeRole = (role = "") =>
+  String(role).trim().toLowerCase().replaceAll("-", "_");
 
-// const canViewAnyTransfer = (user) => {
-//   const role = normalizeRole(user?.role);
-//   const level = normalizeRole(user?.organization_level);
+const canViewAnyTransfer = (user) => {
+  const role = normalizeRole(user?.role);
+  const level = normalizeRole(user?.organization_level);
 
+  return (
+    HEAD_ACCESS_ROLES.includes(role) ||
+    level === "head" ||
+    level === "head_office" ||
+    user?.branches?.includes?.("ALL")
+  );
+};
+
+// const pickStoreName = (store) => {
+//   if (!store) return null;
 //   return (
-//     HEAD_ACCESS_ROLES.includes(role) ||
-//     level === "head" ||
-//     level === "head_office" ||
-//     user?.branches?.includes?.("ALL")
+//     store.store_name ||
+//     store.name ||
+//     store.organization_name ||
+//     store.branch_name ||
+//     null
 //   );
 // };
 
-// // const pickStoreName = (store) => {
-// //   if (!store) return null;
-// //   return (
-// //     store.store_name ||
-// //     store.name ||
-// //     store.organization_name ||
-// //     store.branch_name ||
-// //     null
-// //   );
-// // };
-
-// const pickUserName = (user) => {
-//   if (!user) return null;
-//   return user.username || user.name || user.email || null;
-// };
+const pickUserName = (user) => {
+  if (!user) return null;
+  return user.username || user.name || user.email || null;
+};
 
 export const getAnyTransferDetailsForHead = async (req, res) => {
   try {
     const { id } = req.params;
     const user = req.user;
-
+      console.log("USER DEBUG:", {
+      id: user?.id,
+      role: user?.role,
+      organization_id: user?.organization_id,
+    });
     if (!user?.id) {
       return res.status(401).json({
         success: false,

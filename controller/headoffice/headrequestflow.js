@@ -2001,9 +2001,7 @@ export const getAvailableStoresForHeadRequest = async (req, res) => {
 
     const { target_type = "district" } = req.params;
 
-    const userLevel = String(
-      user?.organization_level || ""
-    ).toLowerCase();
+    const userLevel = String(user?.organization_level || "").toLowerCase();
 
     if (userLevel !== "head_office") {
       return res.status(403).json({
@@ -2012,9 +2010,7 @@ export const getAvailableStoresForHeadRequest = async (req, res) => {
       });
     }
 
-    const receiverType = String(
-      target_type || ""
-    ).toLowerCase();
+    const receiverType = String(target_type || "").toLowerCase();
 
     if (!["district", "retail"].includes(receiverType)) {
       return res.status(400).json({
@@ -2025,11 +2021,7 @@ export const getAvailableStoresForHeadRequest = async (req, res) => {
 
     const stores = await Store.findAll({
       where: {
-        organization_level:
-          receiverType === "district"
-            ? "District"
-            : "Retail",
-
+        organization_level: receiverType === "district" ? "District" : "Retail",
         is_active: true,
       },
       attributes: [
@@ -2046,16 +2038,124 @@ export const getAvailableStoresForHeadRequest = async (req, res) => {
       order: [["store_name", "ASC"]],
     });
 
+    const storeIds = stores.map((store) => Number(store.id));
+
+    const items = storeIds.length
+      ? await Item.findAll({
+          where: {
+            organization_id: {
+              [Op.in]: storeIds,
+            },
+          },
+          attributes: [
+            "id",
+            "item_name",
+            "article_code",
+            "sku_code",
+            "category",
+            "metal_type",
+            "purity",
+            "sale_rate",
+            "gross_weight",
+            "net_weight",
+            "storeCode",
+            "organization_id",
+          ],
+          include: [
+            {
+              model: Stock,
+              as: "stocks",
+              required: false,
+              attributes: [
+                "id",
+                "item_id",
+                "store_code",
+                "available_qty",
+                "available_weight",
+              ],
+            },
+          ],
+        })
+      : [];
+
+    const inventoryMap = new Map();
+
+    for (const item of items) {
+      const plainItem = item.get({ plain: true });
+
+      const orgId = Number(plainItem.organization_id);
+      const category = plainItem.category || "Others";
+
+      if (!inventoryMap.has(orgId)) {
+        inventoryMap.set(orgId, new Map());
+      }
+
+      const categoryMap = inventoryMap.get(orgId);
+
+      if (!categoryMap.has(category)) {
+        categoryMap.set(category, {
+          category,
+          total_items: 0,
+          total_qty: 0,
+          total_weight: 0,
+          items: [],
+        });
+      }
+
+      const stocks = Array.isArray(plainItem.stocks) ? plainItem.stocks : [];
+
+      const available_qty = stocks.reduce(
+        (sum, stock) => sum + Number(stock.available_qty || 0),
+        0
+      );
+
+      const available_weight = stocks.reduce(
+        (sum, stock) => sum + Number(stock.available_weight || 0),
+        0
+      );
+
+      const categoryData = categoryMap.get(category);
+
+      categoryData.total_items += 1;
+      categoryData.total_qty += available_qty;
+      categoryData.total_weight += available_weight;
+
+      categoryData.items.push({
+        id: plainItem.id,
+        item_name: plainItem.item_name,
+        article_code: plainItem.article_code,
+        sku_code: plainItem.sku_code,
+        category: plainItem.category,
+        metal_type: plainItem.metal_type,
+        purity: plainItem.purity,
+        sale_rate: Number(plainItem.sale_rate || 0),
+        gross_weight: Number(plainItem.gross_weight || 0),
+        net_weight: Number(plainItem.net_weight || 0),
+        available_qty,
+        available_weight,
+        storeCode: plainItem.storeCode || null,
+        organization_id: plainItem.organization_id,
+      });
+    }
+
+    const data = stores.map((store) => {
+      const plainStore = store.get({ plain: true });
+
+      const categoryMap = inventoryMap.get(Number(plainStore.id)) || new Map();
+
+      return {
+        ...plainStore,
+        inventory: Array.from(categoryMap.values()),
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      count: stores.length,
-      data: stores,
+      count: data.length,
+      data,
     });
   } catch (error) {
-    console.error(
-      "getAvailableStoresForHeadRequest error:",
-      error
-    );
+    console.error("getAvailableStoresForHeadRequest error:", error);
 
     return res.status(500).json({
       success: false,

@@ -1575,211 +1575,211 @@ export const  getHeadAllTransfers = async (req, res) => {
     });
   }
 };
-export const getAvailableStoresForHeadRequest = async (req, res) => {
-  try {
-    const user = req.user;
+// export const getAvailableStoresForHeadRequest = async (req, res) => {
+//   try {
+//     const user = req.user;
 
-    const {
-      target_type = "district", // district OR retail
-      items,
-    } = req.body;
+//     const {
+//       target_type = "district", // district OR retail
+//       items,
+//     } = req.body;
 
-    const userLevel = String(user.organization_level || "").toLowerCase();
+//     const userLevel = String(user.organization_level || "").toLowerCase();
 
-    if (!["head", "head_office"].includes(userLevel)) {
-      return res.status(403).json({
-        success: false,
-        message: "Only head office can access this API",
-      });
-    }
+//     if (!["head", "head_office"].includes(userLevel)) {
+//       return res.status(403).json({
+//         success: false,
+//         message: "Only head office can access this API",
+//       });
+//     }
 
-    const receiverType = String(target_type || "").toLowerCase();
+//     const receiverType = String(target_type || "").toLowerCase();
 
-    if (!["district", "retail"].includes(receiverType)) {
-      return res.status(400).json({
-        success: false,
-        message: "target_type must be district or retail",
-      });
-    }
+//     if (!["district", "retail"].includes(receiverType)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "target_type must be district or retail",
+//       });
+//     }
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "items are required",
-      });
-    }
+//     if (!Array.isArray(items) || items.length === 0) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "items are required",
+//       });
+//     }
 
-    const validItems = items
-      .filter((i) => i.item_id && Number(i.request_qty) > 0)
-      .map((i) => ({
-        item_id: Number(i.item_id),
-        request_qty: Number(i.request_qty),
-      }));
+//     const validItems = items
+//       .filter((i) => i.item_id && Number(i.request_qty) > 0)
+//       .map((i) => ({
+//         item_id: Number(i.item_id),
+//         request_qty: Number(i.request_qty),
+//       }));
 
-    if (validItems.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No valid items found",
-      });
-    }
+//     if (validItems.length === 0) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "No valid items found",
+//       });
+//     }
 
-    const itemIds = validItems.map((i) => i.item_id);
+//     const itemIds = validItems.map((i) => i.item_id);
 
-    const stores = await Store.findAll({
-      where: {
-        organization_level:
-          receiverType === "district"
-            ? { [Op.in]: ["District", "district", "DISTRICT"] }
-            : { [Op.in]: ["Retail", "retail", "RETAIL"] },
-        is_active: true,
-      },
-      attributes: [
-        "id",
-        "store_name",
-        "store_code",
-        "organization_level",
-        "state",
-        "district",
-        "district_id",
-        "address",
-        "phone_number",
-      ],
-      order: [["store_name", "ASC"]],
-    });
+//     const stores = await Store.findAll({
+//       where: {
+//         organization_level:
+//           receiverType === "district"
+//             ? { [Op.in]: ["District", "district", "DISTRICT"] }
+//             : { [Op.in]: ["Retail", "retail", "RETAIL"] },
+//         is_active: true,
+//       },
+//       attributes: [
+//         "id",
+//         "store_name",
+//         "store_code",
+//         "organization_level",
+//         "state",
+//         "district",
+//         "district_id",
+//         "address",
+//         "phone_number",
+//       ],
+//       order: [["store_name", "ASC"]],
+//     });
 
-    if (!stores.length) {
-      return res.status(200).json({
-        success: true,
-        count: 0,
-        data: [],
-      });
-    }
+//     if (!stores.length) {
+//       return res.status(200).json({
+//         success: true,
+//         count: 0,
+//         data: [],
+//       });
+//     }
 
-    const storeIds = stores.map((s) => s.id);
+//     const storeIds = stores.map((s) => s.id);
 
-    const stocks = await Stock.findAll({
-      where: {
-        organization_id: { [Op.in]: storeIds },
-        item_id: { [Op.in]: itemIds },
-      },
-      attributes: ["organization_id", "item_id", "available_qty"],
-    });
+//     const stocks = await Stock.findAll({
+//       where: {
+//         organization_id: { [Op.in]: storeIds },
+//         item_id: { [Op.in]: itemIds },
+//       },
+//       attributes: ["organization_id", "item_id", "available_qty"],
+//     });
 
-    const stockMap = new Map();
+//     const stockMap = new Map();
 
-    for (const stock of stocks) {
-      const key = `${stock.organization_id}_${stock.item_id}`;
-      stockMap.set(key, Number(stock.available_qty || 0));
-    }
+//     for (const stock of stocks) {
+//       const key = `${stock.organization_id}_${stock.item_id}`;
+//       stockMap.set(key, Number(stock.available_qty || 0));
+//     }
 
-    const data = stores.map((store) => {
-      let matchedItems = 0;
-      let missingItems = 0;
+//     const data = stores.map((store) => {
+//       let matchedItems = 0;
+//       let missingItems = 0;
 
-      const stock_details = validItems.map((item) => {
-        const key = `${store.id}_${item.item_id}`;
-        const availableQty = stockMap.get(key) || 0;
-        const isAvailable = availableQty >= item.request_qty;
+//       const stock_details = validItems.map((item) => {
+//         const key = `${store.id}_${item.item_id}`;
+//         const availableQty = stockMap.get(key) || 0;
+//         const isAvailable = availableQty >= item.request_qty;
 
-        if (isAvailable) matchedItems++;
-        else missingItems++;
+//         if (isAvailable) matchedItems++;
+//         else missingItems++;
 
-        return {
-          item_id: item.item_id,
-          requested_qty: item.request_qty,
-          available_qty: availableQty,
-          is_available: isAvailable,
-        };
-      });
+//         return {
+//           item_id: item.item_id,
+//           requested_qty: item.request_qty,
+//           available_qty: availableQty,
+//           is_available: isAvailable,
+//         };
+//       });
 
-      return {
-        store_id: store.id,
-        store_name: store.store_name,
-        store_code: store.store_code,
-        organization_level: store.organization_level,
-        state: store.state,
-        district: store.district,
-        district_id: store.district_id,
-        address: store.address,
-        phone_number: store.phone_number,
+//       return {
+//         store_id: store.id,
+//         store_name: store.store_name,
+//         store_code: store.store_code,
+//         organization_level: store.organization_level,
+//         state: store.state,
+//         district: store.district,
+//         district_id: store.district_id,
+//         address: store.address,
+//         phone_number: store.phone_number,
 
-        total_requested_items: validItems.length,
-        matched_items: matchedItems,
-        missing_items: missingItems,
-        can_fulfill_full_request: missingItems === 0,
+//         total_requested_items: validItems.length,
+//         matched_items: matchedItems,
+//         missing_items: missingItems,
+//         can_fulfill_full_request: missingItems === 0,
 
-        stock_details,
-      };
-    });
+//         stock_details,
+//       };
+//     });
 
-    const sortedData = data.sort((a, b) => {
-      if (b.can_fulfill_full_request !== a.can_fulfill_full_request) {
-        return b.can_fulfill_full_request - a.can_fulfill_full_request;
-      }
+//     const sortedData = data.sort((a, b) => {
+//       if (b.can_fulfill_full_request !== a.can_fulfill_full_request) {
+//         return b.can_fulfill_full_request - a.can_fulfill_full_request;
+//       }
 
-      return b.matched_items - a.matched_items;
-    });
+//       return b.matched_items - a.matched_items;
+//     });
 
-    return res.status(200).json({
-      success: true,
-      count: sortedData.length,
-      data: sortedData,
-    });
-  } catch (error) {
-    console.error("getAvailableStoresForHeadRequest error:", error);
+//     return res.status(200).json({
+//       success: true,
+//       count: sortedData.length,
+//       data: sortedData,
+//     });
+//   } catch (error) {
+//     console.error("getAvailableStoresForHeadRequest error:", error);
 
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
-  }
-};
+//     return res.status(500).json({
+//       success: false,
+//       message: "Server error",
+//       error: error.message,
+//     });
+//   }
+// };
 
 
 
-const HEAD_ACCESS_ROLES = [
-  "super_admin",
-  "admin",
-  "head",
-  "head_office",
-  "head_admin",
-  "stock_manager",
-  "super_stock_manager",
-  "inventory_manager",
-  "super_inventory_manager",
-];
+// const HEAD_ACCESS_ROLES = [
+//   "super_admin",
+//   "admin",
+//   "head",
+//   "head_office",
+//   "head_admin",
+//   "stock_manager",
+//   "super_stock_manager",
+//   "inventory_manager",
+//   "super_inventory_manager",
+// ];
 
-const normalizeRole = (role = "") =>
-  String(role).trim().toLowerCase().replaceAll("-", "_");
+// const normalizeRole = (role = "") =>
+//   String(role).trim().toLowerCase().replaceAll("-", "_");
 
-const canViewAnyTransfer = (user) => {
-  const role = normalizeRole(user?.role);
-  const level = normalizeRole(user?.organization_level);
+// const canViewAnyTransfer = (user) => {
+//   const role = normalizeRole(user?.role);
+//   const level = normalizeRole(user?.organization_level);
 
-  return (
-    HEAD_ACCESS_ROLES.includes(role) ||
-    level === "head" ||
-    level === "head_office" ||
-    user?.branches?.includes?.("ALL")
-  );
-};
-
-// const pickStoreName = (store) => {
-//   if (!store) return null;
 //   return (
-//     store.store_name ||
-//     store.name ||
-//     store.organization_name ||
-//     store.branch_name ||
-//     null
+//     HEAD_ACCESS_ROLES.includes(role) ||
+//     level === "head" ||
+//     level === "head_office" ||
+//     user?.branches?.includes?.("ALL")
 //   );
 // };
 
-const pickUserName = (user) => {
-  if (!user) return null;
-  return user.username || user.name || user.email || null;
-};
+// // const pickStoreName = (store) => {
+// //   if (!store) return null;
+// //   return (
+// //     store.store_name ||
+// //     store.name ||
+// //     store.organization_name ||
+// //     store.branch_name ||
+// //     null
+// //   );
+// // };
+
+// const pickUserName = (user) => {
+//   if (!user) return null;
+//   return user.username || user.name || user.email || null;
+// };
 
 export const getAnyTransferDetailsForHead = async (req, res) => {
   try {
@@ -1987,6 +1987,75 @@ export const getAnyTransferDetailsForHead = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch transfer details",
+      error: error.message,
+    });
+  }
+};
+export const getAvailableStoresForHeadRequest = async (req, res) => {
+  try {
+    const user = req.user;
+
+    const { target_type = "district" } = req.params;
+
+    const userLevel = String(
+      user?.organization_level || ""
+    ).toLowerCase();
+
+    if (userLevel !== "head_office") {
+      return res.status(403).json({
+        success: false,
+        message: "Only head office can access this API",
+      });
+    }
+
+    const receiverType = String(
+      target_type || ""
+    ).toLowerCase();
+
+    if (!["district", "retail"].includes(receiverType)) {
+      return res.status(400).json({
+        success: false,
+        message: "target_type must be district or retail",
+      });
+    }
+
+    const stores = await Store.findAll({
+      where: {
+        organization_level:
+          receiverType === "district"
+            ? "District"
+            : "Retail",
+
+        is_active: true,
+      },
+      attributes: [
+        "id",
+        "store_name",
+        "store_code",
+        "organization_level",
+        "state",
+        "district",
+        "district_id",
+        "address",
+        "phone_number",
+      ],
+      order: [["store_name", "ASC"]],
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: stores.length,
+      data: stores,
+    });
+  } catch (error) {
+    console.error(
+      "getAvailableStoresForHeadRequest error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
       error: error.message,
     });
   }

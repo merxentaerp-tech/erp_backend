@@ -5472,90 +5472,100 @@ export const transferDistrictRequestToRetail = async (req, res) => {
         retail_district_id: retailDistrictId,
       });
     }
+    console.log("=== DEBUG ===");
+console.log("requestId:", requestId);
+console.log("user.organization_id:", user.organization_id);
+console.log("districtStore.id:", districtStore.id);
+console.log("districtStore.district_id:", districtStore.district_id);
 
     // ---------------- REQUEST ----------------
-    const request = await StockRequest.findOne({
-      where: {
-        id: requestId,
-        to_organization_id: districtId,
-      },
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
+// ---------------- REQUEST ----------------
+const request = await StockRequest.findOne({
+  where: {
+    id: requestId,
+    from_organization_id: user.organization_id,
+  },
+  transaction: t,
+  lock: t.LOCK.UPDATE,
+});
 
-    if (!request) {
-      return rollback("Request not found", 404);
-    }
+if (!request) {
+  return rollback("Request not found", 404);
+}
 
-    if (clean(request.status) === "forwarded") {
-      return rollback("Request already forwarded");
-    }
+if (clean(request.status) === "forwarded") {
+  return rollback("Request already forwarded");
+}
 
-    if (request.parent_request_id) {
-      return rollback("Already forwarded request cannot be re-forwarded");
-    }
+if (request.parent_request_id) {
+  return rollback("Already forwarded request cannot be re-forwarded");
+}
 
-    // ---------------- ITEMS ----------------
-    const items = await StockRequestItem.findAll({
-      where: { request_id: request.id },
-      transaction: t,
-    });
+// ---------------- ITEMS ----------------
+const items = await StockRequestItem.findAll({
+  where: {
+    request_id: request.id,
+  },
+  transaction: t,
+});
 
-    if (!items.length) {
-      return rollback("No items found in request");
-    }
+if (!items.length) {
+  return rollback("No items found in request");
+}
 
-    // ---------------- DUPLICATE CHECK ----------------
-    const alreadyForwarded = await StockRequest.findOne({
-      where: {
-        parent_request_id: request.id,
-        request_source: "district_to_retail_forwarded",
-        to_organization_id: districtId,
-      },
-      transaction: t,
-    });
+// ---------------- DUPLICATE CHECK ----------------
+const alreadyForwarded = await StockRequest.findOne({
+  where: {
+    parent_request_id: request.id,
+    request_source: "district_to_retail_forwarded",
+    to_organization_id: retailStore.id,
+  },
+  transaction: t,
+});
 
-    if (alreadyForwarded) {
-      return rollback("Request already forwarded to this retail store", 409);
-    }
+if (alreadyForwarded) {
+  return rollback("Request already forwarded to this retail store", 409);
+}
 
-    // ---------------- CREATE FORWARDED REQUEST ----------------
-    const forwardedRequest = await StockRequest.create(
-      {
-        request_no: `REQ-FWD-${Date.now()}`,
+// ---------------- CREATE FORWARDED REQUEST ----------------
+const forwardedRequest = await StockRequest.create(
+  {
+    request_no: `REQ-FWD-${Date.now()}`,
 
-        from_organization_id: districtId,
-        from_store_code: districtStore.store_code,
-        from_store_name: districtStore.store_name,
+    from_organization_id: user.organization_id,
+    from_store_code: districtStore.store_code,
+    from_store_name: districtStore.store_name,
 
-        // ✅ REQUIRED FIELDS (FIXED)
-        to_organization_id: districtId,
-        to_district_code: String(districtId), // 🔥 FIXED CRITICAL ERROR
+    to_organization_id: retailStore.id,
+    to_district_code: retailStore.store_code,
+    to_store_name: retailStore.store_name,
 
-        to_store_name: retailStore.store_name,
+    parent_request_id: request.id,
+    request_source: "district_to_retail_forwarded",
 
-        parent_request_id: request.id,
-        request_source: "district_to_retail_forwarded",
+    status: "pending",
 
-        status: "pending",
+    notes: notes || "Forwarded from district",
 
-        notes: notes || "Forwarded from district",
+    created_by: user.id,
+    forwarded_by: user.id,
+    forwarded_at: new Date(),
+  },
+  { transaction: t }
+);
 
-        created_by: user.id,
-        forwarded_by: user.id,
-        forwarded_at: new Date(),
-      },
-      { transaction: t }
-    );
+// ---------------- COPY ITEMS ----------------
+const childItems = items.map((i) => ({
+  request_id: forwardedRequest.id,
+  item_id: i.item_id,
+  request_qty: i.request_qty,
+  approved_qty: 0,
+  status: "pending",
+}));
 
-    // ---------------- COPY ITEMS ----------------
-    const childItems = items.map((i) => ({
-      request_id: forwardedRequest.id,
-      item_id: i.item_id,
-      request_qty: i.request_qty,
-      approved_qty: 0,
-      status: "pending",
-    }));
+await StockRequestItem.bulkCreate(childItems, {
+  transaction: t,
+});
 
     await StockRequestItem.bulkCreate(childItems, { transaction: t });
 
@@ -5581,7 +5591,6 @@ export const transferDistrictRequestToRetail = async (req, res) => {
     });
   }
 };
-
 
 
 export const downloadDeliveryChallanByTransfer = async (req, res) => {

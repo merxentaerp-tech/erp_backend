@@ -5464,19 +5464,26 @@ console.log("districtStore.district_id:", districtStore.district_id);
 const request = await StockRequest.findOne({
   where: {
     id: requestId,
-    from_organization_id: user.organization_id,
+    to_organization_id: user.organization_id,
   },
   transaction: t,
   lock: t.LOCK.UPDATE,
 });
 
 if (!request) {
+  return rollback(
+    "Request not found in district received requests",
+    404
+  );
+}
+
+if (!request) {
   return rollback("Request not found", 404);
 }
 
-if (clean(request.status) === "forwarded") {
-  return rollback("Request already forwarded");
-}
+// if (clean(request.status) === "forwarded") {
+//   return rollback("Request already forwarded");
+// }
 
 if (request.parent_request_id) {
   return rollback("Already forwarded request cannot be re-forwarded");

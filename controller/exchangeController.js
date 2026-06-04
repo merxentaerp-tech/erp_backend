@@ -36,6 +36,7 @@ export const getInvoiceForExchange = async (req, res) => {
 
         ii.product_code,
         ii.description,
+        it.metal_type AS item_metal_type,
         ii.purity,
         ii.gross_weight,
         ii.net_weight,
@@ -58,6 +59,9 @@ export const getInvoiceForExchange = async (req, res) => {
       LEFT JOIN invoice_items ii
         ON ii.invoice_id = i.id
        AND ii.is_active = true
+
+      LEFT JOIN items it
+        ON it.id = ii.item_id
 
       WHERE i.invoice_number = :invoice_number
 
@@ -86,6 +90,7 @@ export const getInvoiceForExchange = async (req, res) => {
         invoice_id: row.invoice_id,
         product_code: row.product_code,
         product_name: row.description,
+        metal_type: row.item_metal_type,
         purity: row.purity,
         gross_weight: row.gross_weight,
         net_weight: row.net_weight,
@@ -97,6 +102,7 @@ export const getInvoiceForExchange = async (req, res) => {
       ? {
           product_code: invoice.old_product_code,
           product_name: invoice.old_product_name,
+          metal_type: invoice.item_metal_type,
           purity: invoice.old_purity,
           gross_weight: invoice.old_gross_weight,
           net_weight: invoice.old_net_weight,
@@ -113,11 +119,8 @@ export const getInvoiceForExchange = async (req, res) => {
         invoice_number: invoice.invoice_number,
         customer_name: invoice.customer_name,
         phone: invoice.customer_phone,
-
         total_items: items.length,
-
         items,
-
         latest_exchange_product,
       },
     });

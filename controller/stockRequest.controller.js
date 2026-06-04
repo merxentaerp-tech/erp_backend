@@ -4900,14 +4900,21 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
      * Original request must be received by Head Office.
      * Do not use include with FOR UPDATE.
      */
-    const originalRequest = await StockRequest.findOne({
-      where: {
-        id: cleanRequestId,
+const originalRequest = await StockRequest.findOne({
+  where: {
+    id: cleanRequestId,
+    [Op.or]: [
+      {
         to_organization_id: user.organization_id,
       },
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
+      {
+        from_organization_id: user.organization_id,
+      },
+    ],
+  },
+  transaction: t,
+  lock: t.LOCK.UPDATE,
+});
 
     if (!originalRequest) {
       await t.rollback();
@@ -5256,51 +5263,53 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
 
     await t.commit();
 
-    return res.status(201).json({
-      success: true,
-      message: "Head to district request transferred successfully",
-      data: {
-        original_request: {
-          id: originalRequest.id,
-          request_no: originalRequest.request_no,
-          status: originalRequest.status,
-        },
-        forwarded_request: {
-          id: forwardedRequest.id,
-          request_no: forwardedRequest.request_no,
-          parent_request_id: forwardedRequest.parent_request_id,
-          request_source: forwardedRequest.request_source,
+   return res.status(201).json({
+  success: true,
+  message: "District request transferred to retail successfully",
+  data: {
+    original_request: {
+      id: request.id,
+      request_no: request.request_no,
+      parent_request_id: request.parent_request_id,
+      request_source: request.request_source,
+      status: request.status,
+      from_organization_id: request.from_organization_id,
+      to_organization_id: request.to_organization_id,
+    },
 
-          from_organization_id: forwardedRequest.from_organization_id,
-          from_store_code: forwardedRequest.from_store_code,
-          from_store_name: forwardedRequest.from_store_name,
+    forwarded_request: {
+      id: forwardedRequest.id,
+      request_no: forwardedRequest.request_no,
+      parent_request_id: forwardedRequest.parent_request_id,
+      request_source: forwardedRequest.request_source,
 
-          /**
-           * This will now match old received API/user mapping.
-           * Example: North Delhi = 7
-           */
-          to_organization_id: forwardedRequest.to_organization_id,
+      from_organization_id: forwardedRequest.from_organization_id,
+      from_store_code: forwardedRequest.from_store_code,
+      from_store_name: forwardedRequest.from_store_name,
 
-          /**
-           * Actual district office details.
-           * Example: DST004 / District Office North Delhi
-           */
-          actual_district_store_id: selectedDistrict.id,
-          to_store_code:
-            forwardedRequest.to_store_code || forwardedRequest.to_district_code,
-          to_store_name:
-            forwardedRequest.to_store_name || forwardedRequest.to_district_name,
+      to_organization_id: forwardedRequest.to_organization_id,
+      to_store_code: retailStore.store_code,
+      to_store_name: retailStore.store_name,
 
-          final_to_organization_id: forwardedRequest.final_to_organization_id,
-          final_to_store_code: forwardedRequest.final_to_store_code,
-          final_to_store_name: forwardedRequest.final_to_store_name,
-          final_to_address: forwardedRequest.final_to_address,
+      district_id: districtStore.district_id,
 
-          status: forwardedRequest.status,
-          total_items: childItems.length,
-        },
-      },
-    });
+      forwarded_by: forwardedRequest.forwarded_by,
+      forwarded_at: forwardedRequest.forwarded_at,
+
+      notes: forwardedRequest.notes,
+      status: forwardedRequest.status,
+
+      total_items: childItems.length,
+
+      items: childItems.map((item) => ({
+        item_id: item.item_id,
+        request_qty: item.request_qty,
+        approved_qty: item.approved_qty,
+        status: item.status,
+      })),
+    },
+  },
+});
   } catch (error) {
     await t.rollback();
 

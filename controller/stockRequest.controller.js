@@ -768,12 +768,32 @@ export const getReceivedStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const finalData = addTransferDirection(requests, user).map((row) => {
-      return {
-        ...row,
-        request_type: "received",
-      };
+const finalData = await Promise.all(
+  addTransferDirection(requests, user).map(async (row) => {
+    const forwardedRequest = await StockRequest.findOne({
+      where: {
+        parent_request_id: row.id,
+        request_source: "district_to_retail_forwarded",
+      },
+      attributes: ["id", "request_no"],
     });
+
+    return {
+      ...row,
+
+      movement_type: forwardedRequest
+        ? "transferred_request"
+        : row.movement_type,
+
+      is_transferred: !!forwardedRequest,
+
+      transferred_request_id: forwardedRequest?.id || null,
+      transferred_request_no: forwardedRequest?.request_no || null,
+
+      request_type: "received",
+    };
+  })
+);
 
     const summary = calculateStockRequestSummary(finalData);
 

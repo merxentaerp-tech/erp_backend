@@ -154,14 +154,52 @@ export const getHeadReceivedStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const finalData = requests.map((row) => {
-      const item = row.toJSON ? row.toJSON() : row;
+const finalData = await Promise.all(
+  requests.map(async (row) => {
+    const item = row.toJSON ? row.toJSON() : row;
 
-      return {
-        ...item,
-        request_type: "received",
-      };
+    const forwardedRequest = await StockRequest.findOne({
+      where: {
+        parent_request_id: item.id,
+        request_source: "forwarded",
+      },
+      attributes: [
+        "id",
+        "request_no",
+        "status",
+        "to_organization_id",
+        "to_district_code",
+        "to_district_name",
+      ],
+      raw: true,
     });
+
+    return {
+      ...item,
+
+      movement_type: forwardedRequest
+        ? "transferred_request"
+        : "receive",
+
+      is_transferred: !!forwardedRequest,
+
+      transferred_request_id: forwardedRequest?.id || null,
+      transferred_request_no: forwardedRequest?.request_no || null,
+      transferred_request_status: forwardedRequest?.status || null,
+
+      transferred_to_organization_id:
+        forwardedRequest?.to_organization_id || null,
+
+      transferred_to_district_code:
+        forwardedRequest?.to_district_code || null,
+
+      transferred_to_district_name:
+        forwardedRequest?.to_district_name || null,
+
+      request_type: "received",
+    };
+  })
+);
 
     let totalRequests = finalData.length;
     let approvedRequests = 0;
@@ -233,7 +271,6 @@ export const getHeadReceivedStockRequests = async (req, res) => {
     });
   }
 };
-
 export const approveAndDispatchHeadRequest = async (req, res) => {
   const transaction = await sequelize.transaction();
   const uploadedLocalPaths = [];

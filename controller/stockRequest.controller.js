@@ -4673,14 +4673,6 @@ export const getRetailStoresUnderDistrict = async (req, res) => {
 
     const districtWhere = {
       is_active: true,
-
-      /**
-       * IMPORTANT:
-       * organization_level is PostgreSQL ENUM.
-       * Do NOT use Op.iLike here.
-       * ENUM column par ILIKE direct use karne se error aata hai:
-       * operator does not exist: enum_stores_organization_level ~~* unknown
-       */
       organization_level: "District",
     };
 
@@ -4715,42 +4707,21 @@ export const getRetailStoresUnderDistrict = async (req, res) => {
       });
     }
 
-    /**
-     * Tumhare DB mapping ke according:
-     *
-     * District Office:
-     * id = 44
-     * store_code = DST004
-     * district_id = 7
-     *
-     * Retail Store:
-     * STR006
-     * district_id = 7
-     *
-     * Isliye retail fetch districtStore.id se nahi,
-     * districtStore.district_id se hoga.
-     */
-    const linkedDistrictId = Number(districtStore.district_id);
+    const districtLinkIds = [];
 
-    if (!linkedDistrictId) {
-      return res.status(400).json({
-        success: false,
-        message: "District mapping missing. district_id is null for this district office",
-        district: {
-          id: districtStore.id,
-          store_code: districtStore.store_code,
-          store_name: districtStore.store_name,
-          organization_level: districtStore.organization_level,
-          district_id: districtStore.district_id,
-        },
-      });
+    if (districtStore.district_id) {
+      districtLinkIds.push(Number(districtStore.district_id));
     }
+
+    districtLinkIds.push(Number(districtStore.id));
 
     const retailStores = await Store.findAll({
       where: {
         is_active: true,
         organization_level: "Retail",
-        district_id: linkedDistrictId,
+        district_id: {
+          [Op.in]: districtLinkIds,
+        },
       },
       attributes: [
         "id",
@@ -4787,6 +4758,7 @@ export const getRetailStoresUnderDistrict = async (req, res) => {
     });
   }
 };
+
 
 
 

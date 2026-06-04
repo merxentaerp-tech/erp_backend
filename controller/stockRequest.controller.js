@@ -5571,16 +5571,53 @@ await StockRequestItem.bulkCreate(childItems, {
 
     await t.commit();
 
-    return res.status(201).json({
-      success: true,
-      message: "Request transferred successfully",
-      data: {
-        request_no: forwardedRequest.request_no,
-        from: districtStore.store_name,
-        to: retailStore.store_name,
-        total_items: childItems.length,
-      },
-    });
+ return res.status(201).json({
+  success: true,
+  message: "District request transferred to retail successfully",
+  data: {
+    original_request: {
+      id: request.id,
+      request_no: request.request_no,
+      parent_request_id: request.parent_request_id,
+      request_source: request.request_source,
+      status: request.status,
+      from_organization_id: request.from_organization_id,
+      to_organization_id: request.to_organization_id,
+    },
+
+    forwarded_request: {
+      id: forwardedRequest.id,
+      request_no: forwardedRequest.request_no,
+      parent_request_id: forwardedRequest.parent_request_id,
+      request_source: forwardedRequest.request_source,
+
+      from_organization_id: forwardedRequest.from_organization_id,
+      from_store_code: forwardedRequest.from_store_code,
+      from_store_name: forwardedRequest.from_store_name,
+
+      to_organization_id: forwardedRequest.to_organization_id,
+      to_store_code: retailStore.store_code,
+      to_store_name: retailStore.store_name,
+
+      district_id: districtStore.district_id,
+
+      forwarded_by: forwardedRequest.forwarded_by,
+      forwarded_at: forwardedRequest.forwarded_at,
+
+      notes: forwardedRequest.notes,
+      status: forwardedRequest.status,
+
+      total_items: childItems.length,
+
+      items: childItems.map((item) => ({
+        item_id: item.item_id,
+        request_qty: item.request_qty,
+        approved_qty: item.approved_qty,
+        status: item.status,
+      })),
+    },
+  },
+});
   } catch (err) {
     await t.rollback();
 

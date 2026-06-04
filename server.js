@@ -4,7 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Sequelize } from "sequelize";
 import { Server } from "socket.io";
-
+import completeAuditRoutes from "./routes/completeAuditRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import item from "./routes/itemRoutes.js";
 import dashboard from "./routes/dashboardRoutes.js";
@@ -130,7 +130,7 @@ app.use("/Profile", profile);
 app.use("/headstore/manage", storemanage);
 
 app.use("/staff", staff);
-
+app.use("/complete-audit", completeAuditRoutes);
 app.use("/headledger", ledger);
 app.use("/item-tracker",itemTracker);
 /**

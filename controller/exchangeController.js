@@ -469,6 +469,7 @@ export const createExchange = async (req, res) => {
 // ==============================
 //  EXCHANGE DASHBOARD
 // ==============================
+// ==============================
 export const getExchangeDashboard = async (req, res) => {
   try {
     const { filter = "all" } = req.query;
@@ -520,7 +521,7 @@ export const getExchangeDashboard = async (req, res) => {
         i.invoice_date,
         e.createdat AS exchange_date,
 
-        FLOOR(DATE_PART('day', NOW() - i.invoice_date)) AS days_since_purchase,
+        FLOOR(DATE_PART('day', e.createdat - i.invoice_date)) AS days_since_purchase,
 
         e.old_product_code,
         e.old_product_name,
@@ -564,14 +565,14 @@ export const getExchangeDashboard = async (req, res) => {
 
         COUNT(
           CASE 
-            WHEN DATE_PART('day', NOW() - i.invoice_date) <= 7 
+            WHEN DATE_PART('day', e.createdat - i.invoice_date) <= 7 
             THEN 1 
           END
         ) AS within_7_days,
 
         COUNT(
           CASE 
-            WHEN DATE_PART('day', NOW() - i.invoice_date) > 7 
+            WHEN DATE_PART('day', e.createdat - i.invoice_date) > 7 
             THEN 1 
           END
         ) AS after_7_days,
@@ -579,7 +580,7 @@ export const getExchangeDashboard = async (req, res) => {
         COALESCE(
           SUM(
             CASE 
-              WHEN DATE_PART('day', NOW() - i.invoice_date) > 7 
+              WHEN DATE_PART('day', e.createdat - i.invoice_date) > 7 
               THEN e.making_charges
               ELSE 0
             END

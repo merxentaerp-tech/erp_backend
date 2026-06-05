@@ -975,6 +975,7 @@ export const getStockItemsByCategory = async (req, res) => {
         "itemAuditAt",
         "createdAt",
         "updatedAt",
+        "image_url",
       ],
 
       where: itemWhere,
@@ -1064,6 +1065,9 @@ export const getStockItemsByCategory = async (req, res) => {
 
           category:
             item.category || "",
+
+          image_url:
+            item.image_url || null,
 
           details:
             item.details || "",

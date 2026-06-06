@@ -5,6 +5,12 @@ import {
   getDistrictRetailAudits,
   getDistrictRetailAuditDetails,
   downloadDistrictRetailAudit,
+  getHeadDistrictAudits,
+  getHeadDistrictAuditDetails,
+  downloadHeadDistrictAudit,
+  getHeadDistrictStoreAudits,
+  getHeadDistrictStoreAuditDetails,
+  downloadHeadDistrictStoreAudit,
 } from "../controller/completeAuditController.js";
 
 const router = express.Router();
@@ -27,11 +33,49 @@ router.get(
   getDistrictRetailAuditDetails
 );
 
-// District audit report CSV download karega
+// District audit report download karega
 router.get(
   "/district/retail-audits/:id/download",
   auth,
   downloadDistrictRetailAudit
 );
+router.get("/head/district-audits", auth, getHeadDistrictAudits);
 
+router.get("/head/district-audits/:id", auth, getHeadDistrictAuditDetails);
+
+router.get("/head/district-audits/:id/download", auth, downloadHeadDistrictAudit);
+router.get(
+  "/head/district/:district_id/store-audits",
+  auth,
+  getHeadDistrictStoreAudits
+);
+
+router.get(
+  "/head/district/:district_id/store-audits/:id",
+  auth,
+  getHeadDistrictStoreAuditDetails
+);
+
+router.get(
+  "/head/district/:district_id/store-audits/:id/download",
+  auth,
+  downloadHeadDistrictStoreAudit
+);
+router.get(
+  "/head/district/:district_code/store-audits",
+  auth,
+  getHeadDistrictStoreAudits
+);
+
+router.get(
+  "/head/district/:district_code/store-audits/:id",
+  auth,
+  getHeadDistrictStoreAuditDetails
+);
+
+router.get(
+  "/head/district/:district_code/store-audits/:id/download",
+  auth,
+  downloadHeadDistrictStoreAudit
+);
 export default router;

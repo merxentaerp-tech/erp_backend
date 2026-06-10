@@ -5,45 +5,41 @@ import {
   addEmployee,
   deleteEmployee,
   toggleEmployeeStatus,
-  exportStaffExcel,getOrganizationsByLevel,updateEmployee
+  exportStaffExcel,
+  getOrganizationsByLevel,
+  updateEmployee,
 } from "../controller/headoffice/staffController.js";
 
 import { upload2 } from "../middlewares/upload2.js";
 
 const router = express.Router();
 
-
-
-//  Combined API
 router.get("/get", getStaffWithStats);
-
-// Level filter
 router.get("/by-level", getStaffByLevel);
-
-// Export (static route)
 router.get("/export", exportStaffExcel);
+router.get("/organizations-by-level", getOrganizationsByLevel);
 
-// ADD EMPLOYEE (WITH MULTER FIX)
-router.post(
-  "/add-emp",
+const uploadEmployeeDocs = (req, res, next) => {
   upload2.fields([
     { name: "aadhaar", maxCount: 1 },
     { name: "pan", maxCount: 1 },
     { name: "policeDoc", maxCount: 1 },
-  ]),
-  addEmployee
-);
+  ])(req, res, (err) => {
+    if (err) {
+      console.log("MULTER ERROR:", err);
+      return res.status(400).json({
+        success: false,
+        error: err.message,
+      });
+    }
+    next();
+  });
+};
 
-// Update
-router.put("/:id", updateEmployee);
+router.post("/add-emp", uploadEmployeeDocs, addEmployee);
 
-//  Delete
+router.put("/:id", uploadEmployeeDocs, updateEmployee);
 router.delete("/:id", deleteEmployee);
-
-// Toggle Status
 router.patch("/:id/status", toggleEmployeeStatus);
 
-// Get by ID (ALWAYS LAST)
-// router.get("/:id", getStaffById);
-router.get("/organizations-by-level", getOrganizationsByLevel);
 export default router;

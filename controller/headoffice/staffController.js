@@ -499,7 +499,7 @@ export const addEmployee = async (req, res) => {
 
     // SUPER ADMIN CHECK
     if (
-      role === "SUPER_ADMIN" &&
+      role === "Super-Admin" &&
       selectedStore.organization_level !== "Head"
     ) {
       return res.status(400).json({

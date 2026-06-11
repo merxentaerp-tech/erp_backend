@@ -542,7 +542,7 @@ export const createStore = async (req, res) => {
       address,
       pincode,
       store_code,
-      district_id,
+      district_store_code,
     } = req.body;
 
     const normalizedLevel = level?.trim();
@@ -563,10 +563,20 @@ export const createStore = async (req, res) => {
       });
     }
 
-    if (normalizedLevel === "Retail" && !district_id) {
+    if (
+      store_name.toLowerCase().includes("district") &&
+      normalizedLevel !== "District"
+    ) {
       return res.status(400).json({
         success: false,
-        message: "district_id required for Retail store",
+        message: "Store name indicates District but level is incorrect",
+      });
+    }
+
+    if (normalizedLevel === "Retail" && !district_store_code) {
+      return res.status(400).json({
+        success: false,
+        message: "district_store_code required for Retail store",
       });
     }
 
@@ -575,11 +585,17 @@ export const createStore = async (req, res) => {
     if (normalizedLevel === "Retail") {
       districtStore = await Store.findOne({
         where: {
-          id: district_id,
+          store_code: district_store_code,
           organizationlevel: "District",
           is_active: true,
         },
-        attributes: ["id", "store_name", "store_code", "organizationlevel"],
+        attributes: [
+          "id",
+          "store_name",
+          "store_code",
+          "organizationlevel",
+          "address",
+        ],
       });
 
       if (!districtStore) {
@@ -600,7 +616,10 @@ export const createStore = async (req, res) => {
         organizationlevel: normalizedLevel,
         store_code,
         address: finalAddress,
-        district_id: normalizedLevel === "Retail" ? district_id : null,
+        district_id:
+          normalizedLevel === "Retail"
+            ? districtStore.id
+            : null,
         is_active: true,
       },
       { transaction: t }

@@ -5403,6 +5403,7 @@ export const transferDistrictRequestToRetail = async (req, res) => {
     try {
       await t.rollback();
     } catch {}
+
     return res.status(code).json({
       success: false,
       message: msg,
@@ -5414,6 +5415,7 @@ export const transferDistrictRequestToRetail = async (req, res) => {
     const user = req.user;
 
     const requestId = toInt(req.params.requestId);
+
     const retailStoreCode = String(req.body.retail_store_code || "")
       .trim()
       .toUpperCase();
@@ -5433,17 +5435,41 @@ export const transferDistrictRequestToRetail = async (req, res) => {
       return rollback("Invalid request id", 400);
     }
 
+    if (!retailStoreCode) {
+      return rollback("Retail store code is required", 400);
+    }
+
     // ---------------- DISTRICT STORE ----------------
     const districtStore = await Store.findOne({
       where: {
-        store_code: user.store_code,
+        store_code: String(user.store_code).trim().toUpperCase(),
         is_active: true,
       },
+      raw: true,
       transaction: t,
     });
 
     if (!districtStore) {
       return rollback("District store not found", 404);
+    }
+
+    const districtLevel = clean(
+      districtStore.organization_level ||
+        districtStore.organizationlevel
+    );
+
+    if (districtLevel !== "district") {
+      return rollback("Logged in store is not a district store", 400, {
+        district_store: {
+          id: districtStore.id,
+          store_code: districtStore.store_code,
+          store_name: districtStore.store_name,
+          organization_level:
+            districtStore.organization_level ||
+            districtStore.organizationlevel,
+          district_id: districtStore.district_id,
+        },
+      });
     }
 
     // ---------------- RETAIL STORE ----------------
@@ -5452,6 +5478,7 @@ export const transferDistrictRequestToRetail = async (req, res) => {
         store_code: retailStoreCode,
         is_active: true,
       },
+      raw: true,
       transaction: t,
     });
 
@@ -5459,175 +5486,271 @@ export const transferDistrictRequestToRetail = async (req, res) => {
       return rollback("Retail store not found", 404);
     }
 
-    // ---------------- DISTRICT VALIDATION ----------------
-    const districtId = districtStore.district_id;
-    const retailDistrictId = retailStore.district_id;
+    // ---------------- RETAIL VALIDATION ----------------
+    const retailLevel = clean(
+      retailStore.organization_level ||
+        retailStore.organizationlevel
+    );
 
-    if (!districtId || !retailDistrictId) {
-      return rollback("District mapping missing for store");
-    }
+    const isRetailStore =
+      retailLevel === "retail" ||
+      String(retailStore.store_code || "")
+        .toUpperCase()
+        .startsWith("STR");
 
-    if (districtId !== retailDistrictId) {
-      return rollback("Retail store not in same district", 400, {
-        district_id: districtId,
-        retail_district_id: retailDistrictId,
+    if (!isRetailStore) {
+      return rollback("Selected store is not a retail store", 400, {
+        retail_store: {
+          id: retailStore.id,
+          store_code: retailStore.store_code,
+          store_name: retailStore.store_name,
+          organization_level:
+            retailStore.organization_level ||
+            retailStore.organizationlevel,
+        },
       });
     }
-    console.log("=== DEBUG ===");
-console.log("requestId:", requestId);
-console.log("user.organization_id:", user.organization_id);
-console.log("districtStore.id:", districtStore.id);
-console.log("districtStore.district_id:", districtStore.district_id);
+
+    // ---------------- DISTRICT VALIDATION ----------------
+    const districtOrgId = Number(districtStore.id);
+
+    // FIXED:
+    // District store ka district_id null hona normal hai.
+    // Retail store ke district_id me district store ka id hota hai.
+    const districtMappingId = Number(districtStore.id);
+
+    const retailDistrictId = Number(retailStore.district_id || 0);
+
+    if (!retailDistrictId) {
+      return rollback("District mapping missing for retail store", 400, {
+        retail_store: {
+          id: retailStore.id,
+          store_code: retailStore.store_code,
+          store_name: retailStore.store_name,
+          organization_level:
+            retailStore.organization_level ||
+            retailStore.organizationlevel,
+          district_id: retailStore.district_id,
+        },
+      });
+    }
+
+    if (districtMappingId !== retailDistrictId) {
+      return rollback("Retail store not in same district", 400, {
+        district_mapping_id: districtMappingId,
+        retail_district_id: retailDistrictId,
+        district_store: {
+          id: districtStore.id,
+          store_code: districtStore.store_code,
+          store_name: districtStore.store_name,
+          organization_level:
+            districtStore.organization_level ||
+            districtStore.organizationlevel,
+          district_id: districtStore.district_id,
+        },
+        retail_store: {
+          id: retailStore.id,
+          store_code: retailStore.store_code,
+          store_name: retailStore.store_name,
+          organization_level:
+            retailStore.organization_level ||
+            retailStore.organizationlevel,
+          district_id: retailStore.district_id,
+        },
+      });
+    }
 
     // ---------------- REQUEST ----------------
-// ---------------- REQUEST ----------------
-const request = await StockRequest.findOne({
-  where: {
-    id: requestId,
-    to_organization_id: user.organization_id,
-  },
-  transaction: t,
-  lock: t.LOCK.UPDATE,
-});
+    const requestOwnerIds = [
+      Number(user.organization_id || 0),
+      Number(districtStore.id || 0),
+      Number(districtMappingId || 0),
+    ].filter(Boolean);
 
-if (!request) {
-  return rollback(
-    "Request not found in district received requests",
-    404
-  );
-}
+    const request = await StockRequest.findOne({
+      where: {
+        id: requestId,
+        to_organization_id: {
+          [Op.in]: requestOwnerIds,
+        },
+      },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
 
-if (!request) {
-  return rollback("Request not found", 404);
-}
+    if (!request) {
+      return rollback("Request not found for this district", 404, {
+        debug: {
+          request_id: requestId,
+          expected_to_organization_ids: requestOwnerIds,
+        },
+      });
+    }
 
-// if (clean(request.status) === "forwarded") {
-//   return rollback("Request already forwarded");
-// }
+    const requestStatus = clean(request.status);
 
-if (request.parent_request_id) {
-  return rollback("Already forwarded request cannot be re-forwarded");
-}
+    if (
+      [
+        "cancelled",
+        "rejected",
+        "received",
+        "completed",
+        "dispatched",
+      ].includes(requestStatus)
+    ) {
+      return rollback(
+        `Request cannot be forwarded because current status is ${request.status}`
+      );
+    }
 
-// ---------------- ITEMS ----------------
-const items = await StockRequestItem.findAll({
-  where: {
-    request_id: request.id,
-  },
-  transaction: t,
-});
+    if (requestStatus === "forwarded") {
+      return rollback("Request already forwarded");
+    }
 
-if (!items.length) {
-  return rollback("No items found in request");
-}
+    // ---------------- ITEMS ----------------
+    const items = await StockRequestItem.findAll({
+      where: {
+        request_id: request.id,
+      },
+      transaction: t,
+    });
 
-// ---------------- DUPLICATE CHECK ----------------
-const alreadyForwarded = await StockRequest.findOne({
-  where: {
-    parent_request_id: request.id,
-    request_source: "district_to_retail_forwarded",
-    to_organization_id: retailStore.id,
-  },
-  transaction: t,
-});
+    if (!items.length) {
+      return rollback("No items found in request");
+    }
 
-if (alreadyForwarded) {
-  return rollback("Request already forwarded to this retail store", 409);
-}
+    // ---------------- DUPLICATE CHECK ----------------
+    const alreadyForwarded = await StockRequest.findOne({
+      where: {
+        parent_request_id: request.id,
+        request_source: "district_to_retail_forwarded",
+        to_organization_id: retailStore.id,
+      },
+      transaction: t,
+    });
 
-// ---------------- CREATE FORWARDED REQUEST ----------------
-const forwardedRequest = await StockRequest.create(
-  {
-    request_no: `REQ-FWD-${Date.now()}`,
+    if (alreadyForwarded) {
+      return rollback("Request already forwarded to this retail store", 409, {
+        forwarded_request_id: alreadyForwarded.id,
+        forwarded_request_no: alreadyForwarded.request_no,
+      });
+    }
 
-    from_organization_id: user.organization_id,
-    from_store_code: districtStore.store_code,
-    from_store_name: districtStore.store_name,
+    // ---------------- CREATE FORWARDED REQUEST ----------------
+    const forwardedRequest = await StockRequest.create(
+      {
+        request_no: `REQ-DTR-${Date.now()}`,
 
-    to_organization_id: retailStore.id,
-    to_district_code: retailStore.store_code,
-    to_store_name: retailStore.store_name,
+        from_organization_id: districtOrgId,
+        from_store_code: districtStore.store_code,
+        from_store_name: districtStore.store_name,
 
-    parent_request_id: request.id,
-    request_source: "district_to_retail_forwarded",
+        to_organization_id: retailStore.id,
+        to_store_code: retailStore.store_code,
+        to_store_name: retailStore.store_name,
 
-    status: "pending",
+        to_district_code: districtStore.store_code,
+        to_district_name: districtStore.store_name,
 
-    notes: notes || "Forwarded from district",
+        parent_request_id: request.id,
+        request_source: "district_to_retail_forwarded",
 
-    created_by: user.id,
-    forwarded_by: user.id,
-    forwarded_at: new Date(),
-  },
-  { transaction: t }
-);
+        status: "pending",
 
-// ---------------- COPY ITEMS ----------------
-const childItems = items.map((i) => ({
-  request_id: forwardedRequest.id,
-  item_id: i.item_id,
-  request_qty: i.request_qty,
-  approved_qty: 0,
-  status: "pending",
-}));
+        priority: request.priority || "medium",
+        category: request.category || null,
 
-await StockRequestItem.bulkCreate(childItems, {
-  transaction: t,
-});
+        notes: notes || "Forwarded from district to retail",
 
-    await StockRequestItem.bulkCreate(childItems, { transaction: t });
+        created_by: user.id,
+        forwarded_by: user.id,
+        forwarded_at: new Date(),
+      },
+      { transaction: t }
+    );
+
+    // ---------------- COPY ITEMS ----------------
+    const childItems = items.map((i) => ({
+      request_id: forwardedRequest.id,
+      item_id: i.item_id,
+      request_qty: i.request_qty,
+      request_weight: i.request_weight || null,
+
+      approved_qty: 0,
+      approved_weight: 0,
+
+      rate: i.rate || null,
+      remarks: i.remarks || null,
+      status: "pending",
+    }));
+
+    await StockRequestItem.bulkCreate(childItems, {
+      transaction: t,
+    });
+
+    // ---------------- UPDATE ORIGINAL REQUEST ----------------
+    request.status = "forwarded";
+    request.forwarded_by = user.id;
+    request.forwarded_at = new Date();
+    request.forward_note = notes || null;
+
+    await request.save({ transaction: t });
 
     await t.commit();
 
- return res.status(201).json({
-  success: true,
-  message: "District request transferred to retail successfully",
-  data: {
-    original_request: {
-      id: request.id,
-      request_no: request.request_no,
-      parent_request_id: request.parent_request_id,
-      request_source: request.request_source,
-      status: request.status,
-      from_organization_id: request.from_organization_id,
-      to_organization_id: request.to_organization_id,
-    },
+    return res.status(201).json({
+      success: true,
+      message: "District request transferred to retail successfully",
+      data: {
+        original_request: {
+          id: request.id,
+          request_no: request.request_no,
+          parent_request_id: request.parent_request_id,
+          request_source: request.request_source,
+          status: request.status,
+          from_organization_id: request.from_organization_id,
+          to_organization_id: request.to_organization_id,
+        },
 
-    forwarded_request: {
-      id: forwardedRequest.id,
-      request_no: forwardedRequest.request_no,
-      parent_request_id: forwardedRequest.parent_request_id,
-      request_source: forwardedRequest.request_source,
+        forwarded_request: {
+          id: forwardedRequest.id,
+          request_no: forwardedRequest.request_no,
+          parent_request_id: forwardedRequest.parent_request_id,
+          request_source: forwardedRequest.request_source,
 
-      from_organization_id: forwardedRequest.from_organization_id,
-      from_store_code: forwardedRequest.from_store_code,
-      from_store_name: forwardedRequest.from_store_name,
+          from_organization_id: forwardedRequest.from_organization_id,
+          from_store_code: forwardedRequest.from_store_code,
+          from_store_name: forwardedRequest.from_store_name,
 
-      to_organization_id: forwardedRequest.to_organization_id,
-      to_store_code: retailStore.store_code,
-      to_store_name: retailStore.store_name,
+          to_organization_id: forwardedRequest.to_organization_id,
+          to_store_code: forwardedRequest.to_store_code,
+          to_store_name: forwardedRequest.to_store_name,
 
-      district_id: districtStore.district_id,
+          district_mapping_id: districtMappingId,
 
-      forwarded_by: forwardedRequest.forwarded_by,
-      forwarded_at: forwardedRequest.forwarded_at,
+          forwarded_by: forwardedRequest.forwarded_by,
+          forwarded_at: forwardedRequest.forwarded_at,
 
-      notes: forwardedRequest.notes,
-      status: forwardedRequest.status,
+          notes: forwardedRequest.notes,
+          status: forwardedRequest.status,
 
-      total_items: childItems.length,
+          total_items: childItems.length,
 
-      items: childItems.map((item) => ({
-        item_id: item.item_id,
-        request_qty: item.request_qty,
-        approved_qty: item.approved_qty,
-        status: item.status,
-      })),
-    },
-  },
-});
+          items: childItems.map((item) => ({
+            item_id: item.item_id,
+            request_qty: item.request_qty,
+            request_weight: item.request_weight,
+            approved_qty: item.approved_qty,
+            approved_weight: item.approved_weight,
+            status: item.status,
+          })),
+        },
+      },
+    });
   } catch (err) {
-    await t.rollback();
+    try {
+      await t.rollback();
+    } catch {}
 
     return res.status(500).json({
       success: false,

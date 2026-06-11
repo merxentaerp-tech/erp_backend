@@ -364,6 +364,8 @@ export const getAvailableStockForRequest = async (req, res) => {
 // helper
 
 
+
+
 export const createStockRequest = async (req, res) => {
   const transaction = await sequelize.transaction();
 
@@ -380,9 +382,12 @@ export const createStockRequest = async (req, res) => {
       });
     }
 
-    // ================= GET STORE =================
+    // ================= GET RETAIL STORE =================
     const store = await Store.findOne({
-      where: { id: store_id, is_active: true },
+      where: {
+        id: store_id,
+        is_active: true,
+      },
       transaction,
     });
 
@@ -394,34 +399,35 @@ export const createStockRequest = async (req, res) => {
       });
     }
 
-    // ================= FINAL DISTRICT RESOLUTION =================
-    let district = null;
+    // ================= DISTRICT STORE RESOLUTION =================
+    let districtStore = null;
 
-    // 1st priority → district_id
     if (store.district_id) {
-      district = await District.findOne({
-        where: { id: store.district_id },
+      districtStore = await Store.findOne({
+        where: {
+          id: store.district_id,
+          organizationlevel: "District",
+          is_active: true,
+        },
         transaction,
       });
     }
 
-    // 2nd priority → district_name fallback
-    if (!district && store.district_name) {
-      district = await District.findOne({
-        where: { name: store.district_name },
-        transaction,
-      });
-    }
-
-    if (!district) {
+    if (!districtStore) {
       await transaction.rollback();
       return res.status(400).json({
         success: false,
         message: "Cannot resolve district for this store",
+        debug: {
+          store_id: store.id,
+          store_code: store.store_code,
+          store_name: store.store_name,
+          district_id: store.district_id,
+        },
       });
     }
 
-    // ================= VALID ITEMS =================
+    // ================= VALID ITEMS FORMAT =================
     const validItems = items
       .filter(
         (item) =>
@@ -444,7 +450,7 @@ export const createStockRequest = async (req, res) => {
       });
     }
 
-    // ================= MERGE ITEMS =================
+    // ================= MERGE SAME ITEMS =================
     const itemMap = new Map();
 
     for (const item of validItems) {
@@ -457,31 +463,102 @@ export const createStockRequest = async (req, res) => {
 
     const finalItems = Array.from(itemMap.values());
 
-    // ================= REQUEST NO =================
-    const request_no = `REQ-${user.organization_id}-${Date.now()}`;
+    // ================= ITEM EXISTENCE CHECK =================
+    const itemIds = finalItems.map((item) => item.item_id);
 
-    // 👉 THIS IS YOUR FINAL DECISION
-    const finalDistrictId = district.id;
-    const finalDistrictName = district.name;
+    const existingItems = await Item.findAll({
+      where: {
+        id: {
+          [Op.in]: itemIds,
+        },
+        is_active: true,
+      },
+      attributes: [
+        "id",
+        "item_name",
+        "article_code",
+        "sku_code",
+        "store_id",
+        "storeCode",
+        "organization_id",
+      ],
+      transaction,
+      raw: true,
+    });
+
+    const existingItemIds = existingItems.map((item) => Number(item.id));
+
+    const invalidItemIds = itemIds.filter(
+      (id) => !existingItemIds.includes(Number(id))
+    );
+
+    if (invalidItemIds.length > 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Invalid item_id found",
+        invalid_item_ids: invalidItemIds,
+      });
+    }
+
+    // ================= ITEM STORE VALIDATION =================
+    const invalidStoreItems = existingItems.filter((item) => {
+      const itemStoreId = Number(item.store_id || 0);
+      const itemOrgId = Number(item.organization_id || 0);
+      const itemStoreCode = String(item.storeCode || "").trim().toUpperCase();
+
+      return (
+        itemStoreId !== Number(store.id) &&
+        itemOrgId !== Number(store.id) &&
+        itemStoreCode !== String(store.store_code).trim().toUpperCase()
+      );
+    });
+
+    if (invalidStoreItems.length > 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Some items do not belong to selected store",
+        invalid_items: invalidStoreItems.map((item) => ({
+          id: item.id,
+          item_name: item.item_name,
+          article_code: item.article_code,
+          sku_code: item.sku_code,
+          store_id: item.store_id,
+          storeCode: item.storeCode,
+          organization_id: item.organization_id,
+        })),
+      });
+    }
+
+    // ================= REQUEST NO =================
+    const request_no = `REQ-${store.id}-${Date.now()}`;
+
+    const finalDistrictId = districtStore.id;
+    const finalDistrictCode = districtStore.store_code;
+    const finalDistrictName = districtStore.store_name;
 
     // ================= CREATE REQUEST =================
     const stockRequest = await StockRequest.create(
       {
         request_no,
 
-        from_organization_id: user.organization_id,
+        from_organization_id: store.id,
         from_store_code: store.store_code,
         from_store_name: store.store_name,
 
         to_organization_id: finalDistrictId,
-        to_district_code: String(finalDistrictId),
+        to_store_code: finalDistrictCode,
+        to_store_name: finalDistrictName,
+
+        to_district_code: finalDistrictCode,
         to_district_name: finalDistrictName,
 
         priority: priority || "medium",
         category: category || null,
         notes: notes || null,
         status: "pending",
-        created_by: user.id,
+        created_by: user?.id || null,
       },
       { transaction }
     );
@@ -510,18 +587,17 @@ export const createStockRequest = async (req, res) => {
         reference_id: stockRequest.id,
         reference_no: stockRequest.request_no,
 
-        district_code: String(finalDistrictId),
+        district_code: finalDistrictCode,
         store_code: store.store_code,
         store_name: store.store_name,
 
-        created_by: user.id,
+        created_by: user?.id || null,
       },
       { transaction }
     );
 
     await transaction.commit();
 
-    // ================= FINAL RESPONSE =================
     return res.status(201).json({
       success: true,
       message: "Stock request created successfully",
@@ -530,11 +606,23 @@ export const createStockRequest = async (req, res) => {
         request_no: stockRequest.request_no,
         total_items: requestItemsPayload.length,
 
-        // 👉 IMPORTANT (DEBUG / FRONTEND USE)
+        from_store: {
+          id: store.id,
+          store_code: store.store_code,
+          store_name: store.store_name,
+        },
+
         district: {
           id: finalDistrictId,
-          name: finalDistrictName,
+          store_code: finalDistrictCode,
+          store_name: finalDistrictName,
         },
+
+        items: requestItemsPayload.map((item) => ({
+          item_id: item.item_id,
+          request_qty: item.request_qty,
+          status: item.status,
+        })),
       },
     });
   } catch (error) {
@@ -547,105 +635,6 @@ export const createStockRequest = async (req, res) => {
     });
   }
 };
-// ==========================================
-// STORE -> MY REQUESTS 
-// ==========================================
-// ==========================================
-const TRANSFER_ACTIVE_STATUSES = [
-  "approved",
-  "dispatched",
-  "in_transit",
-  "received",
-];
-
-const APPROVED_REQUEST_STATUSES = [
-  "approved",
-  "partially_approved",
-  "completed",
-];
-
-const LOW_STOCK_THRESHOLD = 5;
-
-const calculateStockRequestSummary = (requests = []) => {
-  let totalRequests = requests.length;
-  let approvedRequests = 0;
-  let transitGoods = 0;
-  let lowStockItems = 0;
-
-  for (const reqRow of requests) {
-    const row = reqRow.toJSON ? reqRow.toJSON() : reqRow;
-
-    const requestStatus = String(row.status || "").toLowerCase();
-    const transferStatus = String(row.transfer?.status || "").toLowerCase();
-
-    if (APPROVED_REQUEST_STATUSES.includes(requestStatus)) {
-      approvedRequests += 1;
-    }
-
-    const requestItems = Array.isArray(row.request_items)
-      ? row.request_items
-      : [];
-
-    for (const itemRow of requestItems) {
-      const qty = Number(
-        itemRow.approved_qty ||
-          itemRow.request_qty ||
-          itemRow.qty ||
-          itemRow.quantity ||
-          0
-      );
-
-      if (row.transfer && TRANSFER_ACTIVE_STATUSES.includes(transferStatus)) {
-        transitGoods += qty;
-      }
-
-      if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
-        lowStockItems += 1;
-      }
-    }
-  }
-
-  return {
-    total_requests: totalRequests,
-    approved_requests: approvedRequests,
-    low_stock_items: lowStockItems,
-    transit_goods: transitGoods,
-  };
-};
-
-const addTransferDirection = (rows = [], user) => {
-  return rows.map((row) => {
-    const item = row.toJSON ? row.toJSON() : row;
-
-    const transferStatus = String(item.transfer?.status || "").toLowerCase();
-
-    const isSender =
-      Number(item.from_organization_id) === Number(user.organization_id);
-
-    const isReceiver =
-      Number(item.to_organization_id) === Number(user.organization_id);
-
-    let movement_type = "unknown";
-
-    if (isSender && transferStatus === "in_transit") {
-      movement_type = "in_transit_send";
-    } else if (isReceiver && transferStatus === "in_transit") {
-      movement_type = "in_transit_receive";
-    } else if (isSender) {
-      movement_type = "send";
-    } else if (isReceiver) {
-      movement_type = "receive";
-    }
-
-    return {
-      ...item,
-      movement_type,
-      is_sent: isSender,
-      is_received: isReceiver,
-    };
-  });
-};
-
 export const getMyStockRequests = async (req, res) => {
   try {
     const user = req.user;

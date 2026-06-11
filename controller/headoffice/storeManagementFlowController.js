@@ -542,6 +542,7 @@ export const createStore = async (req, res) => {
       address,
       pincode,
       store_code,
+      district_id,
     } = req.body;
 
     const normalizedLevel = level?.trim();
@@ -562,14 +563,31 @@ export const createStore = async (req, res) => {
       });
     }
 
-    if (
-      store_name.toLowerCase().includes("district") &&
-      normalizedLevel !== "District"
-    ) {
+    if (normalizedLevel === "Retail" && !district_id) {
       return res.status(400).json({
         success: false,
-        message: "Store name indicates District but level is incorrect",
+        message: "district_id required for Retail store",
       });
+    }
+
+    let districtStore = null;
+
+    if (normalizedLevel === "Retail") {
+      districtStore = await Store.findOne({
+        where: {
+          id: district_id,
+          organizationlevel: "District",
+          is_active: true,
+        },
+        attributes: ["id", "store_name", "store_code", "organizationlevel"],
+      });
+
+      if (!districtStore) {
+        return res.status(404).json({
+          success: false,
+          message: "Selected district store not found",
+        });
+      }
     }
 
     const finalAddress = `${address || ""} - ${pincode || ""}`;
@@ -579,9 +597,10 @@ export const createStore = async (req, res) => {
     const newStore = await Store.create(
       {
         store_name,
-        organization_level: normalizedLevel,
+        organizationlevel: normalizedLevel,
         store_code,
         address: finalAddress,
+        district_id: normalizedLevel === "Retail" ? district_id : null,
         is_active: true,
       },
       { transaction: t }
@@ -592,53 +611,42 @@ export const createStore = async (req, res) => {
     if (normalizedLevel === "Retail") {
       return res.json({
         success: true,
-        message: "Retail Store Created",
-        data: newStore,
+        message: "Retail Store Created And Assigned To District",
+        data: {
+          retail_store: newStore,
+          assigned_district: districtStore,
+        },
       });
     }
 
     if (normalizedLevel === "District") {
-
-      const unassignedStores = await Store.findAll({
-        where: {
-          organization_level: "Retail",
-          district_id: null,
-          is_active: true,
-          id: {
-            [Op.ne]: newStore.id,
-          },
-        },
-        attributes: ["id", "store_name", "store_code", "address"],
-        order: [["createdAt", "DESC"]],
-      });
-
       return res.json({
         success: true,
         message: "District Created Successfully",
         data: {
-          district: {
-            id: newStore.id,
-            store_name: newStore.store_name,
-            store_code: newStore.store_code,
-            organization_level: newStore.organization_level,
-          },
-          availableStores: unassignedStores,
+          district: newStore,
         },
       });
     }
 
+    if (normalizedLevel === "head_office") {
+      return res.json({
+        success: true,
+        message: "Head Office Created Successfully",
+        data: newStore,
+      });
+    }
   } catch (error) {
     if (t && !t.finished) {
       await t.rollback();
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.errors?.[0]?.message || error.message,
     });
   }
 };
-
 // ================= MAP STORES TO DISTRICT =================
 export const mapStoresToDistrict = async (req, res) => {
   let t;

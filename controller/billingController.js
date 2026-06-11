@@ -1087,6 +1087,12 @@ export const scanBillingItem = async (req, res) => {
     const rawCode = String(req.params.code || "").trim();
     const organizationId = req.user?.organization_id;
 
+    const session_id =
+      req.headers["x-billing-session-id"] ||
+      req.body.session_id ||
+      req.query.session_id ||
+      null;
+
     if (!rawCode) {
       return res.status(400).json({
         success: false,
@@ -1175,92 +1181,73 @@ export const scanBillingItem = async (req, res) => {
     const metalValue = netWeight * rate;
     const makingValue = (metalValue * makingPercent) / 100;
     const totalAmount = metalValue + makingValue;
-    /**
- * LIVE BILLING SCAN EMIT
- */
 
-emitBillingScan({
-  organization_id: organizationId,
-  store_code:
-    req.user?.store_code ||
-    req.user?.store?.store_code ||
-    null,
+    const scannedItem = {
+      item_id: item.id,
 
-  item: {
-    item_id: item.id,
+      sku_code: item.sku_code,
+      article_code: item.article_code,
 
-    sku_code: item.sku_code,
-    article_code: item.article_code,
+      product_code: item.article_code || item.sku_code,
 
-    product_code:
-      item.article_code ||
-      item.sku_code,
+      item_name: item.item_name,
+      description: item.details || item.item_name,
 
-    item_name: item.item_name,
+      metal_type: item.metal_type,
+      category: item.category,
+      purity: item.purity,
 
-    category: item.category,
+      gross_weight: toNumber(item.gross_weight),
+      net_weight: netWeight,
+      stone_weight: toNumber(item.stone_weight),
+      stone_amount: toNumber(item.stone_amount),
 
-    purity: item.purity,
+      rate,
+      purchase_rate: toNumber(item.purchase_rate),
+      sale_rate: toNumber(item.sale_rate),
 
-    net_weight: netWeight,
+      making_charge_percent: makingPercent,
+      making_charge_value: Number(makingValue.toFixed(2)),
+      total_amount: Number(totalAmount.toFixed(2)),
 
-    rate,
+      hsn_code: item.hsn_code,
+      unit: item.unit,
+      current_status: item.current_status,
 
-    total_amount: Number(
-      totalAmount.toFixed(2)
-    ),
+      qty: 1,
+      available_qty: toNumber(stock.available_qty),
+      available_weight: toNumber(stock.available_weight),
+      reserved_qty: toNumber(stock.reserved_qty),
+      reserved_weight: toNumber(stock.reserved_weight),
+      transit_qty: toNumber(stock.transit_qty),
+      transit_weight: toNumber(stock.transit_weight),
+      damaged_qty: toNumber(stock.damaged_qty),
+      damaged_weight: toNumber(stock.damaged_weight),
 
-    scanned_at: new Date(),
-  },
-});
+      qr_type: qr.isSecure ? "secure" : "plain",
+      qr_code_url: item.qr_code_url,
+
+      scanned_at: new Date(),
+    };
+
+    emitBillingScan({
+      organization_id: organizationId,
+      store_code:
+        req.user?.store_code ||
+        req.user?.store?.store_code ||
+        null,
+      session_id,
+      item: scannedItem,
+    });
+
     return res.status(200).json({
       success: true,
       message: "Item fetched successfully",
-      data: {
-        item_id: item.id,
-        sku_code: item.sku_code,
-        article_code: item.article_code,
-        product_code: item.article_code || item.sku_code,
-
-        item_name: item.item_name,
-        description: item.details || item.item_name,
-
-        metal_type: item.metal_type,
-        category: item.category,
-        purity: item.purity,
-        gross_weight: toNumber(item.gross_weight),
-        net_weight: netWeight,
-        stone_weight: toNumber(item.stone_weight),
-        stone_amount: toNumber(item.stone_amount),
-
-        rate,
-        purchase_rate: toNumber(item.purchase_rate),
-        sale_rate: toNumber(item.sale_rate),
-
-        making_charge_percent: makingPercent,
-        making_charge_value: Number(makingValue.toFixed(2)),
-        total_amount: Number(totalAmount.toFixed(2)),
-
-        hsn_code: item.hsn_code,
-        unit: item.unit,
-        current_status: item.current_status,
-
-        qty: 1,
-        available_qty: toNumber(stock.available_qty),
-        available_weight: toNumber(stock.available_weight),
-        reserved_qty: toNumber(stock.reserved_qty),
-        reserved_weight: toNumber(stock.reserved_weight),
-        transit_qty: toNumber(stock.transit_qty),
-        transit_weight: toNumber(stock.transit_weight),
-        damaged_qty: toNumber(stock.damaged_qty),
-        damaged_weight: toNumber(stock.damaged_weight),
-
-        qr_type: qr.isSecure ? "secure" : "plain",
-        qr_code_url: item.qr_code_url,
-      },
+      data: scannedItem,
     });
   } catch (error) {
     console.error("Scan Billing Item Error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch scanned item",

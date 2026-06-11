@@ -1,9 +1,6 @@
 // socket/billingSocket.js
 
 export const registerBillingSocket = (socket) => {
-  /**
-   * BILLING SESSION ROOM
-   */
   socket.on("join-billing-session", (roomName) => {
     try {
       if (!roomName) return;
@@ -17,59 +14,38 @@ export const registerBillingSocket = (socket) => {
 
       socket.join(cleanRoom);
 
-      console.log(
-        `Socket ${socket.id} joined ${cleanRoom}`
-      );
+      console.log(`Socket ${socket.id} joined ${cleanRoom}`);
 
       socket.emit("billing-session-joined", {
         success: true,
         room: cleanRoom,
         socket_id: socket.id,
       });
-
     } catch (error) {
-      console.error(
-        "join-billing-session error:",
-        error.message
-      );
+      console.error("join-billing-session error:", error.message);
     }
   });
 
-  /**
-   * BILLING STORE ROOM
-   */
   socket.on("join-billing-store", (storeCode) => {
     try {
       if (!storeCode) return;
 
-      const cleanStoreCode = String(storeCode)
-        .trim()
-        .toUpperCase();
-
+      const cleanStoreCode = String(storeCode).trim().toUpperCase();
       const roomName = `billing_store_${cleanStoreCode}`;
 
       socket.join(roomName);
 
-      console.log(
-        `Socket ${socket.id} joined ${roomName}`
-      );
+      console.log(`Socket ${socket.id} joined ${roomName}`);
 
       socket.emit("billing-store-joined", {
         success: true,
         room: roomName,
       });
-
     } catch (error) {
-      console.error(
-        "join-billing-store error:",
-        error.message
-      );
+      console.error("join-billing-store error:", error.message);
     }
   });
 
-  /**
-   * BILLING ORGANIZATION ROOM
-   */
   socket.on("join-billing-org", (organizationId) => {
     try {
       if (!organizationId) return;
@@ -78,65 +54,68 @@ export const registerBillingSocket = (socket) => {
 
       socket.join(roomName);
 
-      console.log(
-        `Socket ${socket.id} joined ${roomName}`
-      );
+      console.log(`Socket ${socket.id} joined ${roomName}`);
 
       socket.emit("billing-org-joined", {
         success: true,
         room: roomName,
       });
-
     } catch (error) {
-      console.error(
-        "join-billing-org error:",
-        error.message
-      );
+      console.error("join-billing-org error:", error.message);
     }
   });
 };
 
-/**
- * GLOBAL EMIT HELPER
- */
 export const emitBillingScan = ({
   organization_id,
   store_code,
+  session_id,
   item,
 }) => {
   try {
-    if (!global.io) return;
-
-    /**
-     * STORE ROOM EMIT
-     */
-    if (store_code) {
-      global.io
-        .to(`billing_store_${store_code}`)
-        .emit("billing-item-scanned", {
-          success: true,
-          store_code,
-          item,
-        });
+    if (!global.io) {
+      console.log("global.io not found");
+      return;
     }
 
-    /**
-     * ORG ROOM EMIT
-     */
+    const cleanStoreCode = store_code
+      ? String(store_code).trim().toUpperCase()
+      : null;
+
+    const cleanSessionId = session_id
+      ? String(session_id).trim()
+      : null;
+
+    const payload = {
+      success: true,
+      organization_id: organization_id || null,
+      store_code: cleanStoreCode,
+      session_id: cleanSessionId,
+      item,
+    };
+
+    if (cleanSessionId) {
+      global.io
+        .to(`billing_session_${cleanSessionId}`)
+        .emit("billing-item-scanned", payload);
+
+      console.log(
+        `billing-item-scanned emitted to billing_session_${cleanSessionId}`
+      );
+    }
+
+    if (cleanStoreCode) {
+      global.io
+        .to(`billing_store_${cleanStoreCode}`)
+        .emit("billing-item-scanned", payload);
+    }
+
     if (organization_id) {
       global.io
         .to(`billing_org_${organization_id}`)
-        .emit("billing-item-scanned", {
-          success: true,
-          organization_id,
-          item,
-        });
+        .emit("billing-item-scanned", payload);
     }
-
   } catch (error) {
-    console.error(
-      "emitBillingScan error:",
-      error.message
-    );
+    console.error("emitBillingScan error:", error.message);
   }
 };

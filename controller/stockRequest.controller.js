@@ -633,10 +633,10 @@ export const createStockRequest = async (req, res) => {
     });
   }
 };
-// ==========================================
-// STORE -> MY REQUESTS 
-// ==========================================
-// ==========================================
+/*
+Request flow:
+Store -> District (Request creation, approval, dispatch)
+  */
 const TRANSFER_ACTIVE_STATUSES = [
   "approved",
   "dispatched",
@@ -736,8 +736,28 @@ export const getMyStockRequests = async (req, res) => {
   try {
     const user = req.user;
 
+    const userOrgId = Number(user.organization_id);
+    const userStoreCode = String(user.store_code || user.storeCode || "")
+      .trim()
+      .toUpperCase();
+
     const whereCondition = {
-      created_by: user.id, // ✅ only logged-in user created requests
+      [Op.or]: [
+        // jo request user ne create ki
+        {
+          created_by: user.id,
+        },
+
+        // jo request user ke organization ko receive hui
+        {
+          to_organization_id: userOrgId,
+        },
+
+        // jo request user ke district/store code par receive hui
+        {
+          to_district_code: userStoreCode,
+        },
+      ],
     };
 
     const requests = await StockRequest.findAll({
@@ -785,7 +805,35 @@ export const getMyStockRequests = async (req, res) => {
     });
 
     const finalData = addTransferDirection(requests, user);
-    const summary = calculateStockRequestSummary(finalData);
+
+    const createdRequests = finalData.filter(
+      (reqItem) => Number(reqItem.created_by) === Number(user.id)
+    );
+
+    const receivedRequests = finalData.filter(
+      (reqItem) =>
+        Number(reqItem.to_organization_id) === userOrgId ||
+        String(reqItem.to_district_code || "").toUpperCase() === userStoreCode
+    );
+
+    const approvedRequests = finalData.filter((reqItem) =>
+      ["approved", "partially_approved", "completed"].includes(reqItem.status)
+    );
+
+    const transitGoods = finalData.filter(
+      (reqItem) =>
+        reqItem.transfer &&
+        ["dispatched", "in_transit"].includes(reqItem.transfer.status)
+    );
+
+    const summary = {
+      total_requests: finalData.length,
+      created_requests: createdRequests.length,
+      received_requests: receivedRequests.length,
+      approved_requests: approvedRequests.length,
+      low_stock_items: 0,
+      transit_goods: transitGoods.length,
+    };
 
     return res.status(200).json({
       success: true,

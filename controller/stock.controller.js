@@ -18,6 +18,7 @@ import { createActivityLog } from "../service/activity.service.js";
 // import {generateItemQR} from "../service/qrgen.js"
 import XLSX from "xlsx";
 import uploadToCloudinary from "../utils/uploadToCloudinary.js";
+import { InventoryTrackingService } from "../service/inventoryTracking.service.js";
 /* =========================================================
    HELPERS
 ========================================================= */
@@ -70,7 +71,6 @@ const generateItemQR = async (item) => {
 };
 const getCreatedKey = (model) =>
   pickAttr(model, ["created_at", "createdAt"]) || "id";
-
 
 export const getRetailInventory = async (req, res) => {
   try {
@@ -304,7 +304,7 @@ export const getRetailInventory = async (req, res) => {
     });
 
     // =================================================
-    // ✅ CATEGORY DUPLICACY REMOVE ONLY FOR RESPONSE DATA
+    //  CATEGORY DUPLICACY REMOVE ONLY FOR RESPONSE DATA
     // =================================================
 
     const seenCategories = new Set();
@@ -373,7 +373,7 @@ export const getRetailInventory = async (req, res) => {
 
         image_url: item.image_url,
 
-        // ✅ FIXED
+        //  FIXED
         total_category_items:
           categoryCounts[
             item.category || "Others"
@@ -1680,6 +1680,104 @@ export const stockSummary = async (req, res) => {
 /* =========================================================
    ADD STOCK IN
 ========================================================= */
+/* =========================================================
+   ADD STOCK IN
+========================================================= */
+
+const createStockInRootBatch = async (
+  {
+    item,
+    stock,
+    organization_id,
+    quantity,
+    weight,
+    remarks,
+    created_by,
+    source_type = "manual_stock_in",
+    source_reference_id = null,
+  },
+  { transaction }
+) => {
+  const batchNo = `BATCH-${item.article_code || item.sku_code || item.id}-${Date.now()}`;
+
+  const batchRows = await sequelize.query(
+    `
+    INSERT INTO public.inventory_batches (
+      batch_no,
+      organization_id,
+      item_id,
+      stock_record_id,
+      current_organization_id,
+      total_qty,
+      available_qty,
+      total_weight,
+      available_weight,
+      status,
+      remarks,
+      created_by,
+      root_batch_id,
+      parent_batch_id,
+      split_level,
+      is_leaf,
+      source_type,
+      source_reference_id,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      :batch_no,
+      :organization_id,
+      :item_id,
+      :stock_record_id,
+      :current_organization_id,
+      :total_qty,
+      :available_qty,
+      :total_weight,
+      :available_weight,
+      'created',
+      :remarks,
+      :created_by,
+      NULL,
+      NULL,
+      0,
+      true,
+      :source_type,
+      :source_reference_id,
+      NOW(),
+      NOW()
+    )
+    RETURNING *
+    `,
+    {
+      replacements: {
+        batch_no: batchNo,
+        organization_id,
+        item_id: item.id,
+        stock_record_id: stock?.id || null,
+        current_organization_id: organization_id,
+        total_qty: Number(quantity || 0),
+        available_qty: Number(quantity || 0),
+        total_weight: Number(weight || 0),
+        available_weight: Number(weight || 0),
+        remarks: remarks || "Stock inward root batch",
+        created_by: created_by || null,
+        source_type,
+        source_reference_id,
+      },
+      type: QueryTypes.SELECT,
+      transaction,
+    }
+  );
+
+  const batch = batchRows[0];
+
+  await InventoryTrackingService.ensureRootBatch(
+    { batch_id: batch.id },
+    { transaction }
+  );
+
+  return batch;
+};
 
 export const addStockIn = async (req, res) => {
   const t = await sequelize.transaction();
@@ -1693,16 +1791,21 @@ export const addStockIn = async (req, res) => {
 
     if (!user?.organization_id) {
       await t.rollback();
-
       return res.status(401).json({
         success: false,
         message: "Unauthorized user",
       });
     }
 
-    const cleanStoreCode = String(
-      user?.store_code || user?.storeCode || ""
-    )
+    if (!payloads.length) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Items are required",
+      });
+    }
+
+    const cleanStoreCode = String(user?.store_code || user?.storeCode || "")
       .trim()
       .toUpperCase();
 
@@ -1715,10 +1818,8 @@ export const addStockIn = async (req, res) => {
         item_id,
         item_name,
         item_code,
-
         metal_type,
         category,
-
         qty = 1,
         purchase_price = 0,
         selling_price = 0,
@@ -1729,215 +1830,136 @@ export const addStockIn = async (req, res) => {
         remarks,
       } = body;
 
-      // ==========================================
-      // IMAGE UPLOAD
-      // ==========================================
-
-      let uploadedImage = null;
-
-if (
-  req.files &&
-  req.files[index]
-) {
-
-  uploadedImage =
-    await uploadToCloudinary(
-      req.files[index],
-      "inventory/items"
-    );
-
-}
       const incomingQty = Number(qty);
+      const incomingWeight = Number(net_weight);
+      const incomingStoneWeight = Number(stone_weight || 0);
+      const purchaseRate = Number(purchase_price || 0);
+      const saleRate = Number(selling_price || 0);
+      const makingChargeValue = Number(making_charge || 0);
+      const cleanItemId = item_id ? Number(item_id) : null;
 
-      const incomingWeight =
-        Number(net_weight);
+      if (!Number.isFinite(incomingQty) || incomingQty <= 0) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Quantity must be greater than 0",
+        });
+      }
 
-      const incomingStoneWeight =
-        Number(stone_weight || 0);
+      if (!Number.isFinite(incomingWeight) || incomingWeight < 0) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Net weight cannot be negative",
+        });
+      }
 
-      const purchaseRate = Number(
-        purchase_price || 0
-      );
+      if (!Number.isFinite(incomingStoneWeight) || incomingStoneWeight < 0) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Stone weight cannot be negative",
+        });
+      }
 
-      const saleRate = Number(
-        selling_price || 0
-      );
+      let imageUrl = null;
+      let imagePublicId = null;
 
-      const makingChargeValue =
-        Number(making_charge || 0);
+      if (req.files && req.files[index]) {
+        const uploadedImage = await uploadToCloudinary(req.files[index]);
 
-      const cleanItemId = item_id
-        ? Number(item_id)
-        : null;
+        imageUrl = uploadedImage?.secure_url || uploadedImage?.url || null;
+        imagePublicId = uploadedImage?.public_id || null;
+      }
 
-      let item;
-
-      // ==========================================
-      // EXISTING ITEM
-      // ==========================================
+      let item = null;
 
       if (cleanItemId) {
         item = await Item.findOne({
           where: {
             id: cleanItemId,
-            ...(user.role !==
-              "super_admin" && {
-              organization_id:
-                user.organization_id,
-            }),
+            organization_id: user.organization_id,
           },
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
-
-        if (!item) {
-          await t.rollback();
-
-          return res.status(404).json({
-            success: false,
-            message: "Item not found",
-          });
-        }
       }
 
-      // ==========================================
-      // NEW ITEM
-      // ==========================================
-
-      else {
-        const articleCode = item_code
-          ? String(item_code)
-              .trim()
-              .toUpperCase()
-          : `ART-${cleanStoreCode}-${Date.now()}-${Math.floor(
-              1000 +
-                Math.random() * 9000
-            )}`;
-
-        const duplicateItem =
-          await Item.findOne({
-            where: {
-              article_code:
-                articleCode,
-              organization_id:
-                user.organization_id,
-            },
-            transaction: t,
-          });
-
-        if (duplicateItem) {
+      if (!item) {
+        if (!item_name || !metal_type || !category || !purity) {
           await t.rollback();
-
-          return res.status(409).json({
+          return res.status(400).json({
             success: false,
             message:
-              "Duplicate item code or SKU code already exists",
-            errors: [
-              {
-                field:
-                  "article_code",
-                message:
-                  "article_code must be unique",
-                value:
-                  articleCode,
-              },
-            ],
+              "item_name, metal_type, category and purity are required for new item",
           });
         }
 
-        const skuCode = `SKU-${cleanStoreCode}-${Date.now()}-${Math.floor(
-          1000 + Math.random() * 9000
-        )}`;
+        const articleCode =
+          item_code ||
+          `ART-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+        const skuCode =
+          item_code ||
+          `SKU-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
         item = await Item.create(
           {
-            item_name:
-              String(item_name).trim(),
-
-            article_code:
-              articleCode,
-
+            item_name: String(item_name).trim(),
+            article_code: articleCode,
             sku_code: skuCode,
 
             metal_type,
-            category,
+            category: String(category).trim(),
 
-            purchase_rate:
-              purchaseRate,
+            purchase_rate: purchaseRate,
+            sale_rate: saleRate,
+            making_charge: makingChargeValue,
+            purity: String(purity).trim(),
 
-            sale_rate:
-              saleRate,
+            net_weight: incomingWeight,
+            gross_weight: incomingWeight + incomingStoneWeight,
+            stone_weight: incomingStoneWeight,
 
-            making_charge:
-              makingChargeValue,
+            current_status: "in_stock",
 
-            purity,
+            organization_id: user.organization_id,
+            storeCode: cleanStoreCode || user.store_code || null,
 
-            net_weight:
-              incomingWeight,
-
-            gross_weight:
-              incomingWeight +
-              incomingStoneWeight,
-
-            stone_weight:
-              incomingStoneWeight,
-
-            current_status:
-              "in_stock",
-
-            organization_id:
-              user.organization_id,
-
-            storeCode:
-              cleanStoreCode,
-
-            storeName:
-              user.store_name ||
-              user.storeName ||
-              null,
-
-            // ==========================================
-            // IMAGE
-            // ==========================================
-
-            image_url:
-              uploadedImage?.secure_url ||
-              null,
-
-            image_public_id:
-              uploadedImage?.public_id ||
-              null,
+            image_url: imageUrl,
+            image_public_id: imagePublicId,
           },
           { transaction: t }
         );
 
-        const qr =
-          await generateItemQR(
-            item
-          );
+        const qr = await generateItemQR(item);
+
+        if (!qr?.qr_code_value || !qr?.qr_code_url) {
+          throw new Error("QR generation failed");
+        }
 
         await item.update(
           {
-            qr_code_value:
-              qr.qr_code_value,
-
-            qr_code_url:
-              qr.qr_code_url,
+            qr_code_value: qr.qr_code_value,
+            qr_code_url: qr.qr_code_url,
           },
           { transaction: t }
         );
-      }
+      } else {
+        const updateItemData = {
+          current_status: "in_stock",
+        };
 
-      // ==========================================
-      // STOCK
-      // ==========================================
+        if (imageUrl) updateItemData.image_url = imageUrl;
+        if (imagePublicId) updateItemData.image_public_id = imagePublicId;
+
+        await item.update(updateItemData, { transaction: t });
+      }
 
       let stock = await Stock.findOne({
         where: {
           item_id: item.id,
-          organization_id:
-            item.organization_id,
+          organization_id: item.organization_id,
         },
         transaction: t,
         lock: t.LOCK.UPDATE,
@@ -1946,102 +1968,130 @@ if (
       if (!stock) {
         stock = await Stock.create(
           {
-            organization_id:
-              item.organization_id,
-
+            organization_id: item.organization_id,
             item_id: item.id,
 
-            store_code:
-              cleanStoreCode,
+            store_code: cleanStoreCode || null,
 
             available_qty: 0,
             available_weight: 0,
 
             reserved_qty: 0,
+            reserved_weight: 0,
+
             transit_qty: 0,
+            transit_weight: 0,
+
             damaged_qty: 0,
+            damaged_weight: 0,
+
+            dead_qty: 0,
+            dead_weight: 0,
           },
           { transaction: t }
         );
       }
 
-      const previousAvailableQty =
-        Number(stock.available_qty || 0);
+      const previousAvailableQty = Number(stock.available_qty || 0);
+      const previousAvailableWeight = Number(stock.available_weight || 0);
 
-      const previousAvailableWeight =
-        Number(
-          stock.available_weight || 0
-        );
-
-      const newAvailableQty =
-        previousAvailableQty +
-        incomingQty;
-
-      const newAvailableWeight =
-        previousAvailableWeight +
-        incomingWeight;
+      const newAvailableQty = previousAvailableQty + incomingQty;
+      const newAvailableWeight = previousAvailableWeight + incomingWeight;
 
       await stock.update(
         {
-          available_qty:
-            newAvailableQty,
-
-          available_weight:
-            newAvailableWeight,
-
-          store_code:
-            cleanStoreCode,
+          available_qty: newAvailableQty,
+          available_weight: newAvailableWeight,
+          store_code: cleanStoreCode || stock.store_code || null,
         },
         { transaction: t }
       );
+
+      const previousStatus = item.current_status || null;
 
       await item.update(
         {
-          current_status:
-            "in_stock",
+          current_status: "in_stock",
         },
         { transaction: t }
       );
 
-      await StockMovement.create(
+      const movement = await StockMovement.create(
         {
           item_id: item.id,
+          organization_id: item.organization_id,
+          store_code: cleanStoreCode || null,
 
-          organization_id:
-            item.organization_id,
-
-          store_code:
-            cleanStoreCode,
-
-          movement_type:
-            "purchase",
+          movement_type: "purchase",
 
           qty: incomingQty,
+          weight: incomingWeight,
 
-          weight:
-            incomingWeight,
+          previous_status: previousStatus,
+          new_status: "in_stock",
 
-          previous_status:
-            item.current_status,
+          reference_type: "manual_stock_in",
+          reference_id: item.id,
+          reference_no: item.article_code,
 
-          new_status:
-            "in_stock",
+          remarks: remarks || "Stock inward completed",
+          created_by: user?.id || null,
+        },
+        { transaction: t }
+      );
 
-          reference_type:
-            "manual_stock_in",
+      const batch = await createStockInRootBatch(
+        {
+          item,
+          stock,
+          organization_id: item.organization_id,
+          quantity: incomingQty,
+          weight: incomingWeight,
+          remarks: remarks || "Manual stock inward root batch",
+          created_by: user?.id || null,
+          source_type: "manual_stock_in",
+          source_reference_id: movement.id,
+        },
+        { transaction: t }
+      );
 
-          reference_id:
-            item.id,
+      await createActivityLog({
+        organization_id: item.organization_id,
+        user_id: user?.id || null,
+        module: "stock",
+        action: "stock_in",
+        entity_type: "item",
+        entity_id: item.id,
+        title: "Stock inward completed",
+        description: `${item.item_name} stock inward completed`,
+        metadata: {
+          item_id: item.id,
+          stock_id: stock.id,
+          movement_id: movement.id,
+          batch_id: batch.id,
+          qty: incomingQty,
+          weight: incomingWeight,
+          store_code: cleanStoreCode,
+        },
+      });
 
-          reference_no:
-            item.article_code,
-
-          remarks:
-            remarks ||
-            "Stock inward completed",
-
-          created_by:
-            user?.id || null,
+      await SystemActivity.create(
+        {
+          organization_id: item.organization_id,
+          user_id: user?.id || null,
+          module: "stock",
+          action: "stock_in",
+          title: "Stock inward completed",
+          description: `${item.item_name} inward stock added`,
+          metadata: {
+            item_id: item.id,
+            stock_id: stock.id,
+            movement_id: movement.id,
+            batch_id: batch.id,
+            qty: incomingQty,
+            weight: incomingWeight,
+            store_code: cleanStoreCode,
+          },
         },
         { transaction: t }
       );
@@ -2050,16 +2100,12 @@ if (
         item,
         stock: {
           ...stock.toJSON(),
-
-          available_qty:
-            newAvailableQty,
-
-          available_weight:
-            newAvailableWeight,
-
-          store_code:
-            cleanStoreCode,
+          available_qty: newAvailableQty,
+          available_weight: newAvailableWeight,
+          store_code: cleanStoreCode || null,
         },
+        movement,
+        batch,
       });
     }
 
@@ -2067,26 +2113,17 @@ if (
 
     return res.status(200).json({
       success: true,
-      message:
-        "Stock inward successful",
-
-      data:
-        payloads.length === 1
-          ? responseData[0]
-          : responseData,
+      message: "Stock inward successful",
+      data: payloads.length === 1 ? responseData[0] : responseData,
     });
   } catch (error) {
     await t.rollback();
 
-    console.error(
-      "addStockIn error:",
-      error
-    );
+    console.error("addStockIn error:", error);
 
     return res.status(500).json({
       success: false,
-      message:
-        "Failed to add stock inward",
+      message: "Failed to add stock inward",
       error: error.message,
     });
   }

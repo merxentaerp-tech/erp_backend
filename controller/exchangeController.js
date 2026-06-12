@@ -1,8 +1,27 @@
-import sequelize from "../config/db.js";
+// import sequelize from "../config/db.js";
 import { QueryTypes } from "sequelize";
 // import SystemActivity from "../model/systemActivity.js";
 // import ActivityLog from "../model/activityLog.js";
-
+import { Op } from "sequelize";
+// import Item from "../model/Item.js";
+// import Stock from "../model/Stock.js";
+import fs from "fs";
+import path from "path";
+import PDFDocument from "pdfkit";
+// import { Op } from "sequelize";
+// import crypto from "crypto";
+import Bill from "../model/Bill.js";
+import BillItem from "../model/BillItem.js";
+import Customer from "../model/Customer.js";
+import Invoice from "../model/invoices.js";
+import InvoiceItem from "../model/InvoiceItem.js";
+import LedgerEntry from "../model/LedgerEntry.js";
+import Store from "../model/Store.js";
+import Stock from "../model/stockrecord.js";
+import StockMovement from "../model/stockmovement.js"
+import Item from "../model/item.js";
+import sequelize from "../config/db.js";
+import { emitBillingScan } from "../socket/billingSocket.js";
 // ==============================
 //  GET INVOICE FOR EXCHANGE
 // ==============================
@@ -614,5 +633,219 @@ export const getExchangeDashboard = async (req, res) => {
 
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+};
+import crypto from "crypto";
+const toNumber = (value) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+};
+
+const QR_SECRET = process.env.QR_SECRET || "change-this-secret";
+
+const verifyQRPayload = (qrText) => {
+  try {
+    const parsed = JSON.parse(qrText);
+
+    if (!parsed?.payload || !parsed?.signature) {
+      return {
+        isSecure: false,
+        code: qrText,
+      };
+    }
+
+    const expectedSignature = crypto
+      .createHmac("sha256", QR_SECRET)
+      .update(JSON.stringify(parsed.payload))
+      .digest("hex");
+
+    if (parsed.signature !== expectedSignature) {
+      return {
+        isSecure: true,
+        valid: false,
+        message: "Invalid QR signature",
+      };
+    }
+
+    return {
+      isSecure: true,
+      valid: true,
+      payload: parsed.payload,
+      code: parsed.payload.code,
+      item_id: parsed.payload.item_id,
+      organization_id: parsed.payload.organization_id,
+    };
+  } catch (error) {
+    return {
+      isSecure: false,
+      code: qrText,
+    };
+  }
+};
+export const scanBillingItem = async (req, res) => {
+  try {
+    const rawCode = String(req.params.code || "").trim();
+    const organizationId = req.user?.organization_id;
+
+    if (!rawCode) {
+      return res.status(400).json({
+        success: false,
+        message: "QR/Barcode code is required",
+      });
+    }
+
+    if (!organizationId) {
+      return res.status(401).json({
+        success: false,
+        message: "organization_id missing in token",
+      });
+    }
+
+    // Verify QR / Barcode
+    const qr = verifyQRPayload(rawCode);
+
+    if (qr.isSecure && qr.valid === false) {
+      return res.status(400).json({
+        success: false,
+        message: qr.message || "Invalid QR",
+      });
+    }
+
+    // Organization validation
+    if (
+      qr.isSecure &&
+      qr.organization_id &&
+      String(qr.organization_id) !== String(organizationId)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "This QR does not belong to your organization",
+      });
+    }
+
+    // Item search condition
+    const whereCondition = {
+      organization_id: organizationId,
+      current_status: "in_stock",
+      is_active: true,
+    };
+
+    if (qr.item_id) {
+      whereCondition.id = qr.item_id;
+    } else {
+      whereCondition[Op.or] = [
+        { sku_code: qr.code },
+        { article_code: qr.code },
+      ];
+    }
+
+    // Find Item
+    const item = await Item.findOne({
+      where: whereCondition,
+    });
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Item not found for this QR code",
+      });
+    }
+
+    // Find Stock
+    const stock = await Stock.findOne({
+      where: {
+        item_id: item.id,
+        organization_id: organizationId,
+      },
+    });
+
+    if (!stock) {
+      return res.status(404).json({
+        success: false,
+        message: "Stock not found for this item in your store",
+      });
+    }
+
+    if (toNumber(stock.available_qty) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Item is out of stock",
+      });
+    }
+
+    // Price Calculation
+    const netWeight = toNumber(item.net_weight);
+    const rate = toNumber(item.sale_rate);
+    const makingPercent = toNumber(item.making_charge);
+
+    const metalValue = netWeight * rate;
+    const makingValue = (metalValue * makingPercent) / 100;
+    const totalAmount = metalValue + makingValue;
+
+    // Response Object
+    const scannedItem = {
+      item_id: item.id,
+
+      sku_code: item.sku_code,
+      article_code: item.article_code,
+      product_code: item.article_code || item.sku_code,
+
+      item_name: item.item_name,
+      description: item.details || item.item_name,
+
+      metal_type: item.metal_type,
+      category: item.category,
+      purity: item.purity,
+
+      gross_weight: toNumber(item.gross_weight),
+      net_weight: netWeight,
+      stone_weight: toNumber(item.stone_weight),
+      stone_amount: toNumber(item.stone_amount),
+
+      rate,
+      purchase_rate: toNumber(item.purchase_rate),
+      sale_rate: toNumber(item.sale_rate),
+
+      making_charge_percent: makingPercent,
+      making_charge_value: Number(makingValue.toFixed(2)),
+      total_amount: Number(totalAmount.toFixed(2)),
+
+      hsn_code: item.hsn_code,
+      unit: item.unit,
+      current_status: item.current_status,
+
+      qty: 1,
+
+      available_qty: toNumber(stock.available_qty),
+      available_weight: toNumber(stock.available_weight),
+
+      reserved_qty: toNumber(stock.reserved_qty),
+      reserved_weight: toNumber(stock.reserved_weight),
+
+      transit_qty: toNumber(stock.transit_qty),
+      transit_weight: toNumber(stock.transit_weight),
+
+      damaged_qty: toNumber(stock.damaged_qty),
+      damaged_weight: toNumber(stock.damaged_weight),
+
+      qr_type: qr.isSecure ? "secure" : "plain",
+      qr_code_url: item.qr_code_url,
+
+      scanned_at: new Date(),
+    };
+
+    return res.status(200).json({
+      success: true,
+      message: "Item fetched successfully",
+      data: scannedItem,
+    });
+  } catch (error) {
+    console.error("Scan Billing Item Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch scanned item",
+      error: error.message,
+    });
   }
 };

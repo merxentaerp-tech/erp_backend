@@ -1088,10 +1088,10 @@ export const scanBillingItem = async (req, res) => {
     const organizationId = req.user?.organization_id;
 
     const session_id =
-      req.headers["x-billing-session-id"] ||
-      req.body.session_id ||
-      req.query.session_id ||
-      null;
+  req.headers["x-billing-session-id"] ||
+  req.body?.session_id ||
+  req.query?.session_id ||
+  null;
 
     if (!rawCode) {
       return res.status(400).json({
@@ -1230,6 +1230,8 @@ export const scanBillingItem = async (req, res) => {
       scanned_at: new Date(),
     };
 
+   try {
+  if (session_id) {
     emitBillingScan({
       organization_id: organizationId,
       store_code:
@@ -1239,6 +1241,10 @@ export const scanBillingItem = async (req, res) => {
       session_id,
       item: scannedItem,
     });
+  }
+} catch (socketError) {
+  console.error("Billing socket emit error:", socketError.message);
+}
 
     return res.status(200).json({
       success: true,

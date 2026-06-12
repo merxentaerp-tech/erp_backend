@@ -222,7 +222,7 @@ const parseItemsFromBody = (body = {}) => {
 
   const indexedItems = [];
 
-  Object.keys(body || {}).forEach((key) => {
+  Object.keys(body || {}).forEach((key) => { 
     const match = key.match(/^items\[(\d+)\]\[(.+)\]$/);
 
     if (!match) return;
@@ -362,8 +362,6 @@ export const getAvailableStockForRequest = async (req, res) => {
   }
 };
 // helper
-
-
 
 
 export const createStockRequest = async (req, res) => {
@@ -635,6 +633,105 @@ export const createStockRequest = async (req, res) => {
     });
   }
 };
+// ==========================================
+// STORE -> MY REQUESTS 
+// ==========================================
+// ==========================================
+const TRANSFER_ACTIVE_STATUSES = [
+  "approved",
+  "dispatched",
+  "in_transit",
+  "received",
+];
+
+const APPROVED_REQUEST_STATUSES = [
+  "approved",
+  "partially_approved",
+  "completed",
+];
+
+const LOW_STOCK_THRESHOLD = 5;
+
+const calculateStockRequestSummary = (requests = []) => {
+  let totalRequests = requests.length;
+  let approvedRequests = 0;
+  let transitGoods = 0;
+  let lowStockItems = 0;
+
+  for (const reqRow of requests) {
+    const row = reqRow.toJSON ? reqRow.toJSON() : reqRow;
+
+    const requestStatus = String(row.status || "").toLowerCase();
+    const transferStatus = String(row.transfer?.status || "").toLowerCase();
+
+    if (APPROVED_REQUEST_STATUSES.includes(requestStatus)) {
+      approvedRequests += 1;
+    }
+
+    const requestItems = Array.isArray(row.request_items)
+      ? row.request_items
+      : [];
+
+    for (const itemRow of requestItems) {
+      const qty = Number(
+        itemRow.approved_qty ||
+          itemRow.request_qty ||
+          itemRow.qty ||
+          itemRow.quantity ||
+          0
+      );
+
+      if (row.transfer && TRANSFER_ACTIVE_STATUSES.includes(transferStatus)) {
+        transitGoods += qty;
+      }
+
+      if (qty > 0 && qty <= LOW_STOCK_THRESHOLD) {
+        lowStockItems += 1;
+      }
+    }
+  }
+
+  return {
+    total_requests: totalRequests,
+    approved_requests: approvedRequests,
+    low_stock_items: lowStockItems,
+    transit_goods: transitGoods,
+  };
+};
+
+const addTransferDirection = (rows = [], user) => {
+  return rows.map((row) => {
+    const item = row.toJSON ? row.toJSON() : row;
+
+    const transferStatus = String(item.transfer?.status || "").toLowerCase();
+
+    const isSender =
+      Number(item.from_organization_id) === Number(user.organization_id);
+
+    const isReceiver =
+      Number(item.to_organization_id) === Number(user.organization_id);
+
+    let movement_type = "unknown";
+
+    if (isSender && transferStatus === "in_transit") {
+      movement_type = "in_transit_send";
+    } else if (isReceiver && transferStatus === "in_transit") {
+      movement_type = "in_transit_receive";
+    } else if (isSender) {
+      movement_type = "send";
+    } else if (isReceiver) {
+      movement_type = "receive";
+    }
+
+    return {
+      ...item,
+      movement_type,
+      is_sent: isSender,
+      is_received: isReceiver,
+    };
+  });
+};
+
 export const getMyStockRequests = async (req, res) => {
   try {
     const user = req.user;
@@ -757,32 +854,12 @@ export const getReceivedStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-const finalData = await Promise.all(
-  addTransferDirection(requests, user).map(async (row) => {
-    const forwardedRequest = await StockRequest.findOne({
-      where: {
-        parent_request_id: row.id,
-        request_source: "district_to_retail_forwarded",
-      },
-      attributes: ["id", "request_no"],
+    const finalData = addTransferDirection(requests, user).map((row) => {
+      return {
+        ...row,
+        request_type: "received",
+      };
     });
-
-    return {
-      ...row,
-
-      movement_type: forwardedRequest
-        ? "transferred_request"
-        : row.movement_type,
-
-      is_transferred: !!forwardedRequest,
-
-      transferred_request_id: forwardedRequest?.id || null,
-      transferred_request_no: forwardedRequest?.request_no || null,
-
-      request_type: "received",
-    };
-  })
-);
 
     const summary = calculateStockRequestSummary(finalData);
 
@@ -4773,7 +4850,6 @@ export const getRetailStoresUnderDistrict = async (req, res) => {
 
 
 
-
 const makeForwardRequestNo = (headOrgId, districtOrgId) => {
   return `REQ-FWD-${headOrgId}-${districtOrgId}-${Date.now()}`;
 };
@@ -4909,21 +4985,14 @@ export const forwardRequestToDistrictDirectDelivery = async (req, res) => {
      * Original request must be received by Head Office.
      * Do not use include with FOR UPDATE.
      */
-const originalRequest = await StockRequest.findOne({
-  where: {
-    id: cleanRequestId,
-    [Op.or]: [
-      {
+    const originalRequest = await StockRequest.findOne({
+      where: {
+        id: cleanRequestId,
         to_organization_id: user.organization_id,
       },
-      {
-        from_organization_id: user.organization_id,
-      },
-    ],
-  },
-  transaction: t,
-  lock: t.LOCK.UPDATE,
-});
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
 
     if (!originalRequest) {
       await t.rollback();
@@ -5272,53 +5341,51 @@ const originalRequest = await StockRequest.findOne({
 
     await t.commit();
 
-   return res.status(201).json({
-  success: true,
-  message: "District request transferred to retail successfully",
-  data: {
-    original_request: {
-      id: request.id,
-      request_no: request.request_no,
-      parent_request_id: request.parent_request_id,
-      request_source: request.request_source,
-      status: request.status,
-      from_organization_id: request.from_organization_id,
-      to_organization_id: request.to_organization_id,
-    },
+    return res.status(201).json({
+      success: true,
+      message: "Head to district request transferred successfully",
+      data: {
+        original_request: {
+          id: originalRequest.id,
+          request_no: originalRequest.request_no,
+          status: originalRequest.status,
+        },
+        forwarded_request: {
+          id: forwardedRequest.id,
+          request_no: forwardedRequest.request_no,
+          parent_request_id: forwardedRequest.parent_request_id,
+          request_source: forwardedRequest.request_source,
 
-    forwarded_request: {
-      id: forwardedRequest.id,
-      request_no: forwardedRequest.request_no,
-      parent_request_id: forwardedRequest.parent_request_id,
-      request_source: forwardedRequest.request_source,
+          from_organization_id: forwardedRequest.from_organization_id,
+          from_store_code: forwardedRequest.from_store_code,
+          from_store_name: forwardedRequest.from_store_name,
 
-      from_organization_id: forwardedRequest.from_organization_id,
-      from_store_code: forwardedRequest.from_store_code,
-      from_store_name: forwardedRequest.from_store_name,
+          /**
+           * This will now match old received API/user mapping.
+           * Example: North Delhi = 7
+           */
+          to_organization_id: forwardedRequest.to_organization_id,
 
-      to_organization_id: forwardedRequest.to_organization_id,
-      to_store_code: retailStore.store_code,
-      to_store_name: retailStore.store_name,
+          /**
+           * Actual district office details.
+           * Example: DST004 / District Office North Delhi
+           */
+          actual_district_store_id: selectedDistrict.id,
+          to_store_code:
+            forwardedRequest.to_store_code || forwardedRequest.to_district_code,
+          to_store_name:
+            forwardedRequest.to_store_name || forwardedRequest.to_district_name,
 
-      district_id: districtStore.district_id,
+          final_to_organization_id: forwardedRequest.final_to_organization_id,
+          final_to_store_code: forwardedRequest.final_to_store_code,
+          final_to_store_name: forwardedRequest.final_to_store_name,
+          final_to_address: forwardedRequest.final_to_address,
 
-      forwarded_by: forwardedRequest.forwarded_by,
-      forwarded_at: forwardedRequest.forwarded_at,
-
-      notes: forwardedRequest.notes,
-      status: forwardedRequest.status,
-
-      total_items: childItems.length,
-
-      items: childItems.map((item) => ({
-        item_id: item.item_id,
-        request_qty: item.request_qty,
-        approved_qty: item.approved_qty,
-        status: item.status,
-      })),
-    },
-  },
-});
+          status: forwardedRequest.status,
+          total_items: childItems.length,
+        },
+      },
+    });
   } catch (error) {
     await t.rollback();
 

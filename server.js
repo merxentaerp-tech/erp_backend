@@ -63,6 +63,7 @@ allowedHeaders: [
       "x-store-code",
       "organization_id",
       "x-organization-id",
+      "x-billing-session-id",
     ],
 
   credentials: true,

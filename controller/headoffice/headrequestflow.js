@@ -2114,7 +2114,30 @@ export const getAvailableStoresForHeadRequest = async (req, res) => {
           ],
         })
       : [];
+    const batchRows = await sequelize.query(
+  `
+  SELECT
+    item_id,
+    id AS parent_batch_id,
+    root_batch_id,
+    batch_no
+  FROM inventory_batches
+  WHERE
+    parent_batch_id IS NULL
+    OR parent_batch_id = root_batch_id
+  `,
+  {
+    type: sequelize.QueryTypes.SELECT,
+  }
+);
 
+const batchMap = new Map();
+
+for (const batch of batchRows) {
+  if (!batchMap.has(Number(batch.item_id))) {
+    batchMap.set(Number(batch.item_id), batch);
+  }
+}
     const inventoryMap = new Map();
 
     for (const item of items) {
@@ -2162,6 +2185,21 @@ export const getAvailableStoresForHeadRequest = async (req, res) => {
         item_name: plainItem.item_name,
         article_code: plainItem.article_code,
         sku_code: plainItem.sku_code,
+          parent_batch_id:
+    batchMap.get(Number(plainItem.id))
+      ?.parent_batch_id || null,
+
+  root_batch_id:
+    batchMap.get(Number(plainItem.id))
+      ?.root_batch_id || null,
+
+  batch_id:
+    batchMap.get(Number(plainItem.id))
+      ?.parent_batch_id || null,
+
+  batch_no:
+    batchMap.get(Number(plainItem.id))
+      ?.batch_no || null,
         category: plainItem.category,
         metal_type: plainItem.metal_type,
         purity: plainItem.purity,

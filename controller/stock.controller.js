@@ -323,7 +323,30 @@ export const getRetailInventory = async (req, res) => {
       seenCategories.add(categoryKey);
       return true;
     });
+const batchMap = {};
 
+const batches = await sequelize.query(
+  `
+  SELECT
+    item_id,
+    id AS parent_batch_id,
+    root_batch_id,
+    batch_no
+  FROM inventory_batches
+  WHERE
+    parent_batch_id IS NULL
+    OR parent_batch_id = root_batch_id
+  `,
+  {
+    type: sequelize.QueryTypes.SELECT,
+  }
+);
+
+for (const batch of batches) {
+  if (!batchMap[batch.item_id]) {
+    batchMap[batch.item_id] = batch;
+  }
+}
     const data = filteredItems.map((item) => {
       const stocks = Array.isArray(item.stocks)
         ? item.stocks
@@ -368,7 +391,21 @@ export const getRetailInventory = async (req, res) => {
         article_code: item.article_code,
 
         sku_code: item.sku_code,
+        parent_batch_id:
+  batchMap[item.id]?.parent_batch_id ||
+  null,
 
+root_batch_id:
+  batchMap[item.id]?.root_batch_id ||
+  null,
+
+batch_id:
+  batchMap[item.id]?.parent_batch_id ||
+  null,
+
+batch_no:
+  batchMap[item.id]?.batch_no ||
+  null,
         category: item.category,
 
         image_url: item.image_url,
@@ -1932,19 +1969,45 @@ export const addStockIn = async (req, res) => {
           { transaction: t }
         );
 
-        const qr = await generateItemQR(item);
+        let qr = {
+          qr_code_value: item.sku_code,
+          qr_code_url: null,
+        };
 
-        if (!qr?.qr_code_value || !qr?.qr_code_url) {
-          throw new Error("QR generation failed");
+        try {
+          qr = await generateItemQR({
+            ...item.toJSON(),
+            qr_code_value: item.sku_code,
+            sku_code: item.sku_code,
+            article_code: item.article_code,
+            product_code: item.article_code,
+          });
+
+          await item.update(
+            {
+              qr_code_value: item.sku_code,
+              qr_code_url: qr.qr_code_url,
+            },
+            { transaction: t }
+          );
+
+          qr.qr_code_value = item.sku_code;
+        } catch (qrErr) {
+          console.error("QR generation failed:", qrErr.message);
+
+          await item.update(
+            {
+              qr_code_value: item.sku_code,
+              qr_code_url: null,
+            },
+            { transaction: t }
+          );
+
+          qr = {
+            qr_code_value: item.sku_code,
+            qr_code_url: null,
+          };
         }
-
-        await item.update(
-          {
-            qr_code_value: qr.qr_code_value,
-            qr_code_url: qr.qr_code_url,
-          },
-          { transaction: t }
-        );
       } else {
         const updateItemData = {
           current_status: "in_stock",

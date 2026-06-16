@@ -773,7 +773,7 @@ export const createBill = async (req, res) => {
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
 
-     status: dueAmount > 0 ? "PARTIAL" : "PAID",
+        status: dueAmount > 0 ? "PARTIAL" : "PAID",
 payment_status: dueAmount > 0 ? "PARTIAL" : "PAID",
 
         notes,
@@ -806,32 +806,33 @@ payment_status: dueAmount > 0 ? "PARTIAL" : "PAID",
 
       // ✅ NEW: invoice item create with bill item
       await InvoiceItem.create(
-        {
-          invoice_id: invoice.id,
-          item_id: row.item_id,
+{
+  invoice_id: invoice.id,
+  item_id: row.item_id,
 
-          product_code: row.product_code,
-          item_name: row.item_name,
-          description: row.description,
+  product_code: row.product_code,
 
-          qty: row.qty,
-          unit: row.unit,
+  product_name:
+    row.item_name ||
+    row.description ||
+    row.product_code ||
+    "Product",
 
-          metal_type: row.metal_type,
-          category: row.category,
-          purity: row.purity,
+  description: row.description,
 
-          gross_weight: row.gross_weight,
-          net_weight: row.net_weight,
-          stone_weight: row.stone_weight,
+  purity: row.purity,
 
-          rate: row.rate,
-          making_charge_percent: row.making_charge_percent,
-          making_charge_value: Number(row.making_charge_value.toFixed(2)),
-          total_amount: Number(row.total_amount.toFixed(2)),
-        },
-        { transaction: t }
-      );
+  gross_weight: row.gross_weight,
+  net_weight: row.net_weight,
+  stone_weight: row.stone_weight,
+
+  rate: row.rate,
+  making_charge_percent: row.making_charge_percent,
+
+  total_amount: Number(row.total_amount.toFixed(2)),
+},
+{ transaction: t }
+);
 
       await row.stock.update(
         {

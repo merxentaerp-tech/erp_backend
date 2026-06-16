@@ -773,8 +773,8 @@ export const createBill = async (req, res) => {
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
 
-        status: dueAmount > 0 ? "partial" : "paid",
-        payment_status: dueAmount > 0 ? "partial" : "paid",
+     status: dueAmount > 0 ? "PARTIAL" : "PAID",
+payment_status: dueAmount > 0 ? "PARTIAL" : "PAID",
 
         notes,
         created_by: req.user?.id || null,

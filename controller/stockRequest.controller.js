@@ -741,19 +741,45 @@ export const getMyStockRequests = async (req, res) => {
       .trim()
       .toUpperCase();
 
+    // ==========================================
+    // BATCH MAP (ADDED)
+    // ==========================================
+
+    const batchRows = await sequelize.query(
+      `
+      SELECT
+        item_id,
+        id AS parent_batch_id,
+        root_batch_id,
+        batch_no
+      FROM inventory_batches
+      WHERE
+        parent_batch_id IS NULL
+        OR parent_batch_id = root_batch_id
+      `,
+      {
+        type: sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    const batchMap = new Map();
+
+    for (const batch of batchRows) {
+      if (!batchMap.has(Number(batch.item_id))) {
+        batchMap.set(Number(batch.item_id), batch);
+      }
+    }
+
     const whereCondition = {
       [Op.or]: [
-        // jo request user ne create ki
         {
           created_by: user.id,
         },
 
-        // jo request user ke organization ko receive hui
         {
           to_organization_id: userOrgId,
         },
 
-        // jo request user ke district/store code par receive hui
         {
           to_district_code: userStoreCode,
         },
@@ -806,28 +832,61 @@ export const getMyStockRequests = async (req, res) => {
 
     const finalData = addTransferDirection(requests, user);
 
-    const createdRequests = finalData.filter(
-      (reqItem) => Number(reqItem.created_by) === Number(user.id)
+    // ==========================================
+    // PARENT BATCH DETAILS ADDED
+    // ==========================================
+
+    const updatedData = finalData.map((request) => ({
+      ...request,
+      request_items: (request.request_items || []).map((reqItem) => ({
+        ...reqItem,
+
+        parent_batch_id:
+          batchMap.get(Number(reqItem.item_id))
+            ?.parent_batch_id || null,
+
+        root_batch_id:
+          batchMap.get(Number(reqItem.item_id))
+            ?.root_batch_id || null,
+
+        batch_id:
+          batchMap.get(Number(reqItem.item_id))
+            ?.parent_batch_id || null,
+
+        batch_no:
+          batchMap.get(Number(reqItem.item_id))
+            ?.batch_no || null,
+      })),
+    }));
+
+    const createdRequests = updatedData.filter(
+      (reqItem) =>
+        Number(reqItem.created_by) === Number(user.id)
     );
 
-    const receivedRequests = finalData.filter(
+    const receivedRequests = updatedData.filter(
       (reqItem) =>
         Number(reqItem.to_organization_id) === userOrgId ||
-        String(reqItem.to_district_code || "").toUpperCase() === userStoreCode
+        String(reqItem.to_district_code || "").toUpperCase() ===
+          userStoreCode
     );
 
-    const approvedRequests = finalData.filter((reqItem) =>
-      ["approved", "partially_approved", "completed"].includes(reqItem.status)
+    const approvedRequests = updatedData.filter((reqItem) =>
+      ["approved", "partially_approved", "completed"].includes(
+        reqItem.status
+      )
     );
 
-    const transitGoods = finalData.filter(
+    const transitGoods = updatedData.filter(
       (reqItem) =>
         reqItem.transfer &&
-        ["dispatched", "in_transit"].includes(reqItem.transfer.status)
+        ["dispatched", "in_transit"].includes(
+          reqItem.transfer.status
+        )
     );
 
     const summary = {
-      total_requests: finalData.length,
+      total_requests: updatedData.length,
       created_requests: createdRequests.length,
       received_requests: receivedRequests.length,
       approved_requests: approvedRequests.length,
@@ -838,8 +897,8 @@ export const getMyStockRequests = async (req, res) => {
     return res.status(200).json({
       success: true,
       summary,
-      count: finalData.length,
-      data: finalData,
+      count: updatedData.length,
+      data: updatedData,
     });
   } catch (error) {
     console.error("getMyStockRequests error:", error);
@@ -851,10 +910,38 @@ export const getMyStockRequests = async (req, res) => {
     });
   }
 };
-
 export const getReceivedStockRequests = async (req, res) => {
   try {
     const user = req.user;
+
+    // ==========================================
+    // BATCH MAP (ADDED ONLY)
+    // ==========================================
+
+    const batchRows = await sequelize.query(
+      `
+      SELECT
+        item_id,
+        id AS parent_batch_id,
+        root_batch_id,
+        batch_no
+      FROM inventory_batches
+      WHERE
+        parent_batch_id IS NULL
+        OR parent_batch_id = root_batch_id
+      `,
+      {
+        type: sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    const batchMap = new Map();
+
+    for (const batch of batchRows) {
+      if (!batchMap.has(Number(batch.item_id))) {
+        batchMap.set(Number(batch.item_id), batch);
+      }
+    }
 
     const requests = await StockRequest.findAll({
       where: {
@@ -902,12 +989,37 @@ export const getReceivedStockRequests = async (req, res) => {
       order: [["created_at", "DESC"]],
     });
 
-    const finalData = addTransferDirection(requests, user).map((row) => {
-      return {
-        ...row,
-        request_type: "received",
-      };
-    });
+    const finalData = addTransferDirection(requests, user)
+      .map((row) => {
+        const plainRow = row.toJSON?.() || row;
+
+        return {
+          ...plainRow,
+          request_type: "received",
+
+          request_items: (
+            plainRow.request_items || []
+          ).map((reqItem) => ({
+            ...reqItem,
+
+            parent_batch_id:
+              batchMap.get(Number(reqItem.item_id))
+                ?.parent_batch_id || null,
+
+            root_batch_id:
+              batchMap.get(Number(reqItem.item_id))
+                ?.root_batch_id || null,
+
+            batch_id:
+              batchMap.get(Number(reqItem.item_id))
+                ?.parent_batch_id || null,
+
+            batch_no:
+              batchMap.get(Number(reqItem.item_id))
+                ?.batch_no || null,
+          })),
+        };
+      });
 
     const summary = calculateStockRequestSummary(finalData);
 

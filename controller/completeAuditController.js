@@ -981,3 +981,90 @@ export const downloadHeadDistrictStoreAudit = async (
     });
   }
 };
+export const getHeadRetailAudits = async (req, res) => {
+  try {
+    const scope = await getUserScope(req.user);
+
+    if (
+      scope.organization_level !== "head" &&
+      scope.organization_level !== "head_office" &&
+      req.user?.role !== "super_admin"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Only head user can view retail audits",
+      });
+    }
+
+    const {
+      retail_store_code,
+      retail_id,
+      status,
+      date_from,
+      date_to,
+    } = req.query;
+
+    const whereClause = {
+      organization_level: "retail",
+    };
+
+    if (retail_id) {
+      whereClause.organization_id = Number(retail_id);
+    }
+
+    if (retail_store_code) {
+      whereClause.store_code = String(retail_store_code)
+        .trim()
+        .toUpperCase();
+    }
+
+    if (status) {
+      whereClause.status = status;
+    }
+
+    if (date_from || date_to) {
+      whereClause.audit_date = {};
+
+      if (date_from) {
+        whereClause.audit_date[Op.gte] = date_from;
+      }
+
+      if (date_to) {
+        whereClause.audit_date[Op.lte] = date_to;
+      }
+    }
+
+    const audits = await InventoryAudit.findAll({
+      where: whereClause,
+      order: [
+        ["audit_date", "DESC"],
+        ["id", "DESC"],
+      ],
+    });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        retail_store_code || retail_id
+          ? "Selected retail audits fetched successfully"
+          : "All retail audits fetched successfully",
+      count: audits.length,
+      filters: {
+        retail_id: retail_id || null,
+        retail_store_code: retail_store_code || null,
+        status: status || null,
+        date_from: date_from || null,
+        date_to: date_to || null,
+      },
+      data: audits,
+    });
+  } catch (error) {
+    console.error("getHeadRetailAudits error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch retail audits",
+      error: error.message,
+    });
+  }
+};

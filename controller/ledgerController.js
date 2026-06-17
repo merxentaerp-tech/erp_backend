@@ -777,13 +777,9 @@ export const getCustomerLedgerDetail = async (req, res) => {
     const organization_id = req.user?.organization_id || null;
 
     const customerWhere = { id: customer_id };
-    if (organization_id) {
-      customerWhere.organization_id = organization_id;
-    }
+    if (organization_id) customerWhere.organization_id = organization_id;
 
-    const customer = await Customer.findOne({
-      where: customerWhere,
-    });
+    const customer = await Customer.findOne({ where: customerWhere });
 
     if (!customer) {
       return res.status(404).json({
@@ -793,9 +789,7 @@ export const getCustomerLedgerDetail = async (req, res) => {
     }
 
     const ledgerWhere = { customer_id };
-    if (organization_id) {
-      ledgerWhere.organization_id = organization_id;
-    }
+    if (organization_id) ledgerWhere.organization_id = organization_id;
 
     const entries = await LedgerEntry.findAll({
       where: ledgerWhere,
@@ -825,40 +819,86 @@ export const getCustomerLedgerDetail = async (req, res) => {
 
       const pendingAmount = debitAmount - receivedAmount;
 
-      let invoiceNumber = entry.reference_id || "-";
       let invoiceId = null;
+      let invoiceNumber = "-";
 
       if (
-        (entry.reference_type === "BILL" ||
-          entry.reference_type === "INVOICE") &&
+        entry.reference_type === "INVOICE" &&
         entry.reference_id
       ) {
-        invoiceId = entry.reference_id;
-      }
+        const invoiceWhere = { id: entry.reference_id };
+        if (organization_id) invoiceWhere.organization_id = organization_id;
 
-      if (entry.reference_type === "BILL" && entry.reference_id) {
-        const billWhere = { id: entry.reference_id };
-
-        if (organization_id) {
-          billWhere.organization_id = organization_id;
-        }
-
-        const bill = await Bill.findOne({
-          where: billWhere,
-          attributes: ["id", "bill_number", "createdAt"],
+        const invoice = await Invoice.findOne({
+          where: invoiceWhere,
+          attributes: ["id", "invoice_number", "bill_id", "createdAt"],
           raw: true,
         });
 
-        if (bill) {
-          invoiceId = bill.id;
-          invoiceNumber = bill.bill_number;
+        if (invoice) {
+          invoiceId = invoice.id;
+          invoiceNumber = invoice.invoice_number || "-";
+        }
+      }
+
+      if (
+        entry.reference_type === "BILL" &&
+        entry.reference_id
+      ) {
+        const invoiceWhere = { bill_id: entry.reference_id };
+        if (organization_id) invoiceWhere.organization_id = organization_id;
+
+        const invoice = await Invoice.findOne({
+          where: invoiceWhere,
+          attributes: ["id", "invoice_number", "bill_id", "createdAt"],
+          raw: true,
+        });
+
+        if (invoice) {
+          invoiceId = invoice.id;
+          invoiceNumber = invoice.invoice_number || "-";
+        } else {
+          const billWhere = { id: entry.reference_id };
+          if (organization_id) billWhere.organization_id = organization_id;
+
+          const bill = await Bill.findOne({
+            where: billWhere,
+            attributes: ["id", "bill_number", "createdAt"],
+            raw: true,
+          });
+
+          if (bill) {
+            invoiceId = bill.id;
+            invoiceNumber = bill.bill_number || "-";
+          }
+        }
+      }
+
+      if (!invoiceId) {
+        const invoiceWhere = {
+          customer_id,
+          total_amount: debitAmount,
+        };
+
+        if (organization_id) invoiceWhere.organization_id = organization_id;
+
+        const invoice = await Invoice.findOne({
+          where: invoiceWhere,
+          attributes: ["id", "invoice_number", "bill_id", "createdAt"],
+          order: [["createdAt", "DESC"]],
+          raw: true,
+        });
+
+        if (invoice) {
+          invoiceId = invoice.id;
+          invoiceNumber = invoice.invoice_number || "-";
         }
       }
 
       rows.push({
         ledger_id: entry.id,
         invoice_id: invoiceId,
-        invoice_number: invoiceNumber || "-",
+        invoice_number: invoiceNumber,
         date: entry.createdAt,
         total_amount: Number(debitAmount.toFixed(2)),
         received_amount: Number(receivedAmount.toFixed(2)),

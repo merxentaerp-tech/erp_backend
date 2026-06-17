@@ -278,34 +278,68 @@ export const getHeadDistrictAudits = async (req, res) => {
       });
     }
 
-    const { date_from, date_to, status, district_id } = req.query;
+    const {
+      district_id,
+      district_store_code,
+      status,
+      date_from,
+      date_to,
+    } = req.query;
 
     const whereClause = {
       organization_level: "district",
     };
 
-    if (status) whereClause.status = status;
-    if (district_id) whereClause.organization_id = district_id;
+    if (district_id) {
+      whereClause.organization_id = Number(district_id);
+    }
+
+    if (district_store_code) {
+      whereClause.store_code = String(district_store_code).trim().toUpperCase();
+    }
+
+    if (status) {
+      whereClause.status = status;
+    }
 
     if (date_from || date_to) {
       whereClause.audit_date = {};
-      if (date_from) whereClause.audit_date[Op.gte] = date_from;
-      if (date_to) whereClause.audit_date[Op.lte] = date_to;
+
+      if (date_from) {
+        whereClause.audit_date[Op.gte] = date_from;
+      }
+
+      if (date_to) {
+        whereClause.audit_date[Op.lte] = date_to;
+      }
     }
 
     const audits = await InventoryAudit.findAll({
       where: whereClause,
-      order: [["audit_date", "DESC"], ["id", "DESC"]],
+      order: [
+        ["audit_date", "DESC"],
+        ["id", "DESC"],
+      ],
     });
 
     return res.status(200).json({
       success: true,
-      message: "District audits fetched successfully",
+      message: district_id || district_store_code
+        ? "Selected district audits fetched successfully"
+        : "All district audits fetched successfully",
       count: audits.length,
+      filters: {
+        district_id: district_id || null,
+        district_store_code: district_store_code || null,
+        status: status || null,
+        date_from: date_from || null,
+        date_to: date_to || null,
+      },
       data: audits,
     });
   } catch (error) {
     console.error("getHeadDistrictAudits error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Failed to fetch district audits",

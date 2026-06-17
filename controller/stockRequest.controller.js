@@ -2251,13 +2251,13 @@ export const approveAndDispatchRequest = async (req, res) => {
         });
       }
 
-      if (qty > 0 && !parent_batch_id) {
-        await transaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: `parent_batch_id is required for item ${item_id}`,
-        });
-      }
+      // if (qty > 0 && !parent_batch_id) {
+      //   await transaction.rollback();
+      //   return res.status(400).json({
+      //     success: false,
+      //     message: `parent_batch_id is required for item ${item_id}`,
+      //   });
+      // }
 
       const requestItem = requestItemMap.get(item_id);
 

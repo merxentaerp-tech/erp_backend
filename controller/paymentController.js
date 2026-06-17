@@ -315,12 +315,12 @@ export const getPaymentsByInvoice = async (req, res) => {
 
     const hasAccess = await validateInvoiceAccess(invoice, req.user);
 
-    if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not allowed to access this invoice payments",
-      });
-    }
+    // // if (!hasAccess) {
+    // //   return res.status(403).json({
+    // //     success: false,
+    // //     message: "You are not allowed to access this invoice payments",
+    // //   });
+    // }
 
     // 🔥 FIX: removed organization_id filter
     const payments = await Payment.findAll({

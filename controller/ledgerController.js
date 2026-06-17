@@ -164,7 +164,7 @@ export const getLedger = async (req, res) => {
       include: [
         {
           model: Customer,
-          as: "customer", // ✅ FIXED: alias lowercase hona chahiye
+          as: "customer",
           attributes: ["id", "name", "phone", "address", "store_code"],
           where: customerWhere,
           required: true,
@@ -173,6 +173,28 @@ export const getLedger = async (req, res) => {
       group: ["LedgerEntry.customer_id", "customer.id"],
       order: [[literal(`"pending_amount"`), "DESC"]],
       subQuery: false,
+    });
+
+    // ===============================
+    // TOTAL DEALS FROM INVOICE TABLE
+    // 1 Invoice = 1 Deal
+    // ===============================
+    const invoiceCounts = await Invoice.findAll({
+      where: {
+        organization_id,
+      },
+      attributes: [
+        "customer_id",
+        [fn("COUNT", col("id")), "total_deals"],
+      ],
+      group: ["customer_id"],
+      raw: true,
+    });
+
+    const invoiceMap = {};
+
+    invoiceCounts.forEach((item) => {
+      invoiceMap[Number(item.customer_id)] = Number(item.total_deals || 0);
     });
 
     const clients = clientRows.map((row) => {
@@ -186,7 +208,7 @@ export const getLedger = async (req, res) => {
         phone: row.customer?.phone || "",
         address: row.customer?.address || "",
         store_code: row.customer?.store_code || "",
-        total_deals: Number(row.get("total_deals") || 0),
+        total_deals: invoiceMap[Number(row.customer_id)] || 0,
         total_amount: Number(totalAmount.toFixed(2)),
         received_amount: Number(receivedAmount.toFixed(2)),
         pending_amount: Number(pendingAmount.toFixed(2)),

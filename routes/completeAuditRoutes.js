@@ -11,39 +11,19 @@ import {
   getHeadDistrictStoreAudits,
   getHeadDistrictStoreAuditDetails,
   downloadHeadDistrictStoreAudit,
+  getHeadRetailAudits,
 } from "../controller/completeAuditController.js";
 
 const router = express.Router();
 
-/* =========================================================
-   DISTRICT - RETAIL AUDIT REVIEW
-========================================================= */
+router.get("/district/retail-audits", auth, getDistrictRetailAudits);
+router.get("/district/retail-audits/:id", auth, getDistrictRetailAuditDetails);
+router.get("/district/retail-audits/:id/download", auth, downloadDistrictRetailAudit);
 
-// District apne aligned retail stores ke audits ki list dekhega
-router.get(
-  "/district/retail-audits",
-  auth,
-  getDistrictRetailAudits
-);
-
-// District kisi ek retail audit ka full detail dekhega
-router.get(
-  "/district/retail-audits/:id",
-  auth,
-  getDistrictRetailAuditDetails
-);
-
-// District audit report download karega
-router.get(
-  "/district/retail-audits/:id/download",
-  auth,
-  downloadDistrictRetailAudit
-);
 router.get("/head/district-audits", auth, getHeadDistrictAudits);
-
 router.get("/head/district-audits/:id", auth, getHeadDistrictAuditDetails);
-
 router.get("/head/district-audits/:id/download", auth, downloadHeadDistrictAudit);
+
 router.get(
   "/head/district/:district_id/store-audits",
   auth,
@@ -61,21 +41,7 @@ router.get(
   auth,
   downloadHeadDistrictStoreAudit
 );
-router.get(
-  "/head/district/:district_code/store-audits",
-  auth,
-  getHeadDistrictStoreAudits
-);
 
-router.get(
-  "/head/district/:district_code/store-audits/:id",
-  auth,
-  getHeadDistrictStoreAuditDetails
-);
+router.get("/head/retail-audits", auth, getHeadRetailAudits);
 
-router.get(
-  "/head/district/:district_code/store-audits/:id/download",
-  auth,
-  downloadHeadDistrictStoreAudit
-);
 export default router;

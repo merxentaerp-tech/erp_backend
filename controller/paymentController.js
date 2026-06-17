@@ -89,12 +89,12 @@ export const createPayment = async (req, res) => {
       });
     }
 
-    if (!canManagePayments(req.user)) {
-      await t.rollback();
-      return res.status(403).json({
-        success: false,
-        message: "You are not allowed to create payment entries",
-      });
+    // if (!canManagePayments(req.user)) {
+    //   await t.rollback();
+    //   return res.status(403).json({
+    //     success: false,
+    //     message: "You are not allowed to create payment entries",
+    //   });
     }
 
     const {

@@ -95,7 +95,7 @@ export const createPayment = async (req, res) => {
     //     success: false,
     //     message: "You are not allowed to create payment entries",
     //   });
-    }
+    // }
 
     const {
       invoice_id,

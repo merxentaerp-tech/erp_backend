@@ -749,7 +749,7 @@ export const createBill = async (req, res) => {
       { transaction: t }
     );
 
-    // ✅ NEW: invoice create with bill
+    //  NEW: invoice create with bill
     const invoiceNumber =
       typeof generateInvoiceNumber === "function"
         ? generateInvoiceNumber(cleanStoreCode)
@@ -769,12 +769,24 @@ export const createBill = async (req, res) => {
 
         invoice_date: new Date(),
 
-        total_amount: Number(grandTotal.toFixed(2)),
-        paid_amount: Number(paidAmount.toFixed(2)),
-        due_amount: Number(dueAmount.toFixed(2)),
+       total_amount: Number(grandTotal.toFixed(2)),
 
-        status: dueAmount > 0 ? "PARTIAL" : "PAID",
-payment_status: dueAmount > 0 ? "PARTIAL" : "PAID",
+received_amount: Number(paidAmount.toFixed(2)),
+pending_amount: Number(dueAmount.toFixed(2)),
+
+status:
+  dueAmount <= 0
+    ? "PAID"
+    : paidAmount > 0
+    ? "PARTIAL"
+    : "UNPAID",
+
+payment_status:
+  dueAmount <= 0
+    ? "PAID"
+    : paidAmount > 0
+    ? "PARTIAL"
+    : "UNPAID",
 
         notes,
         created_by: req.user?.id || null,
@@ -804,7 +816,7 @@ payment_status: dueAmount > 0 ? "PARTIAL" : "PAID",
         { transaction: t }
       );
 
-      // ✅ NEW: invoice item create with bill item
+      // NEW: invoice item create with bill item
       await InvoiceItem.create(
 {
   invoice_id: invoice.id,

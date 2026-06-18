@@ -2546,9 +2546,7 @@ console.log("Logged In Org:", user.organization_id);
    // Parent batch jis organization ka hai,
 // stock wahi se deduct hoga
 const stockOrgId = Number(
-  parentBatch?.current_organization_id ||
-  parentBatch?.organization_id ||
-  user.organization_id
+  parentBatch.current_organization_id || parentBatch.organization_id
 );
 
 const fromStock = await getOrCreateStock(
@@ -2872,7 +2870,6 @@ if (weight > 0 && usableWeight < weight) {
     });
   }
 };
-
 
 
 

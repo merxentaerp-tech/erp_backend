@@ -2437,6 +2437,9 @@ const batchRows = await sequelize.query(
         );
         continue;
       }
+      const stockOrgId = Number(
+  user.organization_id || request.from_organization_id
+);
 
 const itemDetails = await Item.findOne({
   where: {

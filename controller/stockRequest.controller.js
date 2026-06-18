@@ -2083,9 +2083,10 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
 // ==========================================
 // PARENT ORG -> APPROVE & DISPATCH for district
 // ==========================================
-export const approveAndDispatchRequestfromretail = async (req, res) => {
+export const approveAndDispatchRequest = async (req, res) => {
   const transaction = await sequelize.transaction();
   const uploadedLocalPaths = [];
+  let challanPdf = null;
 
   try {
     const { requestId } = req.params;
@@ -2106,7 +2107,10 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
     const user = req.user;
     const parsedItems = parseItemsFromBody(req.body);
 
-    console.log("approveAndDispatchRequest req.body keys:", Object.keys(req.body || {}));
+    console.log(
+      "approveAndDispatchRequest req.body keys:",
+      Object.keys(req.body || {})
+    );
     console.log("approveAndDispatchRequest raw items:", req.body?.items);
     console.log("approveAndDispatchRequest parsedItems:", parsedItems);
     console.log("approveAndDispatchRequest files:", {
@@ -2200,18 +2204,6 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
       lock: transaction.LOCK.UPDATE,
     });
 
-    const allowedLevels = req.allowedApproveLevels || ["retail", "district"];
-
-    if (!canApproveDispatch(user, allowedLevels)) {
-      await transaction.rollback();
-      return res.status(403).json({
-        success: false,
-        message: allowedLevels.includes("head")
-          ? "Only head can approve this request"
-          : "Only retail or district can approve this request",
-      });
-    }
-
     if (Number(request.to_organization_id) !== Number(user.organization_id)) {
       await transaction.rollback();
       return res.status(403).json({
@@ -2249,7 +2241,37 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
-      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
+    let parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
+
+// ✅ AUTO RESOLVE if NULL / INVALID
+if (!parent_batch_id) {
+  const autoBatch = await sequelize.query(
+    `
+    SELECT id
+    FROM public.inventory_batches
+    WHERE item_id = :item_id
+      AND available_qty >= :qty
+      AND status NOT IN ('sold','damaged','dead')
+    ORDER BY id ASC
+    LIMIT 1
+    FOR UPDATE
+    `,
+    {
+      replacements: { item_id, qty },
+      type: QueryTypes.SELECT,
+      transaction,
+    }
+  );
+
+  if (!autoBatch.length) {
+    return res.status(400).json({
+      success: false,
+      message: `No available batch found for item ${item_id}`,
+    });
+  }
+
+  parent_batch_id = autoBatch[0].id;
+}
 
       if (!item_id || qty < 0) {
         await transaction.rollback();
@@ -2258,15 +2280,28 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
           message: "Each item must have valid item_id and qty",
         });
       }
-
-      if (qty > 0 && !parent_batch_id) {
-        await transaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: `parent_batch_id is required for item ${item_id}`,
-        });
-      }
-
+const batchRows = await sequelize.query(
+  `
+  SELECT
+    id,
+    batch_no,
+    item_id,
+    organization_id,
+    current_organization_id,
+    available_qty,
+    available_weight,
+    status
+  FROM public.inventory_batches
+  WHERE id = :parent_batch_id
+    AND item_id = :item_id
+  FOR UPDATE
+  `,
+  {
+    replacements: { parent_batch_id, item_id },
+    type: QueryTypes.SELECT,
+    transaction,
+  }
+);
       const requestItem = requestItemMap.get(item_id);
 
       if (!requestItem) {
@@ -2340,25 +2375,19 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
       {
         transfer_no: generateTransferNo(),
         request_id: request.id,
-
         from_organization_id: user.organization_id,
         to_organization_id: request.from_organization_id,
-
         transfer_date: new Date(),
         dispatch_date: new Date(),
         status: "in_transit",
-
         approved_by: user.id,
         dispatched_by: user.id,
         created_by: user.id,
-
         remarks: remarks || null,
-
         driver_name: driver_name || null,
         driver_phone: driver_phone || null,
         vehicle_number: vehicle_number || null,
         tracking_number: tracking_number || null,
-
         driver_photo_url: driver_photo_url || null,
         dispatch_image_url:
           dispatch_image_urls.length > 0
@@ -2366,7 +2395,6 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
             : null,
         dispatch_video_url: dispatch_video_url || null,
         e_way_bill_url: e_way_bill_url || null,
-
         pickup_address: pickup_address || null,
         delivery_address: delivery_address || null,
         expected_delivery_date: expected_delivery_date || null,
@@ -2382,8 +2410,8 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
     let estimatedValue = 0;
     let approvedItemsCount = 0;
 
-    const dispatchedBatches = [];
     const challanItems = [];
+    const dispatchedBatches = [];
 
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
@@ -2410,9 +2438,6 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
         continue;
       }
 
-      const stockOrgId = Number(
-  parentBatch.current_organization_id || parentBatch.organization_id
-);
 const itemDetails = await Item.findOne({
   where: {
     id: item_id,
@@ -2422,6 +2447,7 @@ const itemDetails = await Item.findOne({
   transaction,
   lock: transaction.LOCK.UPDATE,
 });
+
       if (!itemDetails) {
         await transaction.rollback();
         return res.status(404).json({
@@ -2474,13 +2500,11 @@ const itemDetails = await Item.findOne({
         parentBatch.current_organization_id || parentBatch.organization_id || 0
       );
 
-      if (parentBatchOrgId !== Number(user.organization_id)) {
-        await transaction.rollback();
-        return res.status(403).json({
-          success: false,
-          message: `Parent batch ${parent_batch_id} does not belong to your organization`,
-        });
-      }
+     // Parent-child transfer flow ke liye ownership validation skip
+
+
+console.log("Parent Batch Org:", parentBatchOrgId);
+console.log("Logged In Org:", user.organization_id);
 
       if (
         ["sold", "damaged", "dead"].includes(
@@ -2514,42 +2538,56 @@ const itemDetails = await Item.findOne({
       totalWeight += weight;
       estimatedValue += weight * rate;
 
-      const fromStock = await getOrCreateStock(
-        user.organization_id,
-        item_id,
-        transaction
-      );
+   // Parent batch jis organization ka hai,
+// stock wahi se deduct hoga
 
-      const availableQty = toNumber(fromStock.available_qty);
-      const availableWeight = toNumber(fromStock.available_weight);
-      const reservedQty = toNumber(fromStock.reserved_qty);
-      const reservedWeight = toNumber(fromStock.reserved_weight);
-      const transitQty = toNumber(fromStock.transit_qty);
-      const transitWeight = toNumber(fromStock.transit_weight);
-      const damagedQty = toNumber(fromStock.damaged_qty);
-      const damagedWeight = toNumber(fromStock.damaged_weight);
 
-      if (availableQty < qty) {
-        await transaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient available qty for item ${item_id}`,
-        });
-      }
+const fromStock = await getOrCreateStock(
+  stockOrgId,
+  item_id,
+  transaction
+);
 
-      if (weight > 0 && availableWeight < weight) {
-        await transaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient available weight for item ${item_id}`,
-        });
-      }
+console.log("===== STOCK DEBUG =====");
+console.log("Logged In Org:", user.organization_id);
+console.log("Batch Owner Org:", stockOrgId);
+console.log("Item ID:", item_id);
+console.log("Available Qty:", fromStock.available_qty);
+console.log("Available Weight:", fromStock.available_weight);
 
-      const transferItem = await StockTransferItem.create(
+const availableQty = toNumber(fromStock.available_qty);
+const availableWeight = toNumber(fromStock.available_weight);
+
+const reservedQty = toNumber(fromStock.reserved_qty);
+const reservedWeight = toNumber(fromStock.reserved_weight);
+
+const transitQty = toNumber(fromStock.transit_qty);
+const transitWeight = toNumber(fromStock.transit_weight);
+
+// 🔥 REAL USABLE STOCK (ERP STANDARD)
+const usableQty = availableQty - reservedQty - transitQty;
+const usableWeight = availableWeight - reservedWeight - transitWeight;
+
+   if (qty > 0 && usableQty < qty) {
+  await transaction.rollback();
+  return res.status(400).json({
+    success: false,
+    message: `Insufficient usable qty for item ${item_id}`,
+  });
+}
+
+if (weight > 0 && usableWeight < weight) {
+  await transaction.rollback();
+  return res.status(400).json({
+    success: false,
+    message: `Insufficient usable weight for item ${item_id}`,
+  });
+}
+
+      await StockTransferItem.create(
         {
           transfer_id: transfer.id,
           item_id,
-          parent_batch_id,
           qty,
           weight,
           rate,
@@ -2619,24 +2657,13 @@ const itemDetails = await Item.findOne({
         {
           parent_batch_id,
           to_organization_id: request.from_organization_id,
-
           quantity: qty,
           weight,
-
           reference_type: "STOCK_TRANSFER",
           reference_id: transfer.id,
-
           remarks: `Dispatched via ${transfer.transfer_no}`,
           handled_by: user.id,
-
           batch_status: "in_transit",
-        },
-        { transaction }
-      );
-
-      await transferItem.update(
-        {
-          child_batch_id: childBatch.id,
         },
         { transaction }
       );
@@ -2688,17 +2715,8 @@ const itemDetails = await Item.findOne({
       { status: finalStatus },
       {
         where: {
+          task_type: "stock_request_approval",
           reference_id: request.id,
-          task_type: {
-            [Op.in]: [
-              "stock_request_approval",
-              "district_to_head_stock_request",
-              "district_to_retail_stock_request",
-              "head_to_district_stock_request",
-              "head_to_retail_stock_request",
-              "retail_to_district_stock_request",
-            ],
-          },
         },
         transaction,
       }
@@ -2757,42 +2775,31 @@ const itemDetails = await Item.findOne({
       transaction,
     });
 
-    const fromStore = await Store.findOne({
-      where: { id: user.organization_id },
-      transaction,
-    });
+    if (finalStatus !== "rejected") {
+      const fromStore = await Store.findOne({
+        where: { id: user.organization_id },
+        transaction,
+      });
 
-    const toStore = await Store.findOne({
-      where: { id: request.from_organization_id },
-      transaction,
-    });
+      const toStore = await Store.findOne({
+        where: { id: request.from_organization_id },
+        transaction,
+      });
 
-    const challanPdf =
-      finalStatus === "rejected"
-        ? null
-        : await generateDeliveryChallanPdf({
-            transfer,
-            request,
-            fromStore,
-            toStore,
-            challanItems,
-            driver: {
-              driver_name,
-              driver_phone,
-              vehicle_number,
-              pickup_address,
-              delivery_address,
-            },
-          });
-
-    if (challanPdf) {
-      await transfer.update(
-        {
-          delivery_challan_url: challanPdf.publicPath,
-          delivery_challan_file: challanPdf.fileName,
+      challanPdf = await generateDeliveryChallanPdf({
+        transfer,
+        request,
+        fromStore,
+        toStore,
+        challanItems,
+        driver: {
+          driver_name,
+          driver_phone,
+          vehicle_number,
+          pickup_address,
+          delivery_address,
         },
-        { transaction }
-      );
+      });
     }
 
     await transaction.commit();
@@ -2822,17 +2829,7 @@ const itemDetails = await Item.findOne({
           ...transfer.toJSON(),
           dispatch_image_url: dispatch_image_urls,
           e_way_bill_url,
-          delivery_challan_url: challanPdf?.publicPath || null,
-          delivery_challan_file: challanPdf?.fileName || null,
         },
-        delivery_challan: challanPdf
-          ? {
-              file_name: challanPdf.fileName,
-              url: challanPdf.publicPath,
-              download_url: challanPdf.publicPath,
-            }
-          : null,
-        dispatched_batches: dispatchedBatches,
         uploaded_files: {
           driver_photo_url,
           dispatch_image_urls,

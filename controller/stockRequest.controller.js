@@ -2241,7 +2241,42 @@ export const approveAndDispatchRequest = async (req, res) => {
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
-      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
+    let parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
+
+// ✅ AUTO RESOLVE if NULL / INVALID
+if (!parent_batch_id) {
+  const autoBatch = await sequelize.query(
+    `
+    SELECT
+      id
+    FROM public.inventory_batches
+    WHERE item_id = :item_id
+      AND available_qty >= :qty
+      AND status NOT IN ('sold', 'damaged', 'dead')
+    ORDER BY id ASC
+    LIMIT 1
+    FOR UPDATE
+    `,
+    {
+      replacements: {
+        item_id,
+        qty,
+      },
+      type: QueryTypes.SELECT,
+      transaction,
+    }
+  );
+
+  if (!autoBatch?.length) {
+    await transaction.rollback();
+    return res.status(400).json({
+      success: false,
+      message: `No available batch found for item ${item_id}`,
+    });
+  }
+
+  parent_batch_id = autoBatch[0].id;
+}
 
       if (!item_id || qty < 0) {
         await transaction.rollback();
@@ -2250,15 +2285,28 @@ export const approveAndDispatchRequest = async (req, res) => {
           message: "Each item must have valid item_id and qty",
         });
       }
-
-      // if (qty > 0 && !parent_batch_id) {
-      //   await transaction.rollback();
-      //   return res.status(400).json({
-      //     success: false,
-      //     message: `parent_batch_id is required for item ${item_id}`,
-      //   });
-      // }
-
+const batchRows = await sequelize.query(
+  `
+  SELECT
+    id,
+    batch_no,
+    item_id,
+    organization_id,
+    current_organization_id,
+    available_qty,
+    available_weight,
+    status
+  FROM public.inventory_batches
+  WHERE id = :parent_batch_id
+    AND item_id = :item_id
+  FOR UPDATE
+  `,
+  {
+    replacements: { parent_batch_id, item_id },
+    type: QueryTypes.SELECT,
+    transaction,
+  }
+);
       const requestItem = requestItemMap.get(item_id);
 
       if (!requestItem) {
@@ -2395,15 +2443,15 @@ export const approveAndDispatchRequest = async (req, res) => {
         continue;
       }
 
-      const itemDetails = await Item.findOne({
-        where: {
-          id: item_id,
-          organization_id: user.organization_id,
-          is_active: true,
-        },
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
+const itemDetails = await Item.findOne({
+  where: {
+    id: item_id,
+    is_active: true,
+    organization_id: stockOrgId,
+  },
+  transaction,
+  lock: transaction.LOCK.UPDATE,
+});
 
       if (!itemDetails) {
         await transaction.rollback();
@@ -2457,13 +2505,11 @@ export const approveAndDispatchRequest = async (req, res) => {
         parentBatch.current_organization_id || parentBatch.organization_id || 0
       );
 
-      if (parentBatchOrgId !== Number(user.organization_id)) {
-        await transaction.rollback();
-        return res.status(403).json({
-          success: false,
-          message: `Parent batch ${parent_batch_id} does not belong to your organization`,
-        });
-      }
+     // Parent-child transfer flow ke liye ownership validation skip
+
+
+console.log("Parent Batch Org:", parentBatchOrgId);
+console.log("Logged In Org:", user.organization_id);
 
       if (
         ["sold", "damaged", "dead"].includes(
@@ -2497,36 +2543,55 @@ export const approveAndDispatchRequest = async (req, res) => {
       totalWeight += weight;
       estimatedValue += weight * rate;
 
-      const fromStock = await getOrCreateStock(
-        user.organization_id,
-        item_id,
-        transaction
-      );
+   // Parent batch jis organization ka hai,
+// stock wahi se deduct hoga
+const stockOrgId = Number(
+  parentBatch?.current_organization_id ||
+  parentBatch?.organization_id ||
+  user.organization_id
+);
 
-      const availableQty = toNumber(fromStock.available_qty);
-      const availableWeight = toNumber(fromStock.available_weight);
-      const reservedQty = toNumber(fromStock.reserved_qty);
-      const reservedWeight = toNumber(fromStock.reserved_weight);
-      const transitQty = toNumber(fromStock.transit_qty);
-      const transitWeight = toNumber(fromStock.transit_weight);
-      const damagedQty = toNumber(fromStock.damaged_qty);
-      const damagedWeight = toNumber(fromStock.damaged_weight);
+const fromStock = await getOrCreateStock(
+  stockOrgId,
+  item_id,
+  transaction
+);
 
-      if (availableQty < qty) {
-        await transaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient available qty for item ${item_id}`,
-        });
-      }
+console.log("===== STOCK DEBUG =====");
+console.log("Logged In Org:", user.organization_id);
+console.log("Batch Owner Org:", stockOrgId);
+console.log("Item ID:", item_id);
+console.log("Available Qty:", fromStock.available_qty);
+console.log("Available Weight:", fromStock.available_weight);
 
-      if (weight > 0 && availableWeight < weight) {
-        await transaction.rollback();
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient available weight for item ${item_id}`,
-        });
-      }
+const availableQty = toNumber(fromStock.available_qty);
+const availableWeight = toNumber(fromStock.available_weight);
+
+const reservedQty = toNumber(fromStock.reserved_qty);
+const reservedWeight = toNumber(fromStock.reserved_weight);
+
+const transitQty = toNumber(fromStock.transit_qty);
+const transitWeight = toNumber(fromStock.transit_weight);
+
+// 🔥 REAL USABLE STOCK (ERP STANDARD)
+const usableQty = availableQty - reservedQty - transitQty;
+const usableWeight = availableWeight - reservedWeight - transitWeight;
+
+   if (qty > 0 && usableQty < qty) {
+  await transaction.rollback();
+  return res.status(400).json({
+    success: false,
+    message: `Insufficient usable qty for item ${item_id}`,
+  });
+}
+
+if (weight > 0 && usableWeight < weight) {
+  await transaction.rollback();
+  return res.status(400).json({
+    success: false,
+    message: `Insufficient usable weight for item ${item_id}`,
+  });
+}
 
       await StockTransferItem.create(
         {

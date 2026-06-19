@@ -21,7 +21,7 @@ import {
   getHeadStore,
   getRetailStoresUnderDistrict,
   approveAndDispatchRequestfromretail,
-  forwardRequestToDistrictDirectDelivery,downloadDeliveryChallanByTransfer,
+  forwardRequestToDistrictDirectDelivery,downloadDeliveryChallanByTransfer,dispatchNewItemTransfer,
 
   // ✅ District request ko selected retail store ko forward/transfer karne ke liye
   // Agar ye controller stockRequest.controller.js me export nahi hai,
@@ -249,7 +249,19 @@ router.post(
   createHeadStockRequest
 );
 
+export const newItemDispatchUpload = upload.fields([
+  { name: "driver_photo", maxCount: 1 },
+  { name: "dispatch_images", maxCount: 3 },
+  { name: "dispatch_video", maxCount: 1 },
+  { name: "e_way_bill", maxCount: 1 },
+]);
 
+router.post(
+  "/stock-transfer/new-item-dispatch",
+  auth,
+  newItemDispatchUpload, // multer fields middleware
+  dispatchNewItemTransfer
+);
 router.get(
   "/head/transfers/:id",
   auth,

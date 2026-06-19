@@ -107,33 +107,32 @@ export const getRetailInventory = async (req, res) => {
     // ACCESS FILTER
     // =================================================
 
-    if (role === "super_admin") {
-      if (organization_id) {
-        itemWhere.organization_id =
-          Number(organization_id);
+const queryOrganizationId = req.query.organization_id
+  ? Number(req.query.organization_id)
+  : null;
 
-        stockWhere.organization_id =
-          Number(organization_id);
-      }
-    } else {
-      // =================================================
-      // STORE BASED FILTER
-      // =================================================
+const queryOrganizationLevel = req.query.organization_level
+  ? String(req.query.organization_level).trim().toLowerCase()
+  : null;
 
-      if (user.store_code) {
-        const cleanStoreCode = String(
-          user.store_code
-        )
-          .trim()
-          .toUpperCase();
+if (queryOrganizationId && queryOrganizationLevel) {
+  itemWhere.organization_id = queryOrganizationId;
+  stockWhere.organization_id = queryOrganizationId;
+} else if (role === "super_admin") {
+  if (organization_id) {
+    itemWhere.organization_id = Number(organization_id);
+    stockWhere.organization_id = Number(organization_id);
+  }
+} else {
+  if (user.store_code) {
+    const cleanStoreCode = String(user.store_code)
+      .trim()
+      .toUpperCase();
 
-        itemWhere.storeCode =
-          cleanStoreCode;
-
-        stockWhere.store_code =
-          cleanStoreCode;
-      }
-    }
+    itemWhere.storeCode = cleanStoreCode;
+    stockWhere.store_code = cleanStoreCode;
+  }
+}
 
     // =================================================
     // FILTERS

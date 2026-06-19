@@ -476,8 +476,10 @@ export const downloadHeadDistrictAudit = async (req, res) => {
 
     auditItems.forEach((item) => {
       worksheet.addRow({
-        audit_no: audit.audit_no,
-        audit_date: audit.audit_date,
+        audit_no: audit.audit_no || "",
+        audit_date: audit.audit_date
+          ? new Date(audit.audit_date).toISOString().split("T")[0]
+          : "",
         district_id: audit.organization_id || "",
         district_code: audit.district_code || audit.store_code || "",
         district_name: audit.district_name || audit.store_name || "",
@@ -516,28 +518,26 @@ export const downloadHeadDistrictAudit = async (req, res) => {
       });
     });
 
-   const fileName = `${audit.audit_no || "district-audit-report"}.xlsx`;
+    const safeAuditNo = String(audit.audit_no || "district-audit-report")
+      .replace(/[^\w.-]/g, "_");
 
-const tempFilePath = path.join(os.tmpdir(), fileName);
+    const fileName = `${safeAuditNo}.xlsx`;
 
-// Save workbook to temp file
-await workbook.xlsx.writeFile(tempFilePath);
+    const buffer = await workbook.xlsx.writeBuffer();
 
-// Download file
-return res.download(tempFilePath, fileName, (err) => {
-  fs.unlink(tempFilePath, () => {});
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
 
-  if (err) {
-    console.error("Download Error:", err);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${fileName}"`
+    );
 
-    if (!res.headersSent) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to download Excel file",
-      });
-    }
-  }
-});
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.status(200).send(buffer);
   } catch (error) {
     console.error("downloadHeadDistrictAudit error:", error);
     return res.status(500).json({

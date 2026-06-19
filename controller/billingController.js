@@ -877,16 +877,16 @@ payment_status:
       // PCS item me same item ka stock remaining ho sakta hai.
       if (!row.isPieceItem || updatedQty <= 0) {
         await Item.update(
-          {
-            current_status: "sold",
-          },
-          {
-            where: {
-              id: row.item_id,
-            },
-            transaction: t,
-          }
-        );
+  {
+    current_status: updatedQty > 0 ? "in_stock" : "sold",
+  },
+  {
+    where: {
+      id: row.item_id,
+    },
+    transaction: t,
+  }
+);
       }
     }
 

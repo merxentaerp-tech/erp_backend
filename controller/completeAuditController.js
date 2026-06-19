@@ -1,4 +1,7 @@
 import { Op } from "sequelize";
+import fs from "fs";
+import path from "path";
+import os from "os";
 import ExcelJS from "exceljs";
 import InventoryAudit from "../model/inventoryAudit.js";
 import InventoryAuditItem from "../model/inventoryAuditItem.js";
@@ -513,20 +516,28 @@ export const downloadHeadDistrictAudit = async (req, res) => {
       });
     });
 
-    const fileName = `${audit.audit_no || "district-audit-report"}.xlsx`;
+   const fileName = `${audit.audit_no || "district-audit-report"}.xlsx`;
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
+const tempFilePath = path.join(os.tmpdir(), fileName);
 
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${fileName}"`
-    );
+// Save workbook to temp file
+await workbook.xlsx.writeFile(tempFilePath);
 
-    await workbook.xlsx.write(res);
-    return res.end();
+// Download file
+return res.download(tempFilePath, fileName, (err) => {
+  fs.unlink(tempFilePath, () => {});
+
+  if (err) {
+    console.error("Download Error:", err);
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to download Excel file",
+      });
+    }
+  }
+});
   } catch (error) {
     console.error("downloadHeadDistrictAudit error:", error);
     return res.status(500).json({

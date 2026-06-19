@@ -2563,7 +2563,8 @@ const availableWeight = toNumber(fromStock.available_weight);
 
 const reservedQty = toNumber(fromStock.reserved_qty);
 const reservedWeight = toNumber(fromStock.reserved_weight);
-
+const damagedQty = Number(fromStock?.damaged_qty || 0);
+const damagedWeight = Number(fromStock?.damaged_weight || 0);
 const transitQty = toNumber(fromStock.transit_qty);
 const transitWeight = toNumber(fromStock.transit_weight);
 
@@ -2645,11 +2646,11 @@ if (weight > 0 && usableWeight < weight) {
           available_qty: newAvailableQty,
           reserved_qty: reservedQty,
           transit_qty: newTransitQty,
-          damaged_qty: damagedQty,
+          damagedqty: damagedQty,
           available_weight: newAvailableWeight,
           reserved_weight: reservedWeight,
           transit_weight: newTransitWeight,
-          damaged_weight: damagedWeight,
+          damagedweight: damagedWeight,
         },
         remarks: `Dispatched via ${transfer.transfer_no}`,
         created_by: user.id,

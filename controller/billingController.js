@@ -668,9 +668,9 @@ export const createBill = async (req, res) => {
         throw new Error(`Insufficient stock qty for item ${item_id}`);
       }
 
-      if (!isPieceItem && openingWeight < net_weight) {
-        throw new Error(`Insufficient stock weight for item ${item_id}`);
-      }
+      // if (!isPieceItem && openingWeight < net_weight) {
+      //   throw new Error(`Insufficient stock weight for item ${item_id}`);
+      // }
 
       const baseAmount = isPieceItem ? qty * rate : net_weight * rate;
       const makingChargeValue = (baseAmount * making_charge_percent) / 100;

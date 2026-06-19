@@ -6138,3 +6138,250 @@ export const downloadDeliveryChallanByTransfer = async (req, res) => {
     });
   }
 };
+
+
+export const dispatchNewItemTransfer = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  const uploadedLocalPaths = [];
+
+  try {
+    const {
+      remarks,
+      driver_name,
+      driver_phone,
+      vehicle_number,
+      pickup_address,
+      delivery_address,
+      expected_delivery_date,
+      expected_delivery_time,
+      additional_notes,
+      items,
+      to_organization_id,
+    } = req.body;
+
+    const user = req.user;
+
+    let parsedItems = [];
+
+    try {
+      if (Array.isArray(items)) {
+        parsedItems = items;
+      } else if (typeof items === "string") {
+        parsedItems = JSON.parse(items);
+      } else {
+        parsedItems = parseItemsFromBody(req.body) || [];
+      }
+    } catch (err) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Invalid items JSON format",
+      });
+    }
+
+    if (!parsedItems.length) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Items required",
+      });
+    }
+
+    if (!driver_name || !driver_phone || !vehicle_number) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Driver details required",
+      });
+    }
+
+    if (!pickup_address || !delivery_address) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: "Pickup & delivery address required",
+      });
+    }
+
+    // ================= FILES =================
+    const driverPhotoFile = req.files?.driver_photo?.[0] || null;
+    const dispatchImageFiles = req.files?.dispatch_images || [];
+    const dispatchVideoFile = req.files?.dispatch_video?.[0] || null;
+    const eWayBillFile = req.files?.e_way_bill?.[0] || null;
+
+    let driver_photo_url = null;
+    let dispatch_image_urls = [];
+    let dispatch_video_url = null;
+    let e_way_bill_url = null;
+
+    // upload logic unchanged
+    if (driverPhotoFile?.path) {
+      const uploaded = await uploadToCloudinary(driverPhotoFile.path, "new-item/driver-photo", "image");
+      driver_photo_url = uploaded.secure_url;
+    }
+
+    for (const file of dispatchImageFiles) {
+      const uploaded = await uploadToCloudinary(file.path, "new-item/dispatch-images", "image");
+      dispatch_image_urls.push(uploaded.secure_url);
+    }
+
+    if (dispatchVideoFile?.path) {
+      const uploaded = await uploadToCloudinary(dispatchVideoFile.path, "new-item/dispatch-video", "video");
+      dispatch_video_url = uploaded.secure_url;
+    }
+
+    if (eWayBillFile?.path) {
+      const isPdf =
+        eWayBillFile.mimetype === "application/pdf" ||
+        eWayBillFile.originalname?.toLowerCase().endsWith(".pdf");
+
+      const uploaded = await uploadToCloudinary(
+        eWayBillFile.path,
+        "new-item/e-way-bill",
+        isPdf ? "raw" : "image"
+      );
+
+      e_way_bill_url = uploaded.secure_url;
+    }
+
+    // ================= CREATE TRANSFER =================
+    const transfer = await StockTransfer.create(
+      {
+        transfer_no: generateTransferNo(),
+        from_organization_id: user.organization_id,
+        to_organization_id,
+        status: "in_transit",
+
+        driver_name,
+        driver_phone,
+        vehicle_number,
+        pickup_address,
+        delivery_address,
+        expected_delivery_date,
+        expected_delivery_time,
+        additional_notes,
+        remarks: remarks || null,
+
+        driver_photo_url,
+        dispatch_image_url: dispatch_image_urls.length
+          ? JSON.stringify(dispatch_image_urls)
+          : null,
+        dispatch_video_url,
+        e_way_bill_url,
+
+        created_by: user.id,
+        dispatched_by: user.id,
+      },
+      { transaction }
+    );
+
+    // ================= ITEMS =================
+    for (const row of parsedItems) {
+      const {
+        item_name,
+        article_code,
+        sku_code,
+        qty,
+        weight,
+        rate,
+        purity,
+        hsn_code,
+      } = row;
+
+      if (!item_name || !qty) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "item_name and qty required",
+        });
+      }
+
+      // ================= FIX: ITEM MASTER HANDLING =================
+      let item = null;
+
+      if (row.item_id) {
+        item = await Item.findByPk(row.item_id, { transaction });
+      }
+
+      // If item doesn't exist → create new item
+    if (!item) {
+  if (!row.metal_type || !row.category) {
+    await transaction.rollback();
+
+    return res.status(400).json({
+      success: false,
+      message: `metal_type and category are required for item ${item_name}`,
+    });
+  }
+
+  item = await Item.create(
+    {
+      article_code:
+        article_code ||
+        `ART-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+
+      sku_code: sku_code || null,
+
+      item_name,
+
+      metal_type: row.metal_type,
+      category: row.category,
+
+      purity: purity || "NA",
+
+      gross_weight: Number(weight || 0),
+
+      making_charge: Number(rate || 0),
+
+      hsn_code: hsn_code || null,
+
+      organization_id: user.organization_id,
+
+      is_active: true,
+    },
+    { transaction }
+  );
+}
+
+      await StockTransferItem.create(
+        {
+          transfer_id: transfer.id,
+
+          item_id: item.id,   // ✅ FIXED HERE
+
+          item_name,
+          article_code: article_code || null,
+          sku_code: sku_code || null,
+          purity: purity || null,
+          hsn_code: hsn_code || null,
+          qty: Number(qty),
+          weight: Number(weight || 0),
+          rate: Number(rate || 0),
+        },
+        { transaction }
+      );
+    }
+
+    await transaction.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "New item dispatched successfully",
+      data: {
+        transfer_id: transfer.id,
+        transfer_no: transfer.transfer_no,
+        status: "in_transit",
+      },
+    });
+  } catch (error) {
+    await transaction.rollback();
+
+    console.error("dispatchNewItemTransfer error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};

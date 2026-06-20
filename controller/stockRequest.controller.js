@@ -6304,7 +6304,7 @@ export const dispatchNewItemTransfer = async (req, res) => {
       }
 
       // If item doesn't exist → create new item
-    if (!item) {
+if (!item) {
   if (!row.metal_type || !row.category) {
     await transaction.rollback();
 
@@ -6326,14 +6326,43 @@ export const dispatchNewItemTransfer = async (req, res) => {
 
       metal_type: row.metal_type,
       category: row.category,
+      subcategory: row.subcategory || "",
+
+      details: row.details || null,
 
       purity: purity || "NA",
 
-      gross_weight: Number(weight || 0),
+      gross_weight: Number(
+        row.gross_weight || weight || 0
+      ),
 
-      making_charge: Number(rate || 0),
+      net_weight: Number(
+        row.net_weight || weight || 0
+      ),
+
+      stone_weight: Number(
+        row.stone_weight || 0
+      ),
+
+      stone_amount: Number(
+        row.stone_amount || 0
+      ),
+
+      making_charge: Number(
+        row.making_charge || rate || 0
+      ),
+
+      purchase_rate: Number(
+        row.purchase_rate || 0
+      ),
+
+      sale_rate: Number(
+        row.sale_rate || 0
+      ),
 
       hsn_code: hsn_code || null,
+
+      unit: row.unit || "PCS",
 
       organization_id: user.organization_id,
 
@@ -6343,23 +6372,44 @@ export const dispatchNewItemTransfer = async (req, res) => {
   );
 }
 
-      await StockTransferItem.create(
-        {
-          transfer_id: transfer.id,
+     await StockTransferItem.create(
+{
+  transfer_id: transfer.id,
 
-          item_id: item.id,   // ✅ FIXED HERE
+  item_id: item.id,
 
-          item_name,
-          article_code: article_code || null,
-          sku_code: sku_code || null,
-          purity: purity || null,
-          hsn_code: hsn_code || null,
-          qty: Number(qty),
-          weight: Number(weight || 0),
-          rate: Number(rate || 0),
-        },
-        { transaction }
-      );
+  qty: Number(qty),
+
+  weight: Number(weight || item.gross_weight || 0),
+
+  rate: Number(rate || item.sale_rate || 0),
+
+  remarks: remarks || null,
+
+  external_item_data: {
+    item_id: item.id,
+    item_name: item.item_name,
+    article_code: item.article_code,
+    sku_code: item.sku_code,
+    metal_type: item.metal_type,
+    category: item.category,
+    subcategory: item.subcategory,
+    details: item.details,
+    purity: item.purity,
+    gross_weight: item.gross_weight,
+    net_weight: item.net_weight,
+    stone_weight: item.stone_weight,
+    stone_amount: item.stone_amount,
+    making_charge: item.making_charge,
+    purchase_rate: item.purchase_rate,
+    sale_rate: item.sale_rate,
+    hsn_code: item.hsn_code,
+    unit: item.unit,
+    organization_id: item.organization_id,
+  },
+},
+{ transaction }
+);
     }
 
     await transaction.commit();

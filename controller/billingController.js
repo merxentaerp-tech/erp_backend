@@ -553,13 +553,8 @@ export const createBill = async (req, res) => {
 
       const orConditions = [];
 
-      if (cleanPhone) {
-        orConditions.push({ phone: cleanPhone });
-      }
-
-      if (cleanPan) {
-        orConditions.push({ pan_card_number: cleanPan });
-      }
+      if (cleanPhone) orConditions.push({ phone: cleanPhone });
+      if (cleanPan) orConditions.push({ pan_card_number: cleanPan });
 
       if (orConditions.length > 0) {
         finalCustomer = await Customer.findOne({
@@ -594,6 +589,11 @@ export const createBill = async (req, res) => {
     }
 
     const preparedItems = [];
+
+    let subtotalAmount = 0;
+    let totalMakingDeduction = 0;
+    let totalOtherDiscount = 0;
+    let totalGstAmount = 0;
     let grandTotal = 0;
 
     for (const row of items) {
@@ -605,8 +605,6 @@ export const createBill = async (req, res) => {
           : toNumber(row.qty);
 
       const net_weight = toNumber(row.net_weight);
-      const rate = toNumber(row.rate);
-      const making_charge_percent = toNumber(row.making_charge_percent);
 
       if (!item_id) {
         throw new Error("item_id is required for each item");
@@ -614,10 +612,6 @@ export const createBill = async (req, res) => {
 
       if (qty <= 0) {
         throw new Error(`Invalid qty for item ${item_id}`);
-      }
-
-      if (rate <= 0) {
-        throw new Error(`Invalid rate for item ${item_id}`);
       }
 
       const dbItem = await Item.findOne({
@@ -638,8 +632,6 @@ export const createBill = async (req, res) => {
       const unit = String(dbItem.unit || row.unit || "").toLowerCase();
       const isPieceItem = ["pcs", "pc", "piece", "pieces"].includes(unit);
 
-      // PCS item me qty editable hai.
-      // Weight based item me qty fixed 1 hai.
       if (!isPieceItem && qty !== 1) {
         throw new Error(`Qty must be 1 for weight-based item ${item_id}`);
       }
@@ -668,14 +660,114 @@ export const createBill = async (req, res) => {
         throw new Error(`Insufficient stock qty for item ${item_id}`);
       }
 
-      // if (!isPieceItem && openingWeight < net_weight) {
-      //   throw new Error(`Insufficient stock weight for item ${item_id}`);
+      /*
+        NEW PRICING STRUCTURE
+
+        selling_price                = item ka selling price
+        old_making_charge            = original making charge
+        making_charge_value          = editable/new making charge
+        making_charge_deduction      = old - new
+        other_discount               = optional, default 0
+        net_taxable_amount           = selling_price + new making - other discount
+        gst_amount                   = 3% of net taxable amount
+        total_amount                 = net taxable + gst
+      */
+
+      const sellingPrice = toNumber(
+        row.selling_price ||
+          row.sellingPrice ||
+          row.total_value ||
+          row.totalValue ||
+          row.rate ||
+          0
+      );
+
+      const oldMakingCharge = toNumber(
+        row.old_making_charge ||
+          row.oldMakingCharge ||
+          row.original_making_charge ||
+          row.originalMakingCharge ||
+          dbItem.making_charge_value ||
+          dbItem.making_charge ||
+          dbItem.making_charges ||
+          0
+      );
+
+      const makingChargeDeduction = toNumber(
+  row.making_charge_deduction ||
+    row.makingChargeDeduction ||
+    row.making_deduction ||
+    row.makingDeduction ||
+    0
+);
+
+if (makingChargeDeduction < 0) {
+  throw new Error(
+    `Making charge deduction cannot be negative for item ${item_id}`
+  );
+}
+
+if (makingChargeDeduction > oldMakingCharge) {
+  throw new Error(
+    `Making charge deduction cannot be greater than old making charge for item ${item_id}`
+  );
+}
+
+const newMakingCharge = oldMakingCharge - makingChargeDeduction;
+      const otherDiscount = toNumber(
+        row.other_discount ||
+          row.otherDiscount ||
+          row.any_other_discount ||
+          row.anyOtherDiscount ||
+          0
+      );
+
+      if (sellingPrice <= 0) {
+        throw new Error(`Invalid selling price for item ${item_id}`);
+      }
+
+      if (oldMakingCharge < 0) {
+        throw new Error(`Old making charge cannot be negative for item ${item_id}`);
+      }
+
+      if (newMakingCharge < 0) {
+        throw new Error(`Making charge cannot be negative for item ${item_id}`);
+      }
+
+      // if (oldMakingCharge > 0 && newMakingCharge > oldMakingCharge) {
+      //   throw new Error(
+      //     `New making charge cannot be greater than old making charge for item ${item_id}`
+      //   );
       // }
 
-      const baseAmount = isPieceItem ? qty * rate : net_weight * rate;
-      const makingChargeValue = (baseAmount * making_charge_percent) / 100;
-      const totalAmount = baseAmount + makingChargeValue;
+      // const makingChargeDeduction = Math.max(
+      //   oldMakingCharge - newMakingCharge,
+      //   0
+      // );
 
+      const taxableAmount = sellingPrice + newMakingCharge;
+
+      if (otherDiscount < 0) {
+        throw new Error(`Other discount cannot be negative for item ${item_id}`);
+      }
+
+      if (otherDiscount > taxableAmount) {
+        throw new Error(
+          `Other discount cannot be greater than taxable amount for item ${item_id}`
+        );
+      }
+
+      const netTaxableAmount = taxableAmount - otherDiscount;
+
+      const gstPercent = 3;
+      const gstAmount = (netTaxableAmount * gstPercent) / 100;
+
+      const totalAmount = netTaxableAmount + gstAmount;
+
+      subtotalAmount += taxableAmount;
+      totalMakingDeduction += makingChargeDeduction;
+      totalOtherDiscount += otherDiscount;
+      totalGstAmount += gstAmount;
       grandTotal += totalAmount;
 
       preparedItems.push({
@@ -713,10 +805,23 @@ export const createBill = async (req, res) => {
           ? 0
           : toNumber(row.stone_weight || dbItem.stone_weight || 0),
 
-        rate,
-        making_charge_percent,
-        making_charge_value: makingChargeValue,
+        selling_price: sellingPrice,
+
+        old_making_charge: oldMakingCharge,
+        making_charge_value: newMakingCharge,
+        making_charge_after_deduction: newMakingCharge,
+        making_charge_deduction: makingChargeDeduction,
+
+        other_discount: otherDiscount,
+
+        taxable_amount: taxableAmount,
+        net_taxable_amount: netTaxableAmount,
+
+        gst_percent: gstPercent,
+        gst_amount: gstAmount,
+
         total_amount: totalAmount,
+
         openingQty,
         openingWeight,
       });
@@ -741,15 +846,16 @@ export const createBill = async (req, res) => {
         store_code: cleanStoreCode,
         organization_id: Number(organization_id),
         customer_id: finalCustomer?.id || null,
+
         total_amount: Number(grandTotal.toFixed(2)),
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
+
         notes,
       },
       { transaction: t }
     );
 
-    //  NEW: invoice create with bill
     const invoiceNumber =
       typeof generateInvoiceNumber === "function"
         ? generateInvoiceNumber(cleanStoreCode)
@@ -758,8 +864,6 @@ export const createBill = async (req, res) => {
     const invoice = await Invoice.create(
       {
         invoice_number: invoiceNumber,
-
-        // Agar tumhare Invoice model me bill_id nahi hai to ye line remove kar dena.
         bill_id: bill.id,
 
         customer_id: finalCustomer?.id || null,
@@ -769,24 +873,15 @@ export const createBill = async (req, res) => {
 
         invoice_date: new Date(),
 
-       total_amount: Number(grandTotal.toFixed(2)),
+        total_amount: Number(grandTotal.toFixed(2)),
+        received_amount: Number(paidAmount.toFixed(2)),
+        pending_amount: Number(dueAmount.toFixed(2)),
 
-received_amount: Number(paidAmount.toFixed(2)),
-pending_amount: Number(dueAmount.toFixed(2)),
+        status:
+          dueAmount <= 0 ? "PAID" : paidAmount > 0 ? "PARTIAL" : "UNPAID",
 
-status:
-  dueAmount <= 0
-    ? "PAID"
-    : paidAmount > 0
-    ? "PARTIAL"
-    : "UNPAID",
-
-payment_status:
-  dueAmount <= 0
-    ? "PAID"
-    : paidAmount > 0
-    ? "PARTIAL"
-    : "UNPAID",
+        payment_status:
+          dueAmount <= 0 ? "PAID" : paidAmount > 0 ? "PARTIAL" : "UNPAID",
 
         notes,
         created_by: req.user?.id || null,
@@ -805,46 +900,82 @@ payment_status:
         {
           bill_id: bill.id,
           item_id: row.item_id,
+
           product_code: row.product_code,
           description: row.description,
+
           net_weight: row.net_weight,
-          rate: row.rate,
-          making_charge_percent: row.making_charge_percent,
+
+          rate: Number(row.selling_price.toFixed(2)),
+          selling_price: Number(row.selling_price.toFixed(2)),
+
+          old_making_charge: Number(row.old_making_charge.toFixed(2)),
           making_charge_value: Number(row.making_charge_value.toFixed(2)),
+          making_charge_after_deduction: Number(
+            row.making_charge_after_deduction.toFixed(2)
+          ),
+          making_charge_deduction: Number(
+            row.making_charge_deduction.toFixed(2)
+          ),
+
+          other_discount: Number(row.other_discount.toFixed(2)),
+
+          taxable_amount: Number(row.taxable_amount.toFixed(2)),
+          net_taxable_amount: Number(row.net_taxable_amount.toFixed(2)),
+
+          gst_percent: Number(row.gst_percent.toFixed(2)),
+          gst_amount: Number(row.gst_amount.toFixed(2)),
+
           total_amount: Number(row.total_amount.toFixed(2)),
         },
         { transaction: t }
       );
 
-      // NEW: invoice item create with bill item
       await InvoiceItem.create(
-{
-  invoice_id: invoice.id,
-  item_id: row.item_id,
+        {
+          invoice_id: invoice.id,
+          item_id: row.item_id,
 
-  product_code: row.product_code,
+          product_code: row.product_code,
 
-  product_name:
-    row.item_name ||
-    row.description ||
-    row.product_code ||
-    "Product",
+          product_name:
+            row.item_name ||
+            row.description ||
+            row.product_code ||
+            "Product",
 
-  description: row.description,
+          description: row.description,
 
-  purity: row.purity,
+          purity: row.purity,
 
-  gross_weight: row.gross_weight,
-  net_weight: row.net_weight,
-  stone_weight: row.stone_weight,
+          gross_weight: row.gross_weight,
+          net_weight: row.net_weight,
+          stone_weight: row.stone_weight,
 
-  rate: row.rate,
-  making_charge_percent: row.making_charge_percent,
+          rate: Number(row.selling_price.toFixed(2)),
+          selling_price: Number(row.selling_price.toFixed(2)),
 
-  total_amount: Number(row.total_amount.toFixed(2)),
-},
-{ transaction: t }
-);
+          old_making_charge: Number(row.old_making_charge.toFixed(2)),
+          making_charge_value: Number(row.making_charge_value.toFixed(2)),
+          making_charge_after_deduction: Number(
+            row.making_charge_after_deduction.toFixed(2)
+          ),
+          making_charge_deduction: Number(
+            row.making_charge_deduction.toFixed(2)
+          ),
+
+          other_discount: Number(row.other_discount.toFixed(2)),
+
+          taxable_amount: Number(row.taxable_amount.toFixed(2)),
+          net_taxable_amount: Number(row.net_taxable_amount.toFixed(2)),
+
+          gst_percent: Number(row.gst_percent.toFixed(2)),
+          gst_amount: Number(row.gst_amount.toFixed(2)),
+
+          total_amount: Number(row.total_amount.toFixed(2)),
+        },
+        { transaction: t }
+      );
 
       await row.stock.update(
         {
@@ -873,20 +1004,18 @@ payment_status:
         { transaction: t }
       );
 
-      // Unique / weight item sold lock.
-      // PCS item me same item ka stock remaining ho sakta hai.
       if (!row.isPieceItem || updatedQty <= 0) {
         await Item.update(
-  {
-    current_status: updatedQty > 0 ? "in_stock" : "sold",
-  },
-  {
-    where: {
-      id: row.item_id,
-    },
-    transaction: t,
-  }
-);
+          {
+            current_status: "sold",
+          },
+          {
+            where: {
+              id: row.item_id,
+            },
+            transaction: t,
+          }
+        );
       }
     }
 
@@ -897,10 +1026,7 @@ payment_status:
           organization_id,
           store_code: cleanStoreCode,
           bill_id: bill.id,
-
-          // Agar tumhare LedgerEntry model me invoice_id hai to ye useful hai.
           invoice_id: invoice.id,
-
           type: "DEBIT",
           amount: Number(grandTotal.toFixed(2)),
           remarks: `Bill created: ${billNumber}`,
@@ -916,10 +1042,7 @@ payment_status:
             organization_id,
             store_code: cleanStoreCode,
             bill_id: bill.id,
-
-            // Agar tumhare LedgerEntry model me invoice_id hai to ye useful hai.
             invoice_id: invoice.id,
-
             type: "CREDIT",
             amount: Number(paidAmount.toFixed(2)),
             remarks: `Payment received against bill: ${billNumber}`,
@@ -946,10 +1069,45 @@ payment_status:
         customer_name: finalCustomer?.name || null,
 
         total_items: preparedItems.length,
+
+        subtotal_amount: Number(subtotalAmount.toFixed(2)),
+        total_making_deduction: Number(totalMakingDeduction.toFixed(2)),
+        total_other_discount: Number(totalOtherDiscount.toFixed(2)),
+        total_gst_amount: Number(totalGstAmount.toFixed(2)),
+
         total_amount: Number(grandTotal.toFixed(2)),
         paid_amount: Number(paidAmount.toFixed(2)),
         due_amount: Number(dueAmount.toFixed(2)),
-        payment_status: dueAmount > 0 ? "partial" : "paid",
+
+        payment_status:
+          dueAmount <= 0 ? "paid" : paidAmount > 0 ? "partial" : "unpaid",
+
+        items: preparedItems.map((item) => ({
+          item_id: item.item_id,
+          product_code: item.product_code,
+          item_name: item.item_name,
+
+          selling_price: Number(item.selling_price.toFixed(2)),
+
+          old_making_charge: Number(item.old_making_charge.toFixed(2)),
+          making_charge_value: Number(item.making_charge_value.toFixed(2)),
+          making_charge_after_deduction: Number(
+            item.making_charge_after_deduction.toFixed(2)
+          ),
+          making_charge_deduction: Number(
+            item.making_charge_deduction.toFixed(2)
+          ),
+
+          other_discount: Number(item.other_discount.toFixed(2)),
+
+          taxable_amount: Number(item.taxable_amount.toFixed(2)),
+          net_taxable_amount: Number(item.net_taxable_amount.toFixed(2)),
+
+          gst_percent: item.gst_percent,
+          gst_amount: Number(item.gst_amount.toFixed(2)),
+
+          total_amount: Number(item.total_amount.toFixed(2)),
+        })),
       },
     });
   } catch (error) {
@@ -1101,10 +1259,10 @@ export const scanBillingItem = async (req, res) => {
     const organizationId = req.user?.organization_id;
 
     const session_id =
-  req.headers["x-billing-session-id"] ||
-  req.body?.session_id ||
-  req.query?.session_id ||
-  null;
+      req.headers["x-billing-session-id"] ||
+      req.body?.session_id ||
+      req.query?.session_id ||
+      null;
 
     if (!rawCode) {
       return res.status(400).json({
@@ -1188,12 +1346,47 @@ export const scanBillingItem = async (req, res) => {
     }
 
     const netWeight = toNumber(item.net_weight);
-    const rate = toNumber(item.sale_rate);
-    const makingPercent = toNumber(item.making_charge);
+    const saleRate = toNumber(item.sale_rate);
 
-    const metalValue = netWeight * rate;
-    const makingValue = (metalValue * makingPercent) / 100;
-    const totalAmount = metalValue + makingValue;
+    /*
+      NEW SCAN PRICING STRUCTURE
+
+      selling_price       = item selling value
+      old_making_charge   = original making charge
+      making_charge_value = editable making charge initially same as old
+      other_discount      = optional, default 0
+      taxable_amount      = selling_price + making_charge_value
+      net_taxable_amount  = taxable_amount - other_discount
+      gst_amount          = 3%
+      total_amount        = net_taxable_amount + gst
+    */
+
+    const sellingPrice = toNumber(
+      item.selling_price ||
+        item.total_value ||
+        item.sale_price ||
+        item.sale_rate ||
+        0
+    );
+
+    const oldMakingCharge = toNumber(
+      item.making_charge_value ||
+        item.making_charges ||
+        item.making_charge ||
+        0
+    );
+
+    const makingChargeValue = oldMakingCharge;
+    const makingChargeDeduction = 0;
+    const otherDiscount = 0;
+
+    const taxableAmount = sellingPrice + makingChargeValue;
+    const netTaxableAmount = taxableAmount - otherDiscount;
+
+    const gstPercent = 3;
+    const gstAmount = (netTaxableAmount * gstPercent) / 100;
+
+    const totalAmount = netTaxableAmount + gstAmount;
 
     const scannedItem = {
       item_id: item.id,
@@ -1215,12 +1408,25 @@ export const scanBillingItem = async (req, res) => {
       stone_weight: toNumber(item.stone_weight),
       stone_amount: toNumber(item.stone_amount),
 
-      rate,
+      rate: Number(saleRate.toFixed(2)),
       purchase_rate: toNumber(item.purchase_rate),
-      sale_rate: toNumber(item.sale_rate),
+      sale_rate: Number(saleRate.toFixed(2)),
 
-      making_charge_percent: makingPercent,
-      making_charge_value: Number(makingValue.toFixed(2)),
+      selling_price: Number(sellingPrice.toFixed(2)),
+
+      old_making_charge: Number(oldMakingCharge.toFixed(2)),
+      making_charge_value: Number(makingChargeValue.toFixed(2)),
+      making_charge_after_deduction: Number(makingChargeValue.toFixed(2)),
+      making_charge_deduction: Number(makingChargeDeduction.toFixed(2)),
+
+      other_discount: Number(otherDiscount.toFixed(2)),
+
+      taxable_amount: Number(taxableAmount.toFixed(2)),
+      net_taxable_amount: Number(netTaxableAmount.toFixed(2)),
+
+      gst_percent: Number(gstPercent.toFixed(2)),
+      gst_amount: Number(gstAmount.toFixed(2)),
+
       total_amount: Number(totalAmount.toFixed(2)),
 
       hsn_code: item.hsn_code,
@@ -1243,21 +1449,21 @@ export const scanBillingItem = async (req, res) => {
       scanned_at: new Date(),
     };
 
-   try {
-  if (session_id) {
-    emitBillingScan({
-      organization_id: organizationId,
-      store_code:
-        req.user?.store_code ||
-        req.user?.store?.store_code ||
-        null,
-      session_id,
-      item: scannedItem,
-    });
-  }
-} catch (socketError) {
-  console.error("Billing socket emit error:", socketError.message);
-}
+    try {
+      if (session_id) {
+        emitBillingScan({
+          organization_id: organizationId,
+          store_code:
+            req.user?.store_code ||
+            req.user?.store?.store_code ||
+            null,
+          session_id,
+          item: scannedItem,
+        });
+      }
+    } catch (socketError) {
+      console.error("Billing socket emit error:", socketError.message);
+    }
 
     return res.status(200).json({
       success: true,

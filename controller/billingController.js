@@ -1004,20 +1004,19 @@ const newMakingCharge = oldMakingCharge - makingChargeDeduction;
         { transaction: t }
       );
 
-      if (!row.isPieceItem || updatedQty <= 0) {
-        await Item.update(
-          {
-            current_status: "sold",
-          },
-          {
-            where: {
-              id: row.item_id,
-            },
-            transaction: t,
-          }
-        );
-      }
+     if (updatedQty <= 0) {
+  await Item.update(
+    {
+      current_status: "sold",
+    },
+    {
+      where: {
+        id: row.item_id,
+      },
+      transaction: t,
     }
+  );
+}}
 
     if (finalCustomer) {
       await LedgerEntry.create(

@@ -1,4 +1,4 @@
-import fs from "fs";
+// import fs from "fs";
 import sequelize from "../config/db.js";
 import { Op, where, cast, col, QueryTypes } from "sequelize";
 

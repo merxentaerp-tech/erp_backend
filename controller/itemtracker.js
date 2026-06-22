@@ -341,11 +341,10 @@ export const getItemTrackerBatches = async (req, res) => {
       });
     }
 
-    const whereClauses = [
-      "b.item_id = :item_id",
-      "b.parent_batch_id IS NULL",
-      "COALESCE(i.is_active, true) = true",
-    ];
+ const whereClauses = [
+  "b.item_id = :item_id",
+  "COALESCE(i.is_active, true) = true",
+];
 
     const replacements = {
       item_id: itemId,

@@ -6140,9 +6140,53 @@ export const downloadDeliveryChallanByTransfer = async (req, res) => {
 };
 
 
+import fs from "fs";
+
 export const dispatchNewItemTransfer = async (req, res) => {
   const transaction = await sequelize.transaction();
   const uploadedLocalPaths = [];
+
+  const safeRollback = async () => {
+    if (!transaction.finished) {
+      await transaction.rollback();
+    }
+  };
+
+  const addLocalPath = (file) => {
+    if (file?.path) uploadedLocalPaths.push(file.path);
+  };
+
+  const isValidPhone = (phone) => /^[6-9]\d{9}$/.test(String(phone).trim());
+
+  const isPositiveNumber = (value) =>
+    !isNaN(Number(value)) && Number(value) > 0;
+
+  const isValidNonNegativeNumber = (value) => {
+    return value === undefined || value === null || value === ""
+      ? true
+      : !isNaN(Number(value)) && Number(value) >= 0;
+  };
+
+  const isPastDate = (date) => {
+    if (!date) return false;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const inputDate = new Date(date);
+    inputDate.setHours(0, 0, 0, 0);
+
+    return inputDate < today;
+  };
+
+  const uploadFileSafely = async (file, folder, type, errorMessage) => {
+    try {
+      const uploaded = await uploadToCloudinary(file.path, folder, type);
+      return uploaded.secure_url;
+    } catch (err) {
+      throw new Error(errorMessage || "File upload failed");
+    }
+  };
 
   try {
     const {
@@ -6161,6 +6205,22 @@ export const dispatchNewItemTransfer = async (req, res) => {
 
     const user = req.user;
 
+    if (!user?.id || !user?.organization_id) {
+      await safeRollback();
+      return res.status(401).json({
+        success: false,
+        message: "Invalid user token",
+      });
+    }
+
+    if (!to_organization_id) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Destination organization is required",
+      });
+    }
+
     let parsedItems = [];
 
     try {
@@ -6172,34 +6232,74 @@ export const dispatchNewItemTransfer = async (req, res) => {
         parsedItems = parseItemsFromBody(req.body) || [];
       }
     } catch (err) {
-      await transaction.rollback();
+      await safeRollback();
       return res.status(400).json({
         success: false,
         message: "Invalid items JSON format",
       });
     }
 
-    if (!parsedItems.length) {
-      await transaction.rollback();
+    if (!Array.isArray(parsedItems) || !parsedItems.length) {
+      await safeRollback();
       return res.status(400).json({
         success: false,
         message: "Items required",
       });
     }
 
-    if (!driver_name || !driver_phone || !vehicle_number) {
-      await transaction.rollback();
+    if (!driver_name || !String(driver_name).trim()) {
+      await safeRollback();
       return res.status(400).json({
         success: false,
-        message: "Driver details required",
+        message: "Driver name is required",
       });
     }
 
-    if (!pickup_address || !delivery_address) {
-      await transaction.rollback();
+    if (!driver_phone || !String(driver_phone).trim()) {
+      await safeRollback();
       return res.status(400).json({
         success: false,
-        message: "Pickup & delivery address required",
+        message: "Driver phone is required",
+      });
+    }
+
+    if (!isValidPhone(driver_phone)) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Driver phone must be a valid 10 digit Indian mobile number",
+      });
+    }
+
+    if (!vehicle_number || !String(vehicle_number).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Vehicle number is required",
+      });
+    }
+
+    if (!pickup_address || !String(pickup_address).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Pickup address is required",
+      });
+    }
+
+    if (!delivery_address || !String(delivery_address).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Delivery address is required",
+      });
+    }
+
+    if (expected_delivery_date && isPastDate(expected_delivery_date)) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Expected delivery date cannot be in the past",
       });
     }
 
@@ -6209,25 +6309,43 @@ export const dispatchNewItemTransfer = async (req, res) => {
     const dispatchVideoFile = req.files?.dispatch_video?.[0] || null;
     const eWayBillFile = req.files?.e_way_bill?.[0] || null;
 
+    addLocalPath(driverPhotoFile);
+    dispatchImageFiles.forEach(addLocalPath);
+    addLocalPath(dispatchVideoFile);
+    addLocalPath(eWayBillFile);
+
     let driver_photo_url = null;
     let dispatch_image_urls = [];
     let dispatch_video_url = null;
     let e_way_bill_url = null;
 
-    // upload logic unchanged
     if (driverPhotoFile?.path) {
-      const uploaded = await uploadToCloudinary(driverPhotoFile.path, "new-item/driver-photo", "image");
-      driver_photo_url = uploaded.secure_url;
+      driver_photo_url = await uploadFileSafely(
+        driverPhotoFile,
+        "new-item/driver-photo",
+        "image",
+        "Failed to upload driver photo"
+      );
     }
 
     for (const file of dispatchImageFiles) {
-      const uploaded = await uploadToCloudinary(file.path, "new-item/dispatch-images", "image");
-      dispatch_image_urls.push(uploaded.secure_url);
+      const imageUrl = await uploadFileSafely(
+        file,
+        "new-item/dispatch-images",
+        "image",
+        "Failed to upload dispatch image"
+      );
+
+      dispatch_image_urls.push(imageUrl);
     }
 
     if (dispatchVideoFile?.path) {
-      const uploaded = await uploadToCloudinary(dispatchVideoFile.path, "new-item/dispatch-video", "video");
-      dispatch_video_url = uploaded.secure_url;
+      dispatch_video_url = await uploadFileSafely(
+        dispatchVideoFile,
+        "new-item/dispatch-video",
+        "video",
+        "Failed to upload dispatch video"
+      );
     }
 
     if (eWayBillFile?.path) {
@@ -6235,13 +6353,12 @@ export const dispatchNewItemTransfer = async (req, res) => {
         eWayBillFile.mimetype === "application/pdf" ||
         eWayBillFile.originalname?.toLowerCase().endsWith(".pdf");
 
-      const uploaded = await uploadToCloudinary(
-        eWayBillFile.path,
+      e_way_bill_url = await uploadFileSafely(
+        eWayBillFile,
         "new-item/e-way-bill",
-        isPdf ? "raw" : "image"
+        isPdf ? "raw" : "image",
+        "Failed to upload e-way bill"
       );
-
-      e_way_bill_url = uploaded.secure_url;
     }
 
     // ================= CREATE TRANSFER =================
@@ -6252,11 +6369,11 @@ export const dispatchNewItemTransfer = async (req, res) => {
         to_organization_id,
         status: "in_transit",
 
-        driver_name,
-        driver_phone,
-        vehicle_number,
-        pickup_address,
-        delivery_address,
+        driver_name: String(driver_name).trim(),
+        driver_phone: String(driver_phone).trim(),
+        vehicle_number: String(vehicle_number).trim(),
+        pickup_address: String(pickup_address).trim(),
+        delivery_address: String(delivery_address).trim(),
         expected_delivery_date,
         expected_delivery_time,
         additional_notes,
@@ -6288,11 +6405,91 @@ export const dispatchNewItemTransfer = async (req, res) => {
         hsn_code,
       } = row;
 
-      if (!item_name || !qty) {
-        await transaction.rollback();
+      if (!item_name || !String(item_name).trim()) {
+        await safeRollback();
         return res.status(400).json({
           success: false,
-          message: "item_name and qty required",
+          message: "item_name is required",
+        });
+      }
+
+      if (!isPositiveNumber(qty)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Valid qty is required for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(rate)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Rate cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.gross_weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Gross weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.net_weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Net weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.stone_weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stone weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.stone_amount)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stone amount cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.making_charge)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Making charge cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.purchase_rate)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Purchase rate cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.sale_rate)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Sale rate cannot be negative for item ${item_name}`,
         });
       }
 
@@ -6304,112 +6501,105 @@ export const dispatchNewItemTransfer = async (req, res) => {
       }
 
       // If item doesn't exist → create new item
-if (!item) {
-  if (!row.metal_type || !row.category) {
-    await transaction.rollback();
+      if (!item) {
+        if (!row.metal_type || !String(row.metal_type).trim()) {
+          await safeRollback();
+          return res.status(400).json({
+            success: false,
+            message: `metal_type is required for item ${item_name}`,
+          });
+        }
 
-    return res.status(400).json({
-      success: false,
-      message: `metal_type and category are required for item ${item_name}`,
-    });
-  }
+        if (!row.category || !String(row.category).trim()) {
+          await safeRollback();
+          return res.status(400).json({
+            success: false,
+            message: `category is required for item ${item_name}`,
+          });
+        }
 
-  item = await Item.create(
-    {
-      article_code:
-        article_code ||
-        `ART-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        item = await Item.create(
+          {
+            article_code:
+              article_code ||
+              `ART-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
 
-      sku_code: sku_code || null,
+            sku_code: sku_code || null,
 
-      item_name,
+            item_name: String(item_name).trim(),
 
-      metal_type: row.metal_type,
-      category: row.category,
-      subcategory: row.subcategory || "",
+            metal_type: row.metal_type,
+            category: row.category,
+            subcategory: row.subcategory || "",
 
-      details: row.details || null,
+            details: row.details || null,
 
-      purity: purity || "NA",
+            purity: purity || "NA",
 
-      gross_weight: Number(
-        row.gross_weight || weight || 0
-      ),
+            gross_weight: Number(row.gross_weight || weight || 0),
 
-      net_weight: Number(
-        row.net_weight || weight || 0
-      ),
+            net_weight: Number(row.net_weight || weight || 0),
 
-      stone_weight: Number(
-        row.stone_weight || 0
-      ),
+            stone_weight: Number(row.stone_weight || 0),
 
-      stone_amount: Number(
-        row.stone_amount || 0
-      ),
+            stone_amount: Number(row.stone_amount || 0),
 
-      making_charge: Number(
-        row.making_charge || rate || 0
-      ),
+            making_charge: Number(row.making_charge || rate || 0),
 
-      purchase_rate: Number(
-        row.purchase_rate || 0
-      ),
+            purchase_rate: Number(row.purchase_rate || 0),
 
-      sale_rate: Number(
-        row.sale_rate || 0
-      ),
+            sale_rate: Number(row.sale_rate || 0),
 
-      hsn_code: hsn_code || null,
+            hsn_code: hsn_code || null,
 
-      unit: row.unit || "PCS",
+            unit: row.unit || "PCS",
 
-      organization_id: user.organization_id,
+            organization_id: user.organization_id,
 
-      is_active: true,
-    },
-    { transaction }
-  );
-}
+            is_active: true,
+          },
+          { transaction }
+        );
+      }
 
-     await StockTransferItem.create(
-{
-  transfer_id: transfer.id,
+      await StockTransferItem.create(
+        {
+          transfer_id: transfer.id,
 
-  item_id: item.id,
+          item_id: item.id,
 
-  qty: Number(qty),
+          qty: Number(qty),
 
-  weight: Number(weight || item.gross_weight || 0),
+          weight: Number(weight || item.gross_weight || 0),
 
-  rate: Number(rate || item.sale_rate || 0),
+          rate: Number(rate || item.sale_rate || 0),
 
-  remarks: remarks || null,
+          remarks: remarks || null,
 
-  external_item_data: {
-    item_id: item.id,
-    item_name: item.item_name,
-    article_code: item.article_code,
-    sku_code: item.sku_code,
-    metal_type: item.metal_type,
-    category: item.category,
-    subcategory: item.subcategory,
-    details: item.details,
-    purity: item.purity,
-    gross_weight: item.gross_weight,
-    net_weight: item.net_weight,
-    stone_weight: item.stone_weight,
-    stone_amount: item.stone_amount,
-    making_charge: item.making_charge,
-    purchase_rate: item.purchase_rate,
-    sale_rate: item.sale_rate,
-    hsn_code: item.hsn_code,
-    unit: item.unit,
-    organization_id: item.organization_id,
-  },
-},
-{ transaction }
-);
+          external_item_data: {
+            item_id: item.id,
+            item_name: item.item_name,
+            article_code: item.article_code,
+            sku_code: item.sku_code,
+            metal_type: item.metal_type,
+            category: item.category,
+            subcategory: item.subcategory,
+            details: item.details,
+            purity: item.purity,
+            gross_weight: item.gross_weight,
+            net_weight: item.net_weight,
+            stone_weight: item.stone_weight,
+            stone_amount: item.stone_amount,
+            making_charge: item.making_charge,
+            purchase_rate: item.purchase_rate,
+            sale_rate: item.sale_rate,
+            hsn_code: item.hsn_code,
+            unit: item.unit,
+            organization_id: item.organization_id,
+          },
+        },
+        { transaction }
+      );
     }
 
     await transaction.commit();
@@ -6424,14 +6614,23 @@ if (!item) {
       },
     });
   } catch (error) {
-    await transaction.rollback();
+    await safeRollback();
 
     console.error("dispatchNewItemTransfer error:", error);
 
     return res.status(500).json({
       success: false,
-      message: "Server error",
-      error: error.message,
+      message: error.message || "Server error",
     });
+  } finally {
+    for (const filePath of uploadedLocalPaths) {
+      try {
+        if (filePath && fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (err) {
+        console.error("Local file cleanup error:", err.message);
+      }
+    }
   }
 };

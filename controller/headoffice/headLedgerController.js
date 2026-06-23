@@ -226,7 +226,7 @@ const current = await sequelize.query(`
     st.store_name,
     st.organization_level,
 
-    MAX(u.name) AS store_manager,
+    MAX(u.username) AS store_manager,
 
     COUNT(DISTINCT inv.id) AS total_deals,
 

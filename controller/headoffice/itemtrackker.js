@@ -734,7 +734,7 @@ export const getBatchFinalDestinations = async (req, res) => {
         bs.reference_id,
         bs.remarks,
         bs.created_by,
-        u.name AS handled_by_name,
+        u.username AS handled_by_name,
         u.profile_image AS handled_by_image_url,
         bs.created_at
 

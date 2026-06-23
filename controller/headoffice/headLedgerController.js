@@ -3,6 +3,10 @@ import { QueryTypes } from "sequelize";
 import ExcelJS from "exceljs";
 import PDFDocument from "pdfkit";
 import { Invoice } from "../../model/index.js";
+import Customer from "../../model/Customer.js";
+import fs from "fs";
+import path from "path";
+
 export const exportLedgerExcel = async (req, res) => {
   try {
     const { store_code } = req.params;
@@ -226,7 +230,7 @@ const current = await sequelize.query(`
     st.store_name,
     st.organization_level,
 
-    MAX(u.username) AS store_manager,
+   MAX(u.username) AS store_manager,
 
     COUNT(DISTINCT inv.id) AS total_deals,
 
@@ -517,10 +521,18 @@ export const exportDashboardAndLedgerExcel = async (req, res) => {
 
 export const downloadInvoicePdf = async (req, res) => {
   try {
+    const invoice_id = Number(req.params.invoice_id);
 
-    const { invoice_id } = req.params;
+    if (isNaN(invoice_id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid invoice id",
+      });
+    }
 
-    const invoice = await Invoice.findByPk(invoice_id);
+    const invoice = await Invoice.findByPk(invoice_id, {
+      raw: true,
+    });
 
     if (!invoice) {
       return res.status(404).json({
@@ -529,71 +541,364 @@ export const downloadInvoicePdf = async (req, res) => {
       });
     }
 
-    // ================= PDF =================
+    const customer = invoice.customer_id
+      ? await Customer.findOne({
+          where: { id: invoice.customer_id },
+          raw: true,
+        })
+      : null;
+
+    const items = await sequelize.query(
+      `
+      SELECT *
+      FROM invoice_items
+      WHERE invoice_id = :invoice_id
+      ORDER BY id ASC
+      `,
+      {
+        replacements: { invoice_id },
+        type: QueryTypes.SELECT,
+      }
+    );
+
     const doc = new PDFDocument({
-      margin: 40,
       size: "A4",
+      margin: 0,
     });
 
-    // ================= HEADERS =================
-    res.setHeader("Content-Type", "application/pdf");
+    const fileName = `invoice-${invoice.invoice_number || invoice.id}.pdf`;
 
+    res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=invoice-${invoice.invoice_number}.pdf`
+      `attachment; filename="${fileName}"`
     );
 
     doc.pipe(res);
 
-    // ================= TITLE =================
-    doc
-      .fontSize(22)
-      .text("Invoice Report", {
-        align: "center",
+    const logoPath = path.join(process.cwd(), "public", "logo.png");
+
+    const COLORS = {
+      bg: "#F8F6F3",
+      white: "#FFFFFF",
+      primary: "#2C3E50",
+      secondary: "#7B6D62",
+      accent: "#C7A17A",
+      accentLight: "#EFE5DA",
+      border: "#E7DED5",
+      tableHead: "#A27B5C",
+      text: "#6B7280",
+    };
+
+    const drawText = (
+      text,
+      x,
+      y,
+      size = 10,
+      color = COLORS.primary,
+      bold = false,
+      align = "left",
+      width = 100
+    ) => {
+      doc
+        .fillColor(color)
+        .font(bold ? "Helvetica-Bold" : "Helvetica")
+        .fontSize(size)
+        .text(String(text ?? ""), x, y, {
+          width,
+          align,
+        });
+    };
+
+    const roundedBox = (
+      x,
+      y,
+      w,
+      h,
+      fill = COLORS.white,
+      border = COLORS.border,
+      radius = 12
+    ) => {
+      doc.fillColor(fill).roundedRect(x, y, w, h, radius).fill();
+
+      doc
+        .strokeColor(border)
+        .lineWidth(1)
+        .roundedRect(x, y, w, h, radius)
+        .stroke();
+    };
+
+    doc.fillColor(COLORS.bg).rect(0, 0, 595, 842).fill();
+
+    roundedBox(25, 25, 545, 150, COLORS.white, COLORS.border, 18);
+
+    doc.fillColor(COLORS.accent).roundedRect(25, 25, 8, 150, 10).fill();
+
+    if (fs.existsSync(logoPath)) {
+      doc.image(logoPath, 45, 48, {
+        fit: [70, 70],
       });
+    }
 
-    doc.moveDown(2);
+    drawText("TAX INVOICE", 0, 38, 30, COLORS.primary, true, "center", 595);
 
-    // ================= INVOICE DETAILS =================
-    doc.fontSize(14);
-
-    doc.text(`Invoice Number: ${invoice.invoice_number || "-"}`);
-
-    doc.text(`Invoice ID: ${invoice.id}`);
-
-    doc.text(`Customer ID: ${invoice.customer_id || "-"}`);
-
-    doc.text(`Store Code: ${invoice.store_code || "-"}`);
-
-    doc.text(`Status: ${invoice.status || "-"}`);
-
-    doc.moveDown();
-
-    doc.text(`Total Amount: ₹${invoice.total_amount || 0}`);
-
-    doc.text(`Received Amount: ₹${invoice.received_amount || 0}`);
-
-    doc.text(`Pending Amount: ₹${invoice.pending_amount || 0}`);
-
-    doc.moveDown(2);
-
-    // ================= FOOTER =================
     doc
-      .fontSize(12)
-      .text(
-        `Generated At: ${new Date().toLocaleString()}`
+      .strokeColor(COLORS.accent)
+      .lineWidth(2)
+      .moveTo(255, 82)
+      .lineTo(340, 82)
+      .stroke();
+
+    drawText(
+      "Merxenta Global Private Limited",
+      0,
+      102,
+      18,
+      COLORS.primary,
+      true,
+      "center",
+      595
+    );
+
+    drawText(
+      "H. No. 999/9, Gurugram, Haryana, India",
+      0,
+      130,
+      10,
+      COLORS.text,
+      false,
+      "center",
+      595
+    );
+
+    drawText(
+      "PH: 0120-256211",
+      0,
+      146,
+      10,
+      COLORS.text,
+      false,
+      "center",
+      595
+    );
+
+    doc.fillColor("#D9C2A8").roundedRect(25, 192, 380, 6, 5).fill();
+
+    doc
+      .fillColor("#B08968")
+      .polygon([405, 192], [570, 192], [545, 198], [385, 198])
+      .fill();
+
+    const infoCard = (x, y, w, h, title, value) => {
+      roundedBox(x, y, w, h, COLORS.white, COLORS.border, 16);
+
+      doc.fillColor(COLORS.accentLight).roundedRect(x, y, 8, h, 16).fill();
+
+      drawText(title, x + 24, y + 15, 9, COLORS.secondary, true);
+      drawText(value, x + 24, y + 38, 13, COLORS.primary, true, "left", w - 35);
+    };
+
+    const infoY = 225;
+
+    infoCard(
+      30,
+      infoY,
+      255,
+      70,
+      "Customer Name",
+      customer?.name || customer?.customer_name || "-"
+    );
+
+    infoCard(
+      310,
+      infoY,
+      255,
+      70,
+      "Invoice Number",
+      invoice.invoice_number || invoice.id
+    );
+
+    infoCard(
+      30,
+      infoY + 85,
+      255,
+      70,
+      "Customer ID",
+      invoice.customer_id || "-"
+    );
+
+    infoCard(
+      310,
+      infoY + 85,
+      255,
+      70,
+      "Invoice Date",
+      new Date(invoice.invoice_date || invoice.createdAt || Date.now())
+        .toLocaleDateString("en-IN")
+    );
+
+    infoCard(
+      30,
+      infoY + 170,
+      255,
+      70,
+      "Store Code",
+      invoice.store_code || "-"
+    );
+
+    infoCard(
+      310,
+      infoY + 170,
+      255,
+      70,
+      "Status",
+      invoice.status || "-"
+    );
+
+    let y = 500;
+
+    const columns = [
+      { title: "S.No", x: 30, width: 50 },
+      { title: "Product", x: 80, width: 145 },
+      { title: "Qty", x: 225, width: 55 },
+      { title: "Rate", x: 280, width: 75 },
+      { title: "Making", x: 355, width: 75 },
+      { title: "GST", x: 430, width: 60 },
+      { title: "Amount", x: 490, width: 75 },
+    ];
+
+    columns.forEach((col) => {
+      doc.fillColor(COLORS.tableHead).rect(col.x, y, col.width, 42).fill();
+
+      drawText(
+        col.title,
+        col.x,
+        y + 14,
+        10,
+        COLORS.white,
+        true,
+        "center",
+        col.width
       );
-
-    doc.end();
-
-  } catch (error) {
-
-    console.error("Download Invoice PDF Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
     });
 
+    y += 42;
+
+    let totalQty = 0;
+    let totalAmount = 0;
+
+    items.forEach((item, index) => {
+      const bg = index % 2 === 0 ? "#FFFFFF" : "#FAF7F4";
+
+      const qty = Number(item.quantity || 0);
+      const rate = Number(item.rate || item.sale_rate || 0);
+      const making = Number(item.making_charge || item.making_charge_value || 0);
+      const gst = Number(item.gst_amount || 0);
+      const amount = Number(item.total_amount || 0);
+
+      totalQty += qty;
+      totalAmount += amount;
+
+      const row = [
+        index + 1,
+        item.product_name || item.description || item.item_name || "-",
+        qty,
+        rate.toFixed(2),
+        making.toFixed(2),
+        gst.toFixed(2),
+        amount.toFixed(2),
+      ];
+
+      columns.forEach((col, i) => {
+        doc.fillColor(bg).rect(col.x, y, col.width, 44).fill();
+
+        doc
+          .strokeColor(COLORS.border)
+          .lineWidth(1)
+          .rect(col.x, y, col.width, 44)
+          .stroke();
+
+        drawText(
+          row[i],
+          col.x,
+          y + 15,
+          9,
+          COLORS.primary,
+          i === 1,
+          "center",
+          col.width
+        );
+      });
+
+      y += 44;
+    });
+
+    doc.fillColor(COLORS.accentLight).roundedRect(30, y, 535, 50, 12).fill();
+
+    drawText("TOTAL", 50, y + 17, 12, COLORS.secondary, true);
+    drawText(String(totalQty), 235, y + 17, 11, COLORS.primary, true);
+    drawText(totalAmount.toFixed(2), 500, y + 17, 11, COLORS.primary, true);
+
+    const summaryX = 330;
+    const summaryY = y + 80;
+
+    roundedBox(summaryX, summaryY, 235, 165, COLORS.white, COLORS.border, 16);
+
+    const summaryRows = [
+      ["Total Amount", Number(invoice.total_amount || totalAmount).toFixed(2)],
+      ["Received Amount", Number(invoice.received_amount || 0).toFixed(2)],
+      ["Pending Amount", Number(invoice.pending_amount || 0).toFixed(2)],
+      ["Grand Total", Number(invoice.total_amount || totalAmount).toFixed(2)],
+    ];
+
+    summaryRows.forEach(([label, value], index) => {
+      const rowY = summaryY + index * 41;
+
+      const fill = label === "Grand Total" ? COLORS.accentLight : COLORS.white;
+
+      doc.fillColor(fill).rect(summaryX, rowY, 235, 41).fill();
+
+      doc
+        .strokeColor(COLORS.border)
+        .lineWidth(1)
+        .rect(summaryX, rowY, 235, 41)
+        .stroke();
+
+      drawText(label, summaryX + 18, rowY + 14, 11, COLORS.primary, true);
+
+      drawText(value, summaryX + 135, rowY + 14, 11, COLORS.primary, true);
+    });
+
+    doc
+      .strokeColor("#D9C2A8")
+      .lineWidth(1.5)
+      .moveTo(220, 800)
+      .lineTo(370, 800)
+      .stroke();
+
+    drawText(
+      "This is a computer generated invoice.",
+      0,
+      812,
+      10,
+      COLORS.text,
+      false,
+      "center",
+      595
+    );
+
+    doc.end();
+  } catch (error) {
+    console.error("Download Invoice PDF Error:", error);
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to download invoice PDF",
+        error: error.message,
+      });
+    }
+
+    return res.end();
   }
 };

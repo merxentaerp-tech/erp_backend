@@ -80,7 +80,6 @@ export const getRetailInventory = async (req, res) => {
       search,
       category,
       metal_type,
-      organization_id,
       page = 1,
       limit = 1000,
     } = req.query;
@@ -95,44 +94,27 @@ export const getRetailInventory = async (req, res) => {
     const itemWhere = {};
     const stockWhere = {};
 
-    const level = String(
-      user.organization_level || ""
-    ).toLowerCase();
-
-    const role = String(
-      user.role || ""
-    ).toLowerCase();
+    const role = String(user.role || "").toLowerCase();
 
     // =================================================
-    // ACCESS FILTER
+    // ACCESS FILTER - LOGIN USER KE HISAAB SE
     // =================================================
 
-const queryOrganizationId = req.query.organization_id
-  ? Number(req.query.organization_id)
-  : null;
-
-const queryOrganizationLevel = req.query.organization_level
-  ? String(req.query.organization_level).trim().toLowerCase()
-  : null;
-
-if (queryOrganizationId && queryOrganizationLevel) {
-  itemWhere.organization_id = queryOrganizationId;
-  stockWhere.organization_id = queryOrganizationId;
-} else if (role === "super_admin") {
-  if (organization_id) {
-    itemWhere.organization_id = Number(organization_id);
-    stockWhere.organization_id = Number(organization_id);
-  }
-} else {
-  if (user.store_code) {
-    const cleanStoreCode = String(user.store_code)
+    const cleanStoreCode = String(user.store_code || user.storeCode || "")
       .trim()
       .toUpperCase();
 
-    itemWhere.storeCode = cleanStoreCode;
-    stockWhere.store_code = cleanStoreCode;
-  }
-}
+    if (!cleanStoreCode && role !== "super_admin") {
+      return res.status(400).json({
+        success: false,
+        message: "Store code missing in login user",
+      });
+    }
+
+    if (role !== "super_admin") {
+      itemWhere.storeCode = cleanStoreCode;
+      stockWhere.store_code = cleanStoreCode;
+    }
 
     // =================================================
     // FILTERS
@@ -182,8 +164,7 @@ if (queryOrganizationId && queryOrganizationLevel) {
 
     const pageLimit = Number(limit) || 1000;
 
-    const offset =
-      (pageNumber - 1) * pageLimit;
+    const offset = (pageNumber - 1) * pageLimit;
 
     // =================================================
     // FETCH ITEMS
@@ -222,10 +203,7 @@ if (queryOrganizationId && queryOrganizationLevel) {
           // quantity 0 / empty stock items bhi aayenge
           required: false,
 
-          where:
-            Object.keys(stockWhere).length
-              ? stockWhere
-              : undefined,
+          where: Object.keys(stockWhere).length ? stockWhere : undefined,
 
           attributes: [
             "id",
@@ -264,11 +242,9 @@ if (queryOrganizationId && queryOrganizationLevel) {
     const categoryCounts = {};
 
     items.forEach((item) => {
-      const key =
-        item.category || "Others";
+      const key = item.category || "Others";
 
-      categoryCounts[key] =
-        (categoryCounts[key] || 0) + 1;
+      categoryCounts[key] = (categoryCounts[key] || 0) + 1;
     });
 
     // =================================================
@@ -276,28 +252,21 @@ if (queryOrganizationId && queryOrganizationLevel) {
     // =================================================
 
     items.forEach((item) => {
-      const stocks = Array.isArray(item.stocks)
-        ? item.stocks
-        : [];
+      const stocks = Array.isArray(item.stocks) ? item.stocks : [];
 
       const available_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.available_qty || 0),
+        (sum, s) => sum + Number(s.available_qty || 0),
         0
       );
 
       const transit_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.transit_qty || 0),
+        (sum, s) => sum + Number(s.transit_qty || 0),
         0
       );
 
       transitGoods += transit_qty;
 
-      if (
-        available_qty > 0 &&
-        available_qty <= 5
-      ) {
+      if (available_qty > 0 && available_qty <= 5) {
         lowStock++;
       }
     });
@@ -309,9 +278,7 @@ if (queryOrganizationId && queryOrganizationLevel) {
     const seenCategories = new Set();
 
     const filteredItems = items.filter((item) => {
-      const categoryKey = String(
-        item.category || "Others"
-      )
+      const categoryKey = String(item.category || "Others")
         .trim()
         .toLowerCase();
 
@@ -322,63 +289,57 @@ if (queryOrganizationId && queryOrganizationLevel) {
       seenCategories.add(categoryKey);
       return true;
     });
-const batchMap = {};
 
-const batches = await sequelize.query(
-  `
-  SELECT
-    item_id,
-    id AS parent_batch_id,
-    root_batch_id,
-    batch_no
-  FROM inventory_batches
-  WHERE
-    parent_batch_id IS NULL
-    OR parent_batch_id = root_batch_id
-  `,
-  {
-    type: sequelize.QueryTypes.SELECT,
-  }
-);
+    const batchMap = {};
 
-for (const batch of batches) {
-  if (!batchMap[batch.item_id]) {
-    batchMap[batch.item_id] = batch;
-  }
-}
+    const batches = await sequelize.query(
+      `
+      SELECT
+        item_id,
+        id AS parent_batch_id,
+        root_batch_id,
+        batch_no
+      FROM inventory_batches
+      WHERE
+        parent_batch_id IS NULL
+        OR parent_batch_id = root_batch_id
+      `,
+      {
+        type: sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    for (const batch of batches) {
+      if (!batchMap[batch.item_id]) {
+        batchMap[batch.item_id] = batch;
+      }
+    }
+
     const data = filteredItems.map((item) => {
-      const stocks = Array.isArray(item.stocks)
-        ? item.stocks
-        : [];
+      const stocks = Array.isArray(item.stocks) ? item.stocks : [];
 
       const available_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.available_qty || 0),
+        (sum, s) => sum + Number(s.available_qty || 0),
         0
       );
 
       const available_weight = stocks.reduce(
-        (sum, s) =>
-          sum +
-          Number(s.available_weight || 0),
+        (sum, s) => sum + Number(s.available_weight || 0),
         0
       );
 
       const reserved_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.reserved_qty || 0),
+        (sum, s) => sum + Number(s.reserved_qty || 0),
         0
       );
 
       const transit_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.transit_qty || 0),
+        (sum, s) => sum + Number(s.transit_qty || 0),
         0
       );
 
       const dead_qty = stocks.reduce(
-        (sum, s) =>
-          sum + Number(s.dead_qty || 0),
+        (sum, s) => sum + Number(s.dead_qty || 0),
         0
       );
 
@@ -390,30 +351,21 @@ for (const batch of batches) {
         article_code: item.article_code,
 
         sku_code: item.sku_code,
-        parent_batch_id:
-  batchMap[item.id]?.parent_batch_id ||
-  null,
 
-root_batch_id:
-  batchMap[item.id]?.root_batch_id ||
-  null,
+        parent_batch_id: batchMap[item.id]?.parent_batch_id || null,
 
-batch_id:
-  batchMap[item.id]?.parent_batch_id ||
-  null,
+        root_batch_id: batchMap[item.id]?.root_batch_id || null,
 
-batch_no:
-  batchMap[item.id]?.batch_no ||
-  null,
+        batch_id: batchMap[item.id]?.parent_batch_id || null,
+
+        batch_no: batchMap[item.id]?.batch_no || null,
+
         category: item.category,
 
         image_url: item.image_url,
 
         //  FIXED
-        total_category_items:
-          categoryCounts[
-            item.category || "Others"
-          ] || 0,
+        total_category_items: categoryCounts[item.category || "Others"] || 0,
 
         metal_type: item.metal_type,
 
@@ -431,34 +383,21 @@ batch_no:
 
         dead_qty,
 
-        net_weight: Number(
-          item.net_weight || 0
-        ),
+        net_weight: Number(item.net_weight || 0),
 
-        gross_weight: Number(
-          item.gross_weight || 0
-        ),
+        gross_weight: Number(item.gross_weight || 0),
 
-        stone_weight: Number(
-          item.stone_weight || 0
-        ),
+        stone_weight: Number(item.stone_weight || 0),
 
-        selling_price: Number(
-          item.sale_rate || 0
-        ),
+        selling_price: Number(item.sale_rate || 0),
 
-        making_charge: Number(
-          item.making_charge || 0
-        ),
+        making_charge: Number(item.making_charge || 0),
 
-        current_status:
-          item.current_status,
+        current_status: item.current_status,
 
-        storeCode:
-          item.storeCode || null,
+        storeCode: item.storeCode || null,
 
-        organization_id:
-          item.organization_id,
+        organization_id: item.organization_id,
 
         stocks,
       };
@@ -468,143 +407,109 @@ batch_no:
     // TOTAL STOCK - SAME AS DASHBOARD
     // =================================================
 
-    const totalStockResult =
-      await sequelize.query(
-        `
-          SELECT
-            COALESCE(
-              SUM(s.available_qty),
-              0
-            ) AS total
+    const totalStockResult = await sequelize.query(
+      `
+      SELECT
+        COALESCE(
+          SUM(s.available_qty),
+          0
+        ) AS total
 
-          FROM stocks s
+      FROM stocks s
 
-          INNER JOIN items i
-          ON i.id = s.item_id
+      INNER JOIN items i
+      ON i.id = s.item_id
 
-          WHERE 1=1
+      WHERE 1=1
 
-          ${
-            itemWhere.storeCode
-              ? `AND s.store_code = :store_code`
-              : ""
-          }
+      ${
+        itemWhere.storeCode
+          ? `AND s.store_code = :store_code`
+          : ""
+      }
+      `,
+      {
+        replacements: {
+          store_code: itemWhere.storeCode,
+        },
 
-          ${
-            itemWhere.organization_id
-              ? `AND i.organization_id = :organization_id`
-              : ""
-          }
-        `,
-        {
-          replacements: {
-            store_code:
-              itemWhere.storeCode,
-
-            organization_id:
-              itemWhere.organization_id,
-          },
-
-          type:
-            sequelize.QueryTypes.SELECT,
-        }
-      );
-
-    const totalStock = Number(
-      totalStockResult?.[0]?.total || 0
+        type: sequelize.QueryTypes.SELECT,
+      }
     );
+
+    const totalStock = Number(totalStockResult?.[0]?.total || 0);
 
     // =================================================
     // DEAD STOCK - SAME AS DASHBOARD
     // =================================================
 
-    const deadStockResult =
-      await sequelize.query(
-        `
-          SELECT
-            COUNT(
-              DISTINCT CASE
-                WHEN
-                  s.available_qty > 0
+    const deadStockResult = await sequelize.query(
+      `
+      SELECT
+        COUNT(
+          DISTINCT CASE
+            WHEN
+              s.available_qty > 0
 
-                  AND i."createdAt"
-                  < NOW() - INTERVAL '30 days'
+              AND i."createdAt"
+              < NOW() - INTERVAL '30 days'
 
-                  AND NOT EXISTS (
+              AND NOT EXISTS (
 
-                    SELECT 1
+                SELECT 1
 
-                    FROM invoice_items ii
+                FROM invoice_items ii
 
-                    JOIN invoices inv
-                    ON inv.id = ii.invoice_id
+                JOIN invoices inv
+                ON inv.id = ii.invoice_id
 
-                    WHERE ii.item_id = i.id
+                WHERE ii.item_id = i.id
 
-                    AND inv."createdAt"
-                    > NOW() - INTERVAL '30 days'
-                  )
+                AND inv."createdAt"
+                > NOW() - INTERVAL '30 days'
+              )
 
-                THEN i.id
-              END
-            )::int AS dead_stock_items
+            THEN i.id
+          END
+        )::int AS dead_stock_items
 
-          FROM stocks s
+      FROM stocks s
 
-          INNER JOIN items i
-          ON i.id = s.item_id
+      INNER JOIN items i
+      ON i.id = s.item_id
 
-          WHERE 1=1
+      WHERE 1=1
 
-          ${
-            itemWhere.storeCode
-              ? `AND s.store_code = :store_code`
-              : ""
-          }
+      ${
+        itemWhere.storeCode
+          ? `AND s.store_code = :store_code`
+          : ""
+      }
+      `,
+      {
+        replacements: {
+          store_code: itemWhere.storeCode,
+        },
 
-          ${
-            itemWhere.organization_id
-              ? `AND i.organization_id = :organization_id`
-              : ""
-          }
-        `,
-        {
-          replacements: {
-            store_code:
-              itemWhere.storeCode,
-
-            organization_id:
-              itemWhere.organization_id,
-          },
-
-          type:
-            sequelize.QueryTypes.SELECT,
-        }
-      );
-
-    const deadStock = Number(
-      deadStockResult?.[0]
-        ?.dead_stock_items || 0
+        type: sequelize.QueryTypes.SELECT,
+      }
     );
+
+    const deadStock = Number(deadStockResult?.[0]?.dead_stock_items || 0);
 
     return res.status(200).json({
       success: true,
 
-      message:
-        "Retail inventory fetched successfully",
+      message: "Retail inventory fetched successfully",
 
       summary: {
-        total_stock_items:
-          totalStock,
+        total_stock_items: totalStock,
 
-        dead_stock_items:
-          deadStock,
+        dead_stock_items: deadStock,
 
-        low_stock_items:
-          lowStock,
+        low_stock_items: lowStock,
 
-        transit_goods:
-          transitGoods,
+        transit_goods: transitGoods,
       },
 
       pagination: {
@@ -617,16 +522,12 @@ batch_no:
       data,
     });
   } catch (error) {
-    console.error(
-      "getRetailInventory error:",
-      error
-    );
+    console.error("getRetailInventory error:", error);
 
     return res.status(500).json({
       success: false,
 
-      message:
-        "Failed to fetch retail inventory",
+      message: "Failed to fetch retail inventory",
 
       error: error.message,
     });
@@ -1736,12 +1637,28 @@ const createStockInRootBatch = async (
 
   const batch = batchRows[0];
 
-  await InventoryTrackingService.ensureRootBatch(
-    { batch_id: batch.id },
-    { transaction }
+  const rootBatchRows = await sequelize.query(
+    `
+    UPDATE public.inventory_batches
+    SET
+      root_batch_id = :batch_id,
+      parent_batch_id = NULL,
+      split_level = 0,
+      is_leaf = true,
+      updated_at = NOW()
+    WHERE id = :batch_id
+    RETURNING *
+    `,
+    {
+      replacements: {
+        batch_id: batch.id,
+      },
+      type: QueryTypes.SELECT,
+      transaction,
+    }
   );
 
-  return batch;
+  return rootBatchRows[0];
 };
 
 export const addStockIn = async (req, res) => {
@@ -1753,6 +1670,18 @@ export const addStockIn = async (req, res) => {
       : JSON.parse(req.body.items || "[]");
 
     const user = req.user;
+
+    const normalizeCategory = (value) => {
+      if (!value) return value;
+
+      return String(value)
+        .trim()
+        .toLowerCase()
+        .split(" ")
+        .filter(Boolean)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(" ");
+    };
 
     if (!user?.organization_id) {
       await t.rollback();
@@ -1794,6 +1723,8 @@ export const addStockIn = async (req, res) => {
         stone_weight = 0,
         remarks,
       } = body;
+
+      const normalizedCategory = normalizeCategory(category);
 
       const incomingQty = Number(qty);
       const incomingWeight = Number(net_weight);
@@ -1875,7 +1806,7 @@ export const addStockIn = async (req, res) => {
             sku_code: skuCode,
 
             metal_type,
-            category: String(category).trim(),
+            category: normalizedCategory,
 
             purchase_rate: purchaseRate,
             sale_rate: saleRate,

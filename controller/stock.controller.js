@@ -241,10 +241,29 @@ export const getRetailInventory = async (req, res) => {
     // all category items count honge
     const categoryCounts = {};
 
+    //  IMPORTANT FIX
+    // category ke andar jitne bhi same category items hain
+    // unki total available quantity yaha sum hogi
+    const categoryQuantityMap = {};
+
     items.forEach((item) => {
       const key = item.category || "Others";
 
+      const categoryKey = String(item.category || "Others")
+        .trim()
+        .toLowerCase();
+
+      const stocks = Array.isArray(item.stocks) ? item.stocks : [];
+
+      const available_qty = stocks.reduce(
+        (sum, s) => sum + Number(s.available_qty || 0),
+        0
+      );
+
       categoryCounts[key] = (categoryCounts[key] || 0) + 1;
+
+      categoryQuantityMap[categoryKey] =
+        (categoryQuantityMap[categoryKey] || 0) + available_qty;
     });
 
     // =================================================
@@ -343,6 +362,10 @@ export const getRetailInventory = async (req, res) => {
         0
       );
 
+      const categoryKey = String(item.category || "Others")
+        .trim()
+        .toLowerCase();
+
       return {
         id: item.id,
 
@@ -371,9 +394,9 @@ export const getRetailInventory = async (req, res) => {
 
         purity: item.purity,
 
-        quantity: available_qty,
+        quantity: categoryQuantityMap[categoryKey] || 0,
 
-        available_qty,
+        available_qty: categoryQuantityMap[categoryKey] || 0,
 
         available_weight,
 

@@ -837,47 +837,46 @@ export const getStockItemsByCategory = async (req, res) => {
 
     const { category } = req.params;
 
-    const {
-      organization_id,
-      search,
-      metal_type,
-    } = req.query;
+    const { organization_id, organization_level, search, metal_type } =
+      req.query;
 
     let orgId = null;
 
+    const normalizeOrganizationLevel = (level) => {
+      if (!level) return null;
+
+      const value = String(level).trim().toLowerCase();
+
+      if (value === "retail") return "Retail";
+      if (value === "district") return "District";
+      if (value === "head") return "head_office";
+      if (value === "head_office") return "head_office";
+
+      return level;
+    };
+
+    const normalizedOrganizationLevel =
+      normalizeOrganizationLevel(organization_level);
+
     const getAuditBusinessDate = () => {
       const indiaNow = new Date(
-        new Date().toLocaleString(
-          "en-US",
-          {
-            timeZone: "Asia/Kolkata",
-          }
-        )
+        new Date().toLocaleString("en-US", {
+          timeZone: "Asia/Kolkata",
+        })
       );
 
       // 8 AM se pehle previous day audit valid rahega
       if (indiaNow.getHours() < 8) {
-        indiaNow.setDate(
-          indiaNow.getDate() - 1
-        );
+        indiaNow.setDate(indiaNow.getDate() - 1);
       }
 
-      return indiaNow
-        .toISOString()
-        .slice(0, 10);
+      return indiaNow.toISOString().slice(0, 10);
     };
 
-    const isSameDate = (
-      dateValue,
-      targetDate
-    ) => {
+    const isSameDate = (dateValue, targetDate) => {
       if (!dateValue) return false;
 
-      return (
-        new Date(dateValue)
-          .toISOString()
-          .slice(0, 10) === targetDate
-      );
+      return new Date(dateValue).toISOString().slice(0, 10) === targetDate;
     };
 
     // =========================
@@ -885,13 +884,9 @@ export const getStockItemsByCategory = async (req, res) => {
     // =========================
 
     if (user?.role === "super_admin") {
-      orgId = organization_id
-        ? Number(organization_id)
-        : null;
+      orgId = organization_id ? Number(organization_id) : null;
     } else {
-      orgId = user?.organization_id
-        ? Number(user.organization_id)
-        : null;
+      orgId = user?.organization_id ? Number(user.organization_id) : null;
     }
 
     if (!user?.role) {
@@ -901,22 +896,17 @@ export const getStockItemsByCategory = async (req, res) => {
       });
     }
 
-    if (
-      user.role !== "super_admin" &&
-      !orgId
-    ) {
+    if (user.role !== "super_admin" && !orgId) {
       return res.status(403).json({
         success: false,
-        message:
-          "Organization not found for this user",
+        message: "Organization not found for this user",
       });
     }
 
     if (!category) {
       return res.status(400).json({
         success: false,
-        message:
-          "Category is required",
+        message: "Category is required",
       });
     }
 
@@ -931,26 +921,49 @@ export const getStockItemsByCategory = async (req, res) => {
     const stockWhere = {};
 
     // =================================================
-    // STORE BASED FILTER
+    // ORGANIZATION / STORE BASED FILTER
     // =================================================
 
-    if (user?.store_code) {
-      const cleanStoreCode = String(
-        user.store_code
-      )
-        .trim()
-        .toUpperCase();
+    let targetOrgId = null;
+    let targetStoreCode = null;
 
-      itemWhere.storeCode =
-        cleanStoreCode;
+    if (organization_id && normalizedOrganizationLevel) {
+      targetOrgId = Number(organization_id);
 
-      stockWhere.store_code =
-        cleanStoreCode;
+      const targetStore = await Store.findOne({
+        where: {
+          id: targetOrgId,
+          organization_level: normalizedOrganizationLevel,
+          is_active: true,
+        },
+        attributes: ["id", "store_code", "organization_level"],
+      });
+
+      if (!targetStore) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Organization not found for given organization_id and organization_level",
+        });
+      }
+
+      targetStoreCode = String(targetStore.store_code).trim().toUpperCase();
+
+      itemWhere.organization_id = targetOrgId;
+      itemWhere.storeCode = targetStoreCode;
+
+      stockWhere.organization_id = targetOrgId;
+      stockWhere.store_code = targetStoreCode;
+    } else if (user?.store_code) {
+      const cleanStoreCode = String(user.store_code).trim().toUpperCase();
+
+      itemWhere.storeCode = cleanStoreCode;
+
+      stockWhere.store_code = cleanStoreCode;
     }
 
     if (metal_type) {
-      itemWhere.metal_type =
-        metal_type;
+      itemWhere.metal_type = metal_type;
     }
 
     if (search) {
@@ -1024,11 +1037,7 @@ export const getStockItemsByCategory = async (req, res) => {
 
           required: false,
 
-          where:
-            Object.keys(stockWhere)
-              .length
-              ? stockWhere
-              : undefined,
+          where: Object.keys(stockWhere).length ? stockWhere : undefined,
 
           attributes: [
             "id",
@@ -1055,196 +1064,120 @@ export const getStockItemsByCategory = async (req, res) => {
 
           required: false,
 
-          attributes: [
-            "id",
-            "store_code",
-            "store_name",
-            "organization_level",
-          ],
+          attributes: ["id", "store_code", "store_name", "organization_level"],
         },
       ],
 
       order: [["id", "DESC"]],
     });
 
-    const auditBusinessDate =
-      getAuditBusinessDate();
+    const auditBusinessDate = getAuditBusinessDate();
 
     // =========================
     // Flatten response
     // =========================
 
-    const data = items.map(
-      (item, index) => {
-        const stock =
-          Array.isArray(item.stocks) &&
-          item.stocks.length > 0
-            ? item.stocks[0]
-            : null;
+    const data = items.map((item, index) => {
+      const stock =
+        Array.isArray(item.stocks) && item.stocks.length > 0
+          ? item.stocks[0]
+          : null;
 
-        return {
-          idx: index,
+      return {
+        idx: index,
 
-          id: Number(item.id || 0),
+        id: Number(item.id || 0),
 
-          article_code:
-            item.article_code || "",
+        article_code: item.article_code || "",
 
-          sku_code:
-            item.sku_code || "",
+        sku_code: item.sku_code || "",
 
-          item_name:
-            item.item_name || "",
+        item_name: item.item_name || "",
 
-          metal_type:
-            item.metal_type || "",
+        metal_type: item.metal_type || "",
 
-          category:
-            item.category || "",
+        category: item.category || "",
 
-          image_url:
-            item.image_url || null,
+        image_url: item.image_url || null,
 
-          details:
-            item.details || "",
+        details: item.details || "",
 
-          purity:
-            item.purity || "",
+        purity: item.purity || "",
 
-          gross_weight: Number(
-            item.gross_weight || 0
-          ),
+        gross_weight: Number(item.gross_weight || 0),
 
-          net_weight: Number(
-            item.net_weight || 0
-          ),
+        net_weight: Number(item.net_weight || 0),
 
-          stone_weight: Number(
-            item.stone_weight || 0
-          ),
+        stone_weight: Number(item.stone_weight || 0),
 
-          stone_amount: Number(
-            item.stone_amount || 0
-          ),
+        stone_amount: Number(item.stone_amount || 0),
 
-          making_charge: Number(
-            item.making_charge || 0
-          ),
+        making_charge: Number(item.making_charge || 0),
 
-          purchase_rate: Number(
-            item.purchase_rate || 0
-          ),
+        purchase_rate: Number(item.purchase_rate || 0),
 
-          sale_rate: Number(
-            item.sale_rate || 0
-          ),
+        sale_rate: Number(item.sale_rate || 0),
 
-          hsn_code:
-            item.hsn_code || "",
+        hsn_code: item.hsn_code || "",
 
-          unit: item.unit || "",
+        unit: item.unit || "",
 
-          current_status:
-            item.current_status || "",
+        current_status: item.current_status || "",
 
-          stock_id: stock
-            ? Number(stock.id || 0)
-            : null,
+        stock_id: stock ? Number(stock.id || 0) : null,
 
-          quantity: Number(
-            stock?.available_qty || 0
-          ),
+        quantity: Number(stock?.available_qty || 0),
 
-          available_qty: Number(
-            stock?.available_qty || 0
-          ),
+        available_qty: Number(stock?.available_qty || 0),
 
-          available_weight: Number(
-            stock?.available_weight || 0
-          ),
+        available_weight: Number(stock?.available_weight || 0),
 
-          reserved_qty: Number(
-            stock?.reserved_qty || 0
-          ),
+        reserved_qty: Number(stock?.reserved_qty || 0),
 
-          reserved_weight: Number(
-            stock?.reserved_weight || 0
-          ),
+        reserved_weight: Number(stock?.reserved_weight || 0),
 
-          transit_qty: Number(
-            stock?.transit_qty || 0
-          ),
+        transit_qty: Number(stock?.transit_qty || 0),
 
-          transit_weight: Number(
-            stock?.transit_weight || 0
-          ),
+        transit_weight: Number(stock?.transit_weight || 0),
 
-          damaged_qty: Number(
-            stock?.damaged_qty || 0
-          ),
+        damaged_qty: Number(stock?.damaged_qty || 0),
 
-          damaged_weight: Number(
-            stock?.damaged_weight || 0
-          ),
+        damaged_weight: Number(stock?.damaged_weight || 0),
 
-          dead_qty: Number(
-            stock?.dead_qty || 0
-          ),
+        dead_qty: Number(stock?.dead_qty || 0),
 
-          dead_weight: Number(
-            stock?.dead_weight || 0
-          ),
+        dead_weight: Number(stock?.dead_weight || 0),
 
-          store_id:
-            item.organization
-              ? Number(
-                  item.organization.id ||
-                    0
-                )
-              : null,
+        store_id: item.organization ? Number(item.organization.id || 0) : null,
 
-          storeCode:
-            item.organization
-              ?.store_code || null,
+        storeCode: item.organization?.store_code || null,
 
-          storeName:
-            item.organization
-              ?.store_name || null,
+        storeName: item.organization?.store_name || null,
 
-          organization_level:
-            item.organization
-              ?.organization_level ||
-            null,
+        organization_level: item.organization?.organization_level || null,
 
-          organization_id: Number(
-            item.organization_id || 0
-          ),
+        organization_id: Number(item.organization_id || 0),
 
-          isItemAudit: isSameDate(
-            item.itemAuditAt,
-            auditBusinessDate
-          ),
+        isItemAudit: isSameDate(item.itemAuditAt, auditBusinessDate),
 
-          itemAuditAt:
-            item.itemAuditAt || null,
+        itemAuditAt: item.itemAuditAt || null,
 
-          createdAt:
-            item.createdAt || null,
+        createdAt: item.createdAt || null,
 
-          updatedAt:
-            item.updatedAt || null,
+        updatedAt: item.updatedAt || null,
 
-          action: "View",
-        };
-      }
-    );
+        action: "View",
+      };
+    });
 
     return res.status(200).json({
       success: true,
 
       message: `${category} items fetched successfully`,
 
-      organization_id: orgId,
+      organization_id: targetOrgId || orgId,
+
+      organization_level: normalizedOrganizationLevel || null,
 
       category,
 
@@ -1253,16 +1186,12 @@ export const getStockItemsByCategory = async (req, res) => {
       data,
     });
   } catch (error) {
-    console.error(
-      "getStockItemsByCategory error:",
-      error
-    );
+    console.error("getStockItemsByCategory error:", error);
 
     return res.status(500).json({
       success: false,
 
-      message:
-        "Failed to fetch category items",
+      message: "Failed to fetch category items",
 
       error: error.message,
     });

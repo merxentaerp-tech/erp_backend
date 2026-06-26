@@ -62,10 +62,10 @@ const fetchBatchMovementHistory = async (rootBatchId) => {
 
   return rows.map(formatMovementHistory);
 };
-// const toNumber = (value) => {
-//   const n = Number(value || 0);
-//   return Number.isFinite(n) ? n : 0;
-// };
+const toNumber = (value) => {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+};
 
 const toPositiveInt = (value, fallback = 1) => {
   const n = Number(value);
@@ -113,16 +113,16 @@ const normalizeDateTo = (value) => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
-// const formatDestination = (d) => ({
-//   organization_id: d.organization_id ? Number(d.organization_id) : null,
-//   store_name: d.store_name || "Unknown Location",
-//   store_code: d.store_code || null,
-//   organization_level: d.organization_level || null,
-//   quantity: toNumber(d.quantity),
-//   weight: toNumber(d.weight),
-//   last_updated_at: d.last_updated_at || null,
-//   batch_nodes: Array.isArray(d.batch_nodes) ? d.batch_nodes : [],
-// });
+const formatDestination = (d) => ({
+  organization_id: d.organization_id ? Number(d.organization_id) : null,
+  store_name: d.store_name || "Unknown Location",
+  store_code: d.store_code || null,
+  organization_level: d.organization_level || null,
+  quantity: toNumber(d.quantity),
+  weight: toNumber(d.weight),
+  last_updated_at: d.last_updated_at || null,
+  batch_nodes: Array.isArray(d.batch_nodes) ? d.batch_nodes : [],
+});
 
 const formatBatchNode = (b) => ({
   batch_id: Number(b.batch_id),
@@ -146,47 +146,47 @@ const formatBatchNode = (b) => ({
   updated_at: b.updated_at,
 });
 
-// const formatMovementHistory = (m, index) => ({
-//   step: index + 1,
-//   type: "batch_distributed",
-//   title:
-//     m.to_organization_level?.toLowerCase?.().includes("retail")
-//       ? "Delivered to Store"
-//       : "Delivered to District",
+const formatMovementHistory = (m, index) => ({
+  step: index + 1,
+  type: "batch_distributed",
+  title:
+    m.to_organization_level?.toLowerCase?.().includes("retail")
+      ? "Delivered to Store"
+      : "Delivered to District",
 
-//   split_id: Number(m.split_id),
-//   root_batch_id: Number(m.root_batch_id),
+  split_id: Number(m.split_id),
+  root_batch_id: Number(m.root_batch_id),
 
-//   parent_batch_id: Number(m.parent_batch_id),
-//   parent_batch_no: m.parent_batch_no,
+  parent_batch_id: Number(m.parent_batch_id),
+  parent_batch_no: m.parent_batch_no,
 
-//   child_batch_id: Number(m.child_batch_id),
-//   child_batch_no: m.child_batch_no,
+  child_batch_id: Number(m.child_batch_id),
+  child_batch_no: m.child_batch_no,
 
-//   item_id: Number(m.item_id),
+  item_id: Number(m.item_id),
 
-//   from_organization_id: m.from_organization_id
-//     ? Number(m.from_organization_id)
-//     : null,
-//   from_store_name: m.from_store_name || "Unknown Location",
-//   from_store_code: m.from_store_code || null,
-//   from_organization_level: m.from_organization_level || null,
+  from_organization_id: m.from_organization_id
+    ? Number(m.from_organization_id)
+    : null,
+  from_store_name: m.from_store_name || "Unknown Location",
+  from_store_code: m.from_store_code || null,
+  from_organization_level: m.from_organization_level || null,
 
-//   to_organization_id: m.to_organization_id ? Number(m.to_organization_id) : null,
-//   to_store_name: m.to_store_name || "Unknown Location",
-//   to_store_code: m.to_store_code || null,
-//   to_organization_level: m.to_organization_level || null,
+  to_organization_id: m.to_organization_id ? Number(m.to_organization_id) : null,
+  to_store_name: m.to_store_name || "Unknown Location",
+  to_store_code: m.to_store_code || null,
+  to_organization_level: m.to_organization_level || null,
 
-//   quantity: toNumber(m.quantity),
-//   weight: toNumber(m.weight),
+  quantity: toNumber(m.quantity),
+  weight: toNumber(m.weight),
 
-//   reference_type: m.reference_type || null,
-//   reference_id: m.reference_id ? Number(m.reference_id) : null,
-//   remarks: m.remarks || null,
-//   handled_by: m.created_by ? Number(m.created_by) : null,
-//   handled_by_image_url: m.handled_by_image_url || null,
-//   created_at: m.created_at,
-// });
+  reference_type: m.reference_type || null,
+  reference_id: m.reference_id ? Number(m.reference_id) : null,
+  remarks: m.remarks || null,
+  handled_by: m.created_by ? Number(m.created_by) : null,
+  handled_by_image_url: m.handled_by_image_url || null,
+  created_at: m.created_at,
+});
 
 export const getTrackerItems = async (req, res) => {
   try {
@@ -661,7 +661,6 @@ export const getBatchFinalDestinations = async (req, res) => {
         st.store_code,
         st.organization_level,
         st.address,
-
         SUM(COALESCE(b.available_qty, 0)) AS quantity,
         SUM(COALESCE(b.available_weight, 0)) AS weight,
 
@@ -682,7 +681,7 @@ export const getBatchFinalDestinations = async (req, res) => {
         ) AS batch_nodes
 
       FROM public.inventory_batches b
-
+    
       LEFT JOIN public.stores st
         ON st.id = b.current_organization_id
 
@@ -728,31 +727,16 @@ export const getBatchFinalDestinations = async (req, res) => {
         to_store.store_name AS to_store_name,
         to_store.store_code AS to_store_code,
         to_store.organization_level AS to_organization_level,
-
+        
         bs.quantity,
         bs.weight,
         bs.reference_type,
         bs.reference_id,
         bs.remarks,
-
-        bs.created_by AS handled_by_id,
-        COALESCE(
-          u.username,
-          u.username,
-          u.email,
-          CONCAT('User-', bs.created_by)
-        ) AS handled_by_name,
-
-        COALESCE(
-          to_jsonb(u)->>'profile_image',
-          to_jsonb(u)->>'profile_image_url',
-          to_jsonb(u)->>'image_url',
-          to_jsonb(u)->>'avatar',
-          to_jsonb(u)->>'avatar_url'
-        ) AS handled_by_image_url,
-
+        bs.created_by,
+        u.username AS handled_by_name,
+        u.profile_image AS handled_by_image_url,
         bs.created_at
-
       FROM public.batch_splits bs
 
       LEFT JOIN public.inventory_batches pb
@@ -781,9 +765,7 @@ export const getBatchFinalDestinations = async (req, res) => {
     );
 
     const finalDestinations = destinations.map(formatDestination);
-    const movementHistory = movementRows.map((row, index) =>
-      formatMovementHistory(row, index)
-    );
+    const movementHistory = movementRows.map(formatMovementHistory);
 
     return res.status(200).json({
       success: true,
@@ -807,7 +789,6 @@ export const getBatchFinalDestinations = async (req, res) => {
           created_at: batch.created_at,
           updated_at: batch.updated_at,
         },
-
         summary: {
           root_batch_id: rootBatchId,
           total_qty: toNumber(batch.total_qty),
@@ -823,86 +804,18 @@ export const getBatchFinalDestinations = async (req, res) => {
           location_count: finalDestinations.length,
           movement_count: movementHistory.length,
         },
-
         final_destinations: finalDestinations,
         movement_history: movementHistory,
       },
     });
   } catch (error) {
     console.error("getBatchFinalDestinations error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Failed to fetch batch final destinations",
       error: error.message,
     });
   }
-};
-
-const formatDestination = (row) => {
-  return {
-    organization_id: row.organization_id ? Number(row.organization_id) : null,
-    store_name: row.store_name,
-    store_code: row.store_code,
-    organization_level: row.organization_level,
-    address: row.address,
-    quantity: toNumber(row.quantity),
-    weight: toNumber(row.weight),
-    last_updated_at: row.last_updated_at,
-    batch_nodes: row.batch_nodes || [],
-  };
-};
-
-const formatMovementHistory = (row, index) => {
-  return {
-    step: index + 1,
-    type: "batch_distributed",
-
-    title: row.to_organization_level
-      ? `Delivered to ${row.to_organization_level}`
-      : "Batch Distributed",
-
-    split_id: Number(row.split_id),
-    root_batch_id: Number(row.root_batch_id),
-    parent_batch_id: row.parent_batch_id ? Number(row.parent_batch_id) : null,
-    parent_batch_no: row.parent_batch_no,
-    child_batch_id: row.child_batch_id ? Number(row.child_batch_id) : null,
-    child_batch_no: row.child_batch_no,
-
-    item_id: Number(row.item_id),
-
-    from_organization_id: row.from_organization_id
-      ? Number(row.from_organization_id)
-      : null,
-    from_store_name: row.from_store_name,
-    from_store_code: row.from_store_code,
-    from_organization_level: row.from_organization_level,
-
-    to_organization_id: row.to_organization_id
-      ? Number(row.to_organization_id)
-      : null,
-    to_store_name: row.to_store_name,
-    to_store_code: row.to_store_code,
-    to_organization_level: row.to_organization_level,
-
-    quantity: toNumber(row.quantity),
-    weight: toNumber(row.weight),
-
-    reference_type: row.reference_type,
-    reference_id: row.reference_id ? Number(row.reference_id) : null,
-    remarks: row.remarks,
-
-    handled_by_id: row.handled_by_id ? Number(row.handled_by_id) : null,
-    handled_by: row.handled_by_name,
-    handled_by_image_url: row.handled_by_image_url,
-
-    created_at: row.created_at,
-  };
-};
-
-const toNumber = (value) => {
-  if (value === null || value === undefined) return 0;
-  return Number(value) || 0;
 };
 export const getBatchNodeRoute = async (req, res) => {
   try {

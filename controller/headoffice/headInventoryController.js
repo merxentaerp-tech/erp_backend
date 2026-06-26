@@ -260,6 +260,9 @@ export const getOverallCategoryItems = async (req, res) => {
         i.item_name AS article,
         i.sku_code AS code,
 
+        i.image_url AS image,
+        i.image_url AS image_url,
+
         COALESCE(SUM(s.available_qty), 0) AS quantity,
 
         AVG(i.purchase_rate) AS purchase_price,
@@ -283,6 +286,7 @@ export const getOverallCategoryItems = async (req, res) => {
         i.id,
         i.item_name,
         i.sku_code,
+        i.image_url,
         i.purity
 
       ORDER BY i.item_name ASC
@@ -297,7 +301,6 @@ export const getOverallCategoryItems = async (req, res) => {
       success: true,
       data,
     });
-
   } catch (error) {
     console.error("Overall Category Error:", error);
 

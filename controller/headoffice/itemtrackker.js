@@ -184,7 +184,6 @@ const formatMovementHistory = (m, index) => ({
   reference_id: m.reference_id ? Number(m.reference_id) : null,
   remarks: m.remarks || null,
   handled_by: m.created_by ? Number(m.created_by) : null,
-  handled_by_image_url: m.handled_by_image_url || null,
   created_at: m.created_at,
 });
 
@@ -652,60 +651,60 @@ export const getBatchFinalDestinations = async (req, res) => {
 
     const rootBatchId = Number(batch.root_batch_id || batch.batch_id);
 
-    const destinations = await sequelize.query(
-      `
-      SELECT
-        b.current_organization_id AS organization_id,
+  const destinations = await sequelize.query(
+  `
+  SELECT
+    b.current_organization_id AS organization_id,
 
-        st.store_name,
-        st.store_code,
-        st.organization_level,
-        st.address,
-        SUM(COALESCE(b.available_qty, 0)) AS quantity,
-        SUM(COALESCE(b.available_weight, 0)) AS weight,
+    st.store_name,
+    st.store_code,
+    st.organization_level,
+    st.address,
 
-        MAX(b.updated_at) AS last_updated_at,
+    SUM(COALESCE(b.available_qty, 0)) AS quantity,
+    SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'batch_id', b.id,
-            'batch_no', b.batch_no,
-            'parent_batch_id', b.parent_batch_id,
-            'root_batch_id', b.root_batch_id,
-            'quantity', b.available_qty,
-            'weight', b.available_weight,
-            'split_level', b.split_level,
-            'status', b.status
-          )
-          ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
-        ) AS batch_nodes
+    MAX(b.updated_at) AS last_updated_at,
 
-      FROM public.inventory_batches b
-    
-      LEFT JOIN public.stores st
-        ON st.id = b.current_organization_id
+   JSONB_AGG(
+  JSONB_BUILD_OBJECT(
+    'batch_id', b.id,
+    'batch_no', b.batch_no,
+    'parent_batch_id', b.parent_batch_id,
+    'root_batch_id', b.root_batch_id,
+    'quantity', b.available_qty,
+    'weight', b.available_weight,
+    'split_level', b.split_level,
+    'status', b.status
+  )
+) AS batch_nodes
 
-      WHERE
-        (
-          b.root_batch_id = :root_batch_id
-          OR b.id = :root_batch_id
-        )
-        AND COALESCE(b.available_qty, 0) > 0
+  FROM public.inventory_batches b
 
-      GROUP BY
-        b.current_organization_id,
-        st.store_name,
-        st.store_code,
-        st.organization_level,
-        st.address
+  LEFT JOIN public.stores st
+    ON st.id = b.current_organization_id
 
-      ORDER BY st.store_name ASC NULLS LAST
-      `,
-      {
-        replacements: { root_batch_id: rootBatchId },
-        type: QueryTypes.SELECT,
-      }
-    );
+  WHERE
+    (
+      b.root_batch_id = :root_batch_id
+      OR b.id = :root_batch_id
+    )
+    AND COALESCE(b.available_qty, 0) > 0
+
+  GROUP BY
+    b.current_organization_id,
+    st.store_name,
+    st.store_code,
+    st.organization_level,
+    st.address
+
+  ORDER BY st.store_name ASC NULLS LAST
+  `,
+  {
+    replacements: { root_batch_id: rootBatchId },
+    type: QueryTypes.SELECT,
+  }
+);
 
     const movementRows = await sequelize.query(
       `
@@ -734,9 +733,8 @@ export const getBatchFinalDestinations = async (req, res) => {
         bs.reference_id,
         bs.remarks,
         bs.created_by,
-        u.username AS handled_by_name,
-        u.profile_image AS handled_by_image_url,
         bs.created_at
+
       FROM public.batch_splits bs
 
       LEFT JOIN public.inventory_batches pb
@@ -750,9 +748,6 @@ export const getBatchFinalDestinations = async (req, res) => {
 
       LEFT JOIN public.stores to_store
         ON to_store.id = bs.to_organization_id
-
-      LEFT JOIN public.users u
-        ON u.id = bs.created_by
 
       WHERE bs.root_batch_id = :root_batch_id
 
@@ -809,13 +804,17 @@ export const getBatchFinalDestinations = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("getBatchFinalDestinations error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch batch final destinations",
-      error: error.message,
-    });
-  }
+  console.error("ERROR MESSAGE:", error?.message);
+  console.error("ERROR POSITION:", error?.parent?.position);
+  console.error("ERROR SQL:", error?.sql);
+
+  return res.status(500).json({
+    success: false,
+    message: "Failed to fetch batch final destinations",
+    error: error.message,
+    position: error?.parent?.position,
+  });
+}
 };
 export const getBatchNodeRoute = async (req, res) => {
   try {
@@ -1993,31 +1992,18 @@ export const getItemFinalDestinations = async (req, res) => {
 
         MAX(b.updated_at) AS last_updated_at,
 
-        JSON_AGG(
-          JSON_BUILD_OBJECT(
-            'batch_id', b.id,
-            'batch_no', b.batch_no,
-
-            'root_batch_id', COALESCE(b.root_batch_id, b.id),
-            'root_batch_no', root_b.batch_no,
-
-            'parent_batch_id', b.parent_batch_id,
-
-            'quantity', b.available_qty,
-            'weight', b.available_weight,
-
-            'split_level', b.split_level,
-            'status', b.status,
-
-            'created_at', b.created_at,
-            'updated_at', b.updated_at
-          )
-          ORDER BY
-            root_b.created_at DESC NULLS LAST,
-            COALESCE(b.split_level, 0) ASC,
-            b.id ASC
-        ) AS batch_nodes
-
+  JSON_AGG(
+  JSON_BUILD_OBJECT(
+    'batch_id', b.id,
+    'batch_no', b.batch_no,
+    'parent_batch_id', b.parent_batch_id,
+    'root_batch_id', b.root_batch_id,
+    'quantity', b.available_qty,
+    'weight', b.available_weight,
+    'split_level', b.split_level,
+    'status', b.status
+  )
+) AS batch_nodes
       FROM public.inventory_batches b
 
       INNER JOIN public.items i
@@ -2342,12 +2328,15 @@ export const getItemFinalDestinations = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("getItemFinalDestinations error:", error);
+  console.error("getBatchFinalDestinations error:", error);
+  console.error("ERROR MESSAGE:", error?.message);
+  console.error("ERROR PARENT:", error?.parent);
+  console.error("ERROR ORIGINAL:", error?.original);
 
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch item final destinations",
-      error: error.message,
-    });
-  }
-};
+  return res.status(500).json({
+    success: false,
+    message: "Failed to fetch batch final destinations",
+    error: error.message,
+  });
+}
+}

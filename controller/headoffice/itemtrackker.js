@@ -149,18 +149,18 @@ const formatBatchNode = (b) => ({
 const formatMovementHistory = (m, index) => ({
   step: index + 1,
   type: "batch_distributed",
-  title:
-    m.to_organization_level?.toLowerCase?.().includes("retail")
-      ? "Delivered to Store"
-      : "Delivered to District",
+
+  title: m.to_organization_level
+    ? `Delivered to ${m.to_organization_level}`
+    : "Batch Distributed",
 
   split_id: Number(m.split_id),
   root_batch_id: Number(m.root_batch_id),
 
-  parent_batch_id: Number(m.parent_batch_id),
+  parent_batch_id: m.parent_batch_id ? Number(m.parent_batch_id) : null,
   parent_batch_no: m.parent_batch_no,
 
-  child_batch_id: Number(m.child_batch_id),
+  child_batch_id: m.child_batch_id ? Number(m.child_batch_id) : null,
   child_batch_no: m.child_batch_no,
 
   item_id: Number(m.item_id),
@@ -183,7 +183,16 @@ const formatMovementHistory = (m, index) => ({
   reference_type: m.reference_type || null,
   reference_id: m.reference_id ? Number(m.reference_id) : null,
   remarks: m.remarks || null,
-  handled_by: m.created_by ? Number(m.created_by) : null,
+
+  handled_by_id: m.handled_by_id
+    ? Number(m.handled_by_id)
+    : m.created_by
+    ? Number(m.created_by)
+    : null,
+
+  handled_by: m.handled_by_name || m.handled_by || null,
+  handled_by_image_url: m.handled_by_image_url || null,
+
   created_at: m.created_at,
 });
 
@@ -651,60 +660,61 @@ export const getBatchFinalDestinations = async (req, res) => {
 
     const rootBatchId = Number(batch.root_batch_id || batch.batch_id);
 
-  const destinations = await sequelize.query(
-  `
-  SELECT
-    b.current_organization_id AS organization_id,
+    const destinations = await sequelize.query(
+      `
+      SELECT
+        b.current_organization_id AS organization_id,
 
-    st.store_name,
-    st.store_code,
-    st.organization_level,
-    st.address,
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+        st.address,
 
-    SUM(COALESCE(b.available_qty, 0)) AS quantity,
-    SUM(COALESCE(b.available_weight, 0)) AS weight,
+        SUM(COALESCE(b.available_qty, 0)) AS quantity,
+        SUM(COALESCE(b.available_weight, 0)) AS weight,
 
-    MAX(b.updated_at) AS last_updated_at,
+        MAX(b.updated_at) AS last_updated_at,
 
-   JSONB_AGG(
-  JSONB_BUILD_OBJECT(
-    'batch_id', b.id,
-    'batch_no', b.batch_no,
-    'parent_batch_id', b.parent_batch_id,
-    'root_batch_id', b.root_batch_id,
-    'quantity', b.available_qty,
-    'weight', b.available_weight,
-    'split_level', b.split_level,
-    'status', b.status
-  )
-) AS batch_nodes
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'batch_id', b.id,
+            'batch_no', b.batch_no,
+            'parent_batch_id', b.parent_batch_id,
+            'root_batch_id', b.root_batch_id,
+            'quantity', b.available_qty,
+            'weight', b.available_weight,
+            'split_level', b.split_level,
+            'status', b.status
+          )
+          ORDER BY COALESCE(b.split_level, 0) ASC, b.id ASC
+        ) AS batch_nodes
 
-  FROM public.inventory_batches b
+      FROM public.inventory_batches b
 
-  LEFT JOIN public.stores st
-    ON st.id = b.current_organization_id
+      LEFT JOIN public.stores st
+        ON st.id = b.current_organization_id
 
-  WHERE
-    (
-      b.root_batch_id = :root_batch_id
-      OR b.id = :root_batch_id
-    )
-    AND COALESCE(b.available_qty, 0) > 0
+      WHERE
+        (
+          b.root_batch_id = :root_batch_id
+          OR b.id = :root_batch_id
+        )
+        AND COALESCE(b.available_qty, 0) > 0
 
-  GROUP BY
-    b.current_organization_id,
-    st.store_name,
-    st.store_code,
-    st.organization_level,
-    st.address
+      GROUP BY
+        b.current_organization_id,
+        st.store_name,
+        st.store_code,
+        st.organization_level,
+        st.address
 
-  ORDER BY st.store_name ASC NULLS LAST
-  `,
-  {
-    replacements: { root_batch_id: rootBatchId },
-    type: QueryTypes.SELECT,
-  }
-);
+      ORDER BY st.store_name ASC NULLS LAST
+      `,
+      {
+        replacements: { root_batch_id: rootBatchId },
+        type: QueryTypes.SELECT,
+      }
+    );
 
     const movementRows = await sequelize.query(
       `
@@ -726,13 +736,29 @@ export const getBatchFinalDestinations = async (req, res) => {
         to_store.store_name AS to_store_name,
         to_store.store_code AS to_store_code,
         to_store.organization_level AS to_organization_level,
-        
+
         bs.quantity,
         bs.weight,
         bs.reference_type,
         bs.reference_id,
         bs.remarks,
-        bs.created_by,
+
+        bs.created_by AS handled_by_id,
+        COALESCE(
+          u.username,
+          u.username,
+          u.email,
+          CONCAT('User-', bs.created_by)
+        ) AS handled_by_name,
+
+        COALESCE(
+          to_jsonb(u)->>'profile_image',
+          to_jsonb(u)->>'profile_image_url',
+          to_jsonb(u)->>'image_url',
+          to_jsonb(u)->>'avatar',
+          to_jsonb(u)->>'avatar_url'
+        ) AS handled_by_image_url,
+
         bs.created_at
 
       FROM public.batch_splits bs
@@ -749,6 +775,9 @@ export const getBatchFinalDestinations = async (req, res) => {
       LEFT JOIN public.stores to_store
         ON to_store.id = bs.to_organization_id
 
+      LEFT JOIN public.users u
+        ON u.id = bs.created_by
+
       WHERE bs.root_batch_id = :root_batch_id
 
       ORDER BY bs.created_at ASC, bs.id ASC
@@ -760,7 +789,9 @@ export const getBatchFinalDestinations = async (req, res) => {
     );
 
     const finalDestinations = destinations.map(formatDestination);
-    const movementHistory = movementRows.map(formatMovementHistory);
+    const movementHistory = movementRows.map((row, index) =>
+      formatMovementHistory(row, index)
+    );
 
     return res.status(200).json({
       success: true,
@@ -784,6 +815,7 @@ export const getBatchFinalDestinations = async (req, res) => {
           created_at: batch.created_at,
           updated_at: batch.updated_at,
         },
+
         summary: {
           root_batch_id: rootBatchId,
           total_qty: toNumber(batch.total_qty),
@@ -799,23 +831,22 @@ export const getBatchFinalDestinations = async (req, res) => {
           location_count: finalDestinations.length,
           movement_count: movementHistory.length,
         },
+
         final_destinations: finalDestinations,
         movement_history: movementHistory,
       },
     });
   } catch (error) {
-  console.error("ERROR MESSAGE:", error?.message);
-  console.error("ERROR POSITION:", error?.parent?.position);
-  console.error("ERROR SQL:", error?.sql);
+    console.error("getBatchFinalDestinations error:", error);
 
-  return res.status(500).json({
-    success: false,
-    message: "Failed to fetch batch final destinations",
-    error: error.message,
-    position: error?.parent?.position,
-  });
-}
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch batch final destinations",
+      error: error.message,
+    });
+  }
 };
+
 export const getBatchNodeRoute = async (req, res) => {
   try {
     const batchId = Number(req.params.batch_id);
@@ -1992,18 +2023,31 @@ export const getItemFinalDestinations = async (req, res) => {
 
         MAX(b.updated_at) AS last_updated_at,
 
-  JSON_AGG(
-  JSON_BUILD_OBJECT(
-    'batch_id', b.id,
-    'batch_no', b.batch_no,
-    'parent_batch_id', b.parent_batch_id,
-    'root_batch_id', b.root_batch_id,
-    'quantity', b.available_qty,
-    'weight', b.available_weight,
-    'split_level', b.split_level,
-    'status', b.status
-  )
-) AS batch_nodes
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'batch_id', b.id,
+            'batch_no', b.batch_no,
+
+            'root_batch_id', COALESCE(b.root_batch_id, b.id),
+            'root_batch_no', root_b.batch_no,
+
+            'parent_batch_id', b.parent_batch_id,
+
+            'quantity', b.available_qty,
+            'weight', b.available_weight,
+
+            'split_level', b.split_level,
+            'status', b.status,
+
+            'created_at', b.created_at,
+            'updated_at', b.updated_at
+          )
+          ORDER BY
+            root_b.created_at DESC NULLS LAST,
+            COALESCE(b.split_level, 0) ASC,
+            b.id ASC
+        ) AS batch_nodes
+
       FROM public.inventory_batches b
 
       INNER JOIN public.items i
@@ -2328,15 +2372,12 @@ export const getItemFinalDestinations = async (req, res) => {
       },
     });
   } catch (error) {
-  console.error("getBatchFinalDestinations error:", error);
-  console.error("ERROR MESSAGE:", error?.message);
-  console.error("ERROR PARENT:", error?.parent);
-  console.error("ERROR ORIGINAL:", error?.original);
+    console.error("getItemFinalDestinations error:", error);
 
-  return res.status(500).json({
-    success: false,
-    message: "Failed to fetch batch final destinations",
-    error: error.message,
-  });
-}
-}
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch item final destinations",
+      error: error.message,
+    });
+  }
+};

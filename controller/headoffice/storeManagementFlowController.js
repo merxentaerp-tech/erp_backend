@@ -71,11 +71,15 @@ export const getDistrictInventory = async (req, res) => {
 
     // ================= CATEGORY VIEW =================
     if (!category) {
-      const data = await sequelize.query(`
+      const data = await sequelize.query(
+        `
         SELECT 
           i.category,
 
           MIN(i.sku_code) as code,
+
+          MIN(i.image_url) AS image,
+          MIN(i.image_url) AS image_url,
 
           COALESCE(SUM(s.available_qty), 0) as quantity,
 
@@ -104,19 +108,22 @@ export const getDistrictInventory = async (req, res) => {
         GROUP BY i.category
 
         ORDER BY i.category
-      `, {
-        replacements: { store_code, category },
-        type: sequelize.QueryTypes.SELECT
-      });
+        `,
+        {
+          replacements: { store_code, category },
+          type: sequelize.QueryTypes.SELECT,
+        }
+      );
 
       return res.json({
         success: true,
-        data
+        data,
       });
     }
 
     // ================= ITEM VIEW =================
-    const data = await sequelize.query(`
+    const data = await sequelize.query(
+      `
       SELECT 
         i.id as item_id,
 
@@ -125,6 +132,9 @@ export const getDistrictInventory = async (req, res) => {
         i.article_code,
 
         i.sku_code as code,
+
+        i.image_url AS image,
+        i.image_url AS image_url,
 
         COALESCE(s.available_qty, 0) as quantity,
 
@@ -173,26 +183,26 @@ export const getDistrictInventory = async (req, res) => {
       ${condition}
 
       ORDER BY i."createdAt" DESC
-    `, {
-      replacements: { store_code, category },
-      type: sequelize.QueryTypes.SELECT
-    });
+      `,
+      {
+        replacements: { store_code, category },
+        type: sequelize.QueryTypes.SELECT,
+      }
+    );
 
     return res.json({
       success: true,
-      data
+      data,
     });
-
   } catch (error) {
     console.log("getDistrictInventory error =>", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
     });
   }
 };
-
 // ================= DISTRICT CATEGORY ITEMS =================
 export const getDistrictCategoryItems = async (req, res) => {
   try {

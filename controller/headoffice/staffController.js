@@ -35,7 +35,7 @@ export const getStaffWithStats = async (req, res) => {
     if (search) {
       whereClause += `
         AND (
-          LOWER(name) LIKE LOWER(:search)
+          LOWER(username) LIKE LOWER(:search)
           OR LOWER(email) LIKE LOWER(:search)
           OR LOWER(user_code) LIKE LOWER(:search)
           OR LOWER(address) LIKE LOWER(:search)
@@ -242,7 +242,7 @@ export const getStaffByLevel = async (req, res) => {
 
     const lvl = level.toLowerCase();
 
-    // 🎯 LEVEL FILTER (SMART MAPPING)
+    //  LEVEL FILTER (SMART MAPPING)
     if (lvl === "store") {
       whereClause += `
         AND LOWER(organization_level) IN ('store', 'retail')
@@ -263,14 +263,20 @@ export const getStaffByLevel = async (req, res) => {
 
     // 🔍 SEARCH FILTER
     if (search) {
-      whereClause += `
-        AND (
-          LOWER(name) LIKE LOWER('%${search}%')
-          OR LOWER(email) LIKE LOWER('%${search}%')
-          OR LOWER(user_code) LIKE LOWER('%${search}%')
-        )
-      `;
-    }
+  whereClause += `
+    AND (
+      username ILIKE :search
+      OR email ILIKE :search
+      OR user_code ILIKE :search
+      OR address ILIKE :search
+      OR phone_number ILIKE :search
+      OR store_name ILIKE :search
+      OR role ILIKE :search
+      OR store_code ILIKE :search
+    )
+  `;
+  replacements.search = `%${search}%`;
+}
 
     // ================= DATA QUERY =================
     const data = await sequelize.query(`
@@ -454,11 +460,10 @@ export const addEmployee = async (req, res) => {
     }
 
     const allowedRoles = [
-      "Super-Admin",
-      "Retail-TL",
-      "Retail-Manager",
-      "District-TL",
-      "District-Manager",
+      "ADMIN",
+      "INVENTORY_MANAGER",
+      "SALES_MANAGER",
+      "SUPER_ADMIN",
     ];
 
     if (!allowedRoles.includes(role)) {
@@ -499,7 +504,7 @@ export const addEmployee = async (req, res) => {
 
     // SUPER ADMIN CHECK
     if (
-      role === "Super-Admin" &&
+      role === "SUPER_ADMIN" &&
       selectedStore.organization_level !== "Head"
     ) {
       return res.status(400).json({

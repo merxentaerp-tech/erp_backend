@@ -460,11 +460,11 @@ export const addEmployee = async (req, res) => {
     }
 
     const allowedRoles = [
-      "ADMIN",
-      "INVENTORY_MANAGER",
-      "SALES_MANAGER",
-      "SUPER_ADMIN",
-      "head_manager",
+      "Super-Admin",
+      "Retail-TL",
+      "Retail-Manager",
+      "District-TL",
+      "District-Manager",
     ];
 
     if (!allowedRoles.includes(role)) {
@@ -505,7 +505,7 @@ export const addEmployee = async (req, res) => {
 
     // SUPER ADMIN CHECK
     if (
-      role === "SUPER_ADMIN" &&
+      role === "Super-Admin" &&
       selectedStore.organization_level !== "Head"
     ) {
       return res.status(400).json({
@@ -623,7 +623,6 @@ export const addEmployee = async (req, res) => {
     });
   }
 };
-
 
 // /**
 //  *  UPDATE EMPLOYEE

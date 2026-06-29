@@ -6552,7 +6552,7 @@ export const dispatchNewItemTransfer = async (req, res) => {
 
             hsn_code: hsn_code || null,
 
-            unit: row.unit || "PCS",
+            unit: row.unit ,
 
             organization_id: user.organization_id,
 

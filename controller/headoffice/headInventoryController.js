@@ -128,12 +128,92 @@
 
 
 
+
 import sequelize from "../../config/db.js";
 import { QueryTypes } from "sequelize";
 
+// ================= COMMON FILTER HELPER =================
+const buildStockFilter = (query) => {
+  const { organization_id, store_code } = query;
+
+  const replacements = {};
+
+  if (organization_id) {
+    replacements.organization_id = organization_id;
+    return {
+      where: `WHERE s.organization_id = :organization_id`,
+      and: `AND s.organization_id = :organization_id`,
+      replacements,
+    };
+  }
+
+  if (store_code) {
+    replacements.store_code = store_code;
+    return {
+      where: `WHERE s.store_code = :store_code`,
+      and: `AND s.store_code = :store_code`,
+      replacements,
+    };
+  }
+
+  return {
+    where: "",
+    and: "",
+    replacements,
+  };
+};
+
+// ================= GET DISTRICT / RETAIL LIST =================
+export const getInventoryOrganizations = async (req, res) => {
+  try {
+    const { type } = req.query;
+
+    if (!type || !["district", "retail"].includes(type.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        message: "type is required: district or retail",
+      });
+    }
+
+    const level = type.toLowerCase() === "district" ? "District" : "Retail";
+
+    const data = await sequelize.query(
+      `
+      SELECT
+        id AS organization_id,
+        store_code,
+        store_name,
+        organization_level
+      FROM stores
+      WHERE organization_level = :level
+      AND is_active = true
+      ORDER BY store_name ASC
+      `,
+      {
+        replacements: { level },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    return res.json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    console.error("Inventory Organizations Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ================= OVERALL INVENTORY DASHBOARD =================
 export const getOverallInventoryDashboard = async (req, res) => {
   try {
-    // ================= CARDS =================
+    const filter = buildStockFilter(req.query);
+
     const [cards] = await sequelize.query(
       `
       SELECT 
@@ -166,11 +246,14 @@ export const getOverallInventoryDashboard = async (req, res) => {
 
       FROM items i
       LEFT JOIN stocks s ON s.item_id = i.id
+      ${filter.where}
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements: filter.replacements,
+        type: QueryTypes.SELECT,
+      }
     );
 
-    // ================= TABLE DATA =================
     const tableData = await sequelize.query(
       `
       SELECT 
@@ -211,12 +294,16 @@ export const getOverallInventoryDashboard = async (req, res) => {
 
       FROM items i
       LEFT JOIN stocks s ON s.item_id = i.id
+      ${filter.where}
 
       GROUP BY i.category
 
       ORDER BY MAX(i."createdAt") DESC
       `,
-      { type: QueryTypes.SELECT }
+      {
+        replacements: filter.replacements,
+        type: QueryTypes.SELECT,
+      }
     );
 
     return res.json({
@@ -234,14 +321,14 @@ export const getOverallInventoryDashboard = async (req, res) => {
   } catch (error) {
     console.error("Dashboard Error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 };
 
-
+// ================= OVERALL CATEGORY ITEMS =================
 export const getOverallCategoryItems = async (req, res) => {
   try {
     const { category } = req.query;
@@ -252,6 +339,8 @@ export const getOverallCategoryItems = async (req, res) => {
         message: "Category is required",
       });
     }
+
+    const filter = buildStockFilter(req.query);
 
     const data = await sequelize.query(
       `
@@ -281,6 +370,7 @@ export const getOverallCategoryItems = async (req, res) => {
         ON s.item_id = i.id
 
       WHERE i.category = :category
+      ${filter.and}
 
       GROUP BY 
         i.id,
@@ -292,7 +382,10 @@ export const getOverallCategoryItems = async (req, res) => {
       ORDER BY i.item_name ASC
       `,
       {
-        replacements: { category },
+        replacements: {
+          category,
+          ...filter.replacements,
+        },
         type: QueryTypes.SELECT,
       }
     );
@@ -310,11 +403,12 @@ export const getOverallCategoryItems = async (req, res) => {
     });
   }
 };
+
+// ================= UPDATE STOCK PRICING =================
 export const updateStockPricing = async (req, res) => {
   try {
     const { item_id, selling_price, making_charge } = req.body;
 
-    // ================= VALIDATION =================
     if (!item_id) {
       return res.status(400).json({
         success: false,
@@ -322,7 +416,6 @@ export const updateStockPricing = async (req, res) => {
       });
     }
 
-    // ================= CHECK ITEM EXISTS =================
     const itemExists = await sequelize.query(
       `
       SELECT id, item_name, sale_rate, making_charge
@@ -342,34 +435,32 @@ export const updateStockPricing = async (req, res) => {
       });
     }
 
-    // ================= UPDATE QUERY =================
-   await sequelize.query(
-  `
-  UPDATE items
-  SET
-    sale_rate = COALESCE(:selling_price, sale_rate),
-    making_charge = COALESCE(:making_charge, making_charge),
-    "updatedAt" = NOW()
+    await sequelize.query(
+      `
+      UPDATE items
+      SET
+        sale_rate = COALESCE(:selling_price, sale_rate),
+        making_charge = COALESCE(:making_charge, making_charge),
+        "updatedAt" = NOW()
+      WHERE id = :item_id
+      `,
+      {
+        replacements: {
+          item_id,
+          selling_price: selling_price ?? null,
+          making_charge: making_charge ?? null,
+        },
+        type: QueryTypes.UPDATE,
+      }
+    );
 
-  WHERE id = :item_id
-  `,
-  {
-    replacements: {
-      item_id,
-      selling_price: selling_price ?? null,
-      making_charge: making_charge ?? null,
-    },
-    type: QueryTypes.UPDATE,
-  }
-);
-    // ================= UPDATED DATA =================
     const updatedItem = await sequelize.query(
       `
       SELECT
         id,
         item_name,
         sku_code,
-        sale_rate as selling_price,
+        sale_rate AS selling_price,
         making_charge
       FROM items
       WHERE id = :item_id
@@ -385,7 +476,6 @@ export const updateStockPricing = async (req, res) => {
       message: "Stock pricing updated successfully",
       data: updatedItem[0],
     });
-
   } catch (error) {
     console.error("Update Stock Pricing Error:", error);
 

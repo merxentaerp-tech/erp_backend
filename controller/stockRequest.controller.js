@@ -1,4 +1,3 @@
-// import fs from "fs";
 import sequelize from "../config/db.js";
 import { Op, where, cast, col, QueryTypes } from "sequelize";
 
@@ -158,7 +157,7 @@ const uploadToCloudinary = async (
     folder,
     resource_type: resourceType,
 
-    // ✅ Important fix
+    //  Important fix
     type: "upload",
     access_mode: "public",
 
@@ -1625,24 +1624,33 @@ export const approveAndDispatchRequestfromretail = async (req, res) => {
         continue;
       }
 
-      const itemDetails = await Item.findOne({
-        where: {
-          id: item_id,
-          organization_id: user.organization_id,
-          is_active: true,
-        },
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
+      // Replace only Item.findOne block in your controller with this
 
-      if (!itemDetails) {
-        await transaction.rollback();
-        return res.status(404).json({
-          success: false,
-          message: `Item not found for item_id ${item_id}`,
-        });
-      }
+const itemDetails = await Item.findOne({
+  where: {
+    id: item_id,
+    organization_id: request.to_organization_id, // ✅ FIXED
+    is_active: true,
+  },
+  transaction,
+  lock: transaction.LOCK.UPDATE,
+});
 
+if (!itemDetails) {
+  await transaction.rollback();
+  return res.status(404).json({
+    success: false,
+    message: `Item not found in source organization for item_id ${item_id}`,
+  });
+}
+
+if (String(itemDetails.current_status || "").toLowerCase() === "sold") {
+  await transaction.rollback();
+  return res.status(409).json({
+    success: false,
+    message: `Item ${item_id} is already sold and cannot be dispatched`,
+  });
+}
       const batchRows = await sequelize.query(
         `
         SELECT
@@ -2241,37 +2249,7 @@ export const approveAndDispatchRequest = async (req, res) => {
     for (const row of parsedItems) {
       const item_id = toNumber(row.item_id);
       const qty = toNumber(row.qty);
-    let parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
-
-// ✅ AUTO RESOLVE if NULL / INVALID
-if (!parent_batch_id) {
-  const autoBatch = await sequelize.query(
-    `
-    SELECT id
-    FROM public.inventory_batches
-    WHERE item_id = :item_id
-      AND available_qty >= :qty
-      AND status NOT IN ('sold','damaged','dead')
-    ORDER BY id ASC
-    LIMIT 1
-    FOR UPDATE
-    `,
-    {
-      replacements: { item_id, qty },
-      type: QueryTypes.SELECT,
-      transaction,
-    }
-  );
-
-  if (!autoBatch.length) {
-    return res.status(400).json({
-      success: false,
-      message: `No available batch found for item ${item_id}`,
-    });
-  }
-
-  parent_batch_id = autoBatch[0].id;
-}
+      const parent_batch_id = toNumber(row.parent_batch_id || row.batch_id);
 
       if (!item_id || qty < 0) {
         await transaction.rollback();
@@ -2280,28 +2258,15 @@ if (!parent_batch_id) {
           message: "Each item must have valid item_id and qty",
         });
       }
-const batchRows = await sequelize.query(
-  `
-  SELECT
-    id,
-    batch_no,
-    item_id,
-    organization_id,
-    current_organization_id,
-    available_qty,
-    available_weight,
-    status
-  FROM public.inventory_batches
-  WHERE id = :parent_batch_id
-    AND item_id = :item_id
-  FOR UPDATE
-  `,
-  {
-    replacements: { parent_batch_id, item_id },
-    type: QueryTypes.SELECT,
-    transaction,
-  }
-);
+
+      if (qty > 0 && !parent_batch_id) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `parent_batch_id is required for item ${item_id}`,
+        });
+      }
+
       const requestItem = requestItemMap.get(item_id);
 
       if (!requestItem) {
@@ -2437,19 +2402,16 @@ const batchRows = await sequelize.query(
         );
         continue;
       }
-      const stockOrgId = Number(
-  user.organization_id || request.from_organization_id
-);
 
-const itemDetails = await Item.findOne({
-  where: {
-    id: item_id,
-    is_active: true,
-    organization_id: stockOrgId,
-  },
-  transaction,
-  lock: transaction.LOCK.UPDATE,
-});
+      const itemDetails = await Item.findOne({
+        where: {
+          id: item_id,
+          organization_id: user.organization_id,
+          is_active: true,
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
 
       if (!itemDetails) {
         await transaction.rollback();
@@ -2503,11 +2465,13 @@ const itemDetails = await Item.findOne({
         parentBatch.current_organization_id || parentBatch.organization_id || 0
       );
 
-     // Parent-child transfer flow ke liye ownership validation skip
-
-
-console.log("Parent Batch Org:", parentBatchOrgId);
-console.log("Logged In Org:", user.organization_id);
+      if (parentBatchOrgId !== Number(user.organization_id)) {
+        await transaction.rollback();
+        return res.status(403).json({
+          success: false,
+          message: `Parent batch ${parent_batch_id} does not belong to your organization`,
+        });
+      }
 
       if (
         ["sold", "damaged", "dead"].includes(
@@ -2541,52 +2505,36 @@ console.log("Logged In Org:", user.organization_id);
       totalWeight += weight;
       estimatedValue += weight * rate;
 
-   // Parent batch jis organization ka hai,
-// stock wahi se deduct hoga
+      const fromStock = await getOrCreateStock(
+        user.organization_id,
+        item_id,
+        transaction
+      );
 
+      const availableQty = toNumber(fromStock.available_qty);
+      const availableWeight = toNumber(fromStock.available_weight);
+      const reservedQty = toNumber(fromStock.reserved_qty);
+      const reservedWeight = toNumber(fromStock.reserved_weight);
+      const transitQty = toNumber(fromStock.transit_qty);
+      const transitWeight = toNumber(fromStock.transit_weight);
+      const damagedQty = toNumber(fromStock.damaged_qty);
+      const damagedWeight = toNumber(fromStock.damaged_weight);
 
-const fromStock = await getOrCreateStock(
-  stockOrgId,
-  item_id,
-  transaction
-);
+      if (availableQty < qty) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient available qty for item ${item_id}`,
+        });
+      }
 
-console.log("===== STOCK DEBUG =====");
-console.log("Logged In Org:", user.organization_id);
-console.log("Batch Owner Org:", stockOrgId);
-console.log("Item ID:", item_id);
-console.log("Available Qty:", fromStock.available_qty);
-console.log("Available Weight:", fromStock.available_weight);
-
-const availableQty = toNumber(fromStock.available_qty);
-const availableWeight = toNumber(fromStock.available_weight);
-
-const reservedQty = toNumber(fromStock.reserved_qty);
-const reservedWeight = toNumber(fromStock.reserved_weight);
-const damagedQty = Number(fromStock?.damaged_qty || 0);
-const damagedWeight = Number(fromStock?.damaged_weight || 0);
-const transitQty = toNumber(fromStock.transit_qty);
-const transitWeight = toNumber(fromStock.transit_weight);
-
-// 🔥 REAL USABLE STOCK (ERP STANDARD)
-const usableQty = availableQty - reservedQty - transitQty;
-const usableWeight = availableWeight - reservedWeight - transitWeight;
-
-   if (qty > 0 && usableQty < qty) {
-  await transaction.rollback();
-  return res.status(400).json({
-    success: false,
-    message: `Insufficient usable qty for item ${item_id}`,
-  });
-}
-
-if (weight > 0 && usableWeight < weight) {
-  await transaction.rollback();
-  return res.status(400).json({
-    success: false,
-    message: `Insufficient usable weight for item ${item_id}`,
-  });
-}
+      if (weight > 0 && availableWeight < weight) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient available weight for item ${item_id}`,
+        });
+      }
 
       await StockTransferItem.create(
         {
@@ -2646,11 +2594,11 @@ if (weight > 0 && usableWeight < weight) {
           available_qty: newAvailableQty,
           reserved_qty: reservedQty,
           transit_qty: newTransitQty,
-          damagedqty: damagedQty,
+          damaged_qty: damagedQty,
           available_weight: newAvailableWeight,
           reserved_weight: reservedWeight,
           transit_weight: newTransitWeight,
-          damagedweight: damagedWeight,
+          damaged_weight: damagedWeight,
         },
         remarks: `Dispatched via ${transfer.transfer_no}`,
         created_by: user.id,
@@ -2867,6 +2815,9 @@ if (weight > 0 && usableWeight < weight) {
     });
   }
 };
+
+
+
 
 // ==========================================
 // STORE -> RECEIVE TRANSFER
@@ -4691,7 +4642,7 @@ export const createDistrictStockRequest = async (req, res) => {
         [Op.and]: [orgLevelTextLike("head")],
       };
     } else {
-      // ✅ retail ka existing flow same rakha hai
+      //  retail ka existing flow same rakha hai
       receiverWhere = {
         store_code: String(to_store_code).trim(),
         organization_level: "Retail",
@@ -6138,8 +6089,6 @@ export const downloadDeliveryChallanByTransfer = async (req, res) => {
     });
   }
 };
-
-
 import fs from "fs";
 
 export const dispatchNewItemTransfer = async (req, res) => {
@@ -6147,9 +6096,7 @@ export const dispatchNewItemTransfer = async (req, res) => {
   const uploadedLocalPaths = [];
 
   const safeRollback = async () => {
-    if (!transaction.finished) {
-      await transaction.rollback();
-    }
+    if (!transaction.finished) await transaction.rollback();
   };
 
   const addLocalPath = (file) => {
@@ -6493,15 +6440,42 @@ export const dispatchNewItemTransfer = async (req, res) => {
         });
       }
 
-      // ================= FIX: ITEM MASTER HANDLING =================
       let item = null;
+      let isNewItem = false;
 
+      // =====================================================
+      // CASE 1: EXISTING HEAD INVENTORY ITEM
+      // item_id ya sku_code mila to Head inventory se item uthayega
+      // =====================================================
       if (row.item_id) {
-        item = await Item.findByPk(row.item_id, { transaction });
+        item = await Item.findOne({
+          where: {
+            id: row.item_id,
+            organization_id: user.organization_id,
+            is_active: true,
+          },
+          transaction,
+        });
       }
 
-      // If item doesn't exist → create new item
+      if (!item && sku_code) {
+        item = await Item.findOne({
+          where: {
+            sku_code: String(sku_code).trim(),
+            organization_id: user.organization_id,
+            is_active: true,
+          },
+          transaction,
+        });
+      }
+
+      // =====================================================
+      // CASE 2: BRAND NEW ITEM
+      // Agar Head inventory me item nahi mila to new item create hoga
+      // =====================================================
       if (!item) {
+        isNewItem = true;
+
         if (!row.metal_type || !String(row.metal_type).trim()) {
           await safeRollback();
           return res.status(400).json({
@@ -6524,7 +6498,9 @@ export const dispatchNewItemTransfer = async (req, res) => {
               article_code ||
               `ART-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
 
-            sku_code: sku_code || null,
+            sku_code:
+              sku_code ||
+              `SKU-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
 
             item_name: String(item_name).trim(),
 
@@ -6533,34 +6509,274 @@ export const dispatchNewItemTransfer = async (req, res) => {
             subcategory: row.subcategory || "",
 
             details: row.details || null,
-
             purity: purity || "NA",
 
             gross_weight: Number(row.gross_weight || weight || 0),
-
             net_weight: Number(row.net_weight || weight || 0),
-
             stone_weight: Number(row.stone_weight || 0),
-
             stone_amount: Number(row.stone_amount || 0),
 
             making_charge: Number(row.making_charge || rate || 0),
-
             purchase_rate: Number(row.purchase_rate || 0),
-
             sale_rate: Number(row.sale_rate || 0),
 
             hsn_code: hsn_code || null,
-
-            unit: row.unit ,
+            unit: row.unit || "PCS",
 
             organization_id: user.organization_id,
+            storeCode: user.store_code || user.storeCode || null,
 
+            current_status: "in_stock",
             is_active: true,
           },
           { transaction }
         );
+
+        // ================= INSERT INTO HEAD STOCK =================
+        await sequelize.query(
+          `
+          INSERT INTO stocks (
+            item_id,
+            organization_id,
+            store_code,
+            available_qty,
+            available_weight,
+            reserved_qty,
+            reserved_weight,
+            transit_qty,
+            transit_weight,
+            damaged_qty,
+            damaged_weight,
+            dead_qty,
+            dead_weight,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            :item_id,
+            :organization_id,
+            :store_code,
+            :available_qty,
+            :available_weight,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            NOW(),
+            NOW()
+          )
+          `,
+          {
+            replacements: {
+              item_id: item.id,
+              organization_id: user.organization_id,
+              store_code: user.store_code || user.storeCode || null,
+              available_qty: Number(qty),
+              available_weight: Number(weight || item.gross_weight || 0),
+            },
+            type: QueryTypes.INSERT,
+            transaction,
+          }
+        );
+
+        // ================= CREATE ROOT BATCH FOR NEW ITEM =================
+        const batchNo = `BATCH-${Date.now()}-${Math.floor(
+          Math.random() * 1000
+        )}`;
+
+        const [createdBatch] = await sequelize.query(
+          `
+          INSERT INTO inventory_batches (
+  batch_no,
+  item_id,
+  root_batch_id,
+  parent_batch_id,
+  organization_id,
+  current_organization_id,
+  total_qty,
+  available_qty,
+  total_weight,
+  available_weight,
+  split_level,
+  status,
+  created_at,
+  updated_at
+)
+VALUES (
+  :batch_no,
+  :item_id,
+  NULL,
+  NULL,
+  :organization_id,
+  :current_organization_id,
+  :total_qty,
+  :available_qty,
+  :total_weight,
+  :available_weight,
+  0,
+  'created',
+  NOW(),
+  NOW()
+)
+RETURNING *
+          `,
+          {
+            replacements: {
+              batch_no: batchNo,
+              item_id: item.id,
+               organization_id: user.organization_id,
+              current_organization_id: user.organization_id,
+              total_qty: Number(qty),
+              available_qty: Number(qty),
+              total_weight: Number(weight || item.gross_weight || 0),
+              available_weight: Number(weight || item.gross_weight || 0),
+            },
+            type: QueryTypes.SELECT,
+            transaction,
+          }
+        );
+
+        // root_batch_id same batch id update
+        await sequelize.query(
+          `
+          UPDATE inventory_batches
+          SET root_batch_id = :root_batch_id,
+              updated_at = NOW()
+          WHERE id = :batch_id
+          `,
+          {
+            replacements: {
+              root_batch_id: createdBatch.id,
+              batch_id: createdBatch.id,
+            },
+            type: QueryTypes.UPDATE,
+            transaction,
+          }
+        );
       }
+
+      // =====================================================
+      // AB EXISTING YA NEW DONO CASE ME HEAD STOCK SE DISPATCH
+      // Stock minus + batch split
+      // =====================================================
+
+      const [stock] = await sequelize.query(
+        `
+        SELECT *
+        FROM stocks
+        WHERE item_id = :item_id
+        AND organization_id = :organization_id
+        FOR UPDATE
+        `,
+        {
+          replacements: {
+            item_id: item.id,
+            organization_id: user.organization_id,
+          },
+          type: QueryTypes.SELECT,
+          transaction,
+        }
+      );
+
+      if (!stock) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stock not found for item ${item.item_name}`,
+        });
+      }
+
+      if (Number(stock.available_qty || 0) < Number(qty)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for ${item.item_name}. Available qty: ${stock.available_qty}`,
+        });
+      }
+
+      const [parentBatch] = await sequelize.query(
+        `
+        SELECT 
+          id,
+          batch_no,
+          root_batch_id,
+          parent_batch_id,
+          item_id,
+          current_organization_id,
+          total_qty,
+          available_qty,
+          total_weight,
+          available_weight,
+          split_level,
+          status
+        FROM inventory_batches
+        WHERE item_id = :item_id
+        AND current_organization_id = :organization_id
+        AND COALESCE(available_qty, 0) >= :qty
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        FOR UPDATE
+        `,
+        {
+          replacements: {
+            item_id: item.id,
+            organization_id: user.organization_id,
+            qty: Number(qty),
+          },
+          type: QueryTypes.SELECT,
+          transaction,
+        }
+      );
+
+      if (!parentBatch) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Available batch not found for item ${item.item_name}`,
+        });
+      }
+
+      const childBatch = await InventoryTrackingService.distributeBatch(
+        {
+          parent_batch_id: parentBatch.id,
+          to_organization_id,
+          quantity: Number(qty),
+          weight: Number(weight || item.gross_weight || 0),
+          reference_type: isNewItem
+            ? "HEAD_NEW_ITEM_DIRECT_TRANSFER"
+            : "HEAD_EXISTING_ITEM_DIRECT_TRANSFER",
+          reference_id: transfer.id,
+          remarks: remarks || "Head inventory direct transfer",
+          handled_by: user.id,
+        },
+        { transaction }
+      );
+
+      await sequelize.query(
+        `
+        UPDATE stocks
+        SET 
+          available_qty = available_qty - :qty,
+          transit_qty = COALESCE(transit_qty, 0) + :qty,
+          available_weight = COALESCE(available_weight, 0) - :weight,
+          transit_weight = COALESCE(transit_weight, 0) + :weight,
+          updated_at = NOW()
+        WHERE id = :stock_id
+        `,
+        {
+          replacements: {
+            qty: Number(qty),
+            weight: Number(weight || item.gross_weight || 0),
+            stock_id: stock.id,
+          },
+          type: QueryTypes.UPDATE,
+          transaction,
+        }
+      );
 
       await StockTransferItem.create(
         {
@@ -6568,16 +6784,37 @@ export const dispatchNewItemTransfer = async (req, res) => {
 
           item_id: item.id,
 
+          batch_id: childBatch?.id || childBatch?.batch_id || null,
+          root_batch_id:
+            childBatch?.root_batch_id ||
+            parentBatch.root_batch_id ||
+            parentBatch.id,
+          parent_batch_id: parentBatch.id,
+
           qty: Number(qty),
-
           weight: Number(weight || item.gross_weight || 0),
-
           rate: Number(rate || item.sale_rate || 0),
 
           remarks: remarks || null,
 
           external_item_data: {
+            source_type: isNewItem
+              ? "brand_new_item"
+              : "existing_head_inventory",
+
             item_id: item.id,
+
+            parent_batch_id: parentBatch.id,
+            parent_batch_no: parentBatch.batch_no,
+
+            batch_id: childBatch?.id || childBatch?.batch_id || null,
+            batch_no: childBatch?.batch_no || null,
+
+            root_batch_id:
+              childBatch?.root_batch_id ||
+              parentBatch.root_batch_id ||
+              parentBatch.id,
+
             item_name: item.item_name,
             article_code: item.article_code,
             sku_code: item.sku_code,
@@ -6606,7 +6843,7 @@ export const dispatchNewItemTransfer = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "New item dispatched successfully",
+      message: "Head item dispatched successfully",
       data: {
         transfer_id: transfer.id,
         transfer_no: transfer.transfer_no,
@@ -6617,6 +6854,625 @@ export const dispatchNewItemTransfer = async (req, res) => {
     await safeRollback();
 
     console.error("dispatchNewItemTransfer error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Server error",
+    });
+  } finally {
+    for (const filePath of uploadedLocalPaths) {
+      try {
+        if (filePath && fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (err) {
+        console.error("Local file cleanup error:", err.message);
+      }
+    }
+  }
+};
+export const dispatchDistrictToRetailDirectTransfer = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  const uploadedLocalPaths = [];
+
+  const safeRollback = async () => {
+    if (!transaction.finished) {
+      await transaction.rollback();
+    }
+  };
+
+  const addLocalPath = (file) => {
+    if (file?.path) uploadedLocalPaths.push(file.path);
+  };
+
+  const isValidPhone = (phone) => /^[6-9]\d{9}$/.test(String(phone).trim());
+
+  const isPositiveNumber = (value) =>
+    !isNaN(Number(value)) && Number(value) > 0;
+
+  const isValidNonNegativeNumber = (value) => {
+    return value === undefined || value === null || value === ""
+      ? true
+      : !isNaN(Number(value)) && Number(value) >= 0;
+  };
+
+  const isPastDate = (date) => {
+    if (!date) return false;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const inputDate = new Date(date);
+    inputDate.setHours(0, 0, 0, 0);
+
+    return inputDate < today;
+  };
+
+  const uploadFileSafely = async (file, folder, type, errorMessage) => {
+    try {
+      const uploaded = await uploadToCloudinary(file.path, folder, type);
+      return uploaded.secure_url;
+    } catch (err) {
+      throw new Error(errorMessage || "File upload failed");
+    }
+  };
+
+  try {
+    const {
+      remarks,
+      driver_name,
+      driver_phone,
+      vehicle_number,
+      pickup_address,
+      delivery_address,
+      expected_delivery_date,
+      expected_delivery_time,
+      additional_notes,
+      items,
+      to_organization_id,
+    } = req.body;
+
+    const user = req.user;
+
+    if (!user?.id || !user?.organization_id) {
+      await safeRollback();
+      return res.status(401).json({
+        success: false,
+        message: "Invalid user token",
+      });
+    }
+
+    const userLevel = String(user.organization_level || "").toLowerCase();
+
+    if (userLevel !== "district") {
+      await safeRollback();
+      return res.status(403).json({
+        success: false,
+        message: "Only district user can dispatch directly to retail",
+      });
+    }
+
+    if (!to_organization_id) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Retail organization is required",
+      });
+    }
+
+    const retailStore = await Store.findOne({
+      where: {
+        id: to_organization_id,
+        organization_level: "Retail",
+        is_active: true,
+      },
+      transaction,
+    });
+
+    if (!retailStore) {
+      await safeRollback();
+      return res.status(404).json({
+        success: false,
+        message: "Retail store not found",
+      });
+    }
+
+    if (
+      retailStore.district_id &&
+      Number(retailStore.district_id) !== Number(user.organization_id)
+    ) {
+      await safeRollback();
+      return res.status(403).json({
+        success: false,
+        message: "This retail store does not belong to your district",
+      });
+    }
+
+    let parsedItems = [];
+
+    try {
+      if (Array.isArray(items)) {
+        parsedItems = items;
+      } else if (typeof items === "string") {
+        parsedItems = JSON.parse(items);
+      } else {
+        parsedItems = parseItemsFromBody(req.body) || [];
+      }
+    } catch (err) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Invalid items JSON format",
+      });
+    }
+
+    if (!Array.isArray(parsedItems) || !parsedItems.length) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Items required",
+      });
+    }
+
+    if (!driver_name || !String(driver_name).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Driver name is required",
+      });
+    }
+
+    if (!driver_phone || !String(driver_phone).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Driver phone is required",
+      });
+    }
+
+    if (!isValidPhone(driver_phone)) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Driver phone must be a valid 10 digit Indian mobile number",
+      });
+    }
+
+    if (!vehicle_number || !String(vehicle_number).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Vehicle number is required",
+      });
+    }
+
+    if (!pickup_address || !String(pickup_address).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Pickup address is required",
+      });
+    }
+
+    if (!delivery_address || !String(delivery_address).trim()) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Delivery address is required",
+      });
+    }
+
+    if (expected_delivery_date && isPastDate(expected_delivery_date)) {
+      await safeRollback();
+      return res.status(400).json({
+        success: false,
+        message: "Expected delivery date cannot be in the past",
+      });
+    }
+
+    // ================= FILES =================
+    const driverPhotoFile = req.files?.driver_photo?.[0] || null;
+    const dispatchImageFiles = req.files?.dispatch_images || [];
+    const dispatchVideoFile = req.files?.dispatch_video?.[0] || null;
+    const eWayBillFile = req.files?.e_way_bill?.[0] || null;
+
+    addLocalPath(driverPhotoFile);
+    dispatchImageFiles.forEach(addLocalPath);
+    addLocalPath(dispatchVideoFile);
+    addLocalPath(eWayBillFile);
+
+    let driver_photo_url = null;
+    let dispatch_image_urls = [];
+    let dispatch_video_url = null;
+    let e_way_bill_url = null;
+
+    if (driverPhotoFile?.path) {
+      driver_photo_url = await uploadFileSafely(
+        driverPhotoFile,
+        "district-retail/driver-photo",
+        "image",
+        "Failed to upload driver photo"
+      );
+    }
+
+    for (const file of dispatchImageFiles) {
+      const imageUrl = await uploadFileSafely(
+        file,
+        "district-retail/dispatch-images",
+        "image",
+        "Failed to upload dispatch image"
+      );
+
+      dispatch_image_urls.push(imageUrl);
+    }
+
+    if (dispatchVideoFile?.path) {
+      dispatch_video_url = await uploadFileSafely(
+        dispatchVideoFile,
+        "district-retail/dispatch-video",
+        "video",
+        "Failed to upload dispatch video"
+      );
+    }
+
+    if (eWayBillFile?.path) {
+      const isPdf =
+        eWayBillFile.mimetype === "application/pdf" ||
+        eWayBillFile.originalname?.toLowerCase().endsWith(".pdf");
+
+      e_way_bill_url = await uploadFileSafely(
+        eWayBillFile,
+        "district-retail/e-way-bill",
+        isPdf ? "raw" : "image",
+        "Failed to upload e-way bill"
+      );
+    }
+
+    // ================= CREATE TRANSFER =================
+    const transfer = await StockTransfer.create(
+      {
+        transfer_no: generateTransferNo(),
+        from_organization_id: user.organization_id,
+        to_organization_id,
+        status: "in_transit",
+
+        driver_name: String(driver_name).trim(),
+        driver_phone: String(driver_phone).trim(),
+        vehicle_number: String(vehicle_number).trim(),
+        pickup_address: String(pickup_address).trim(),
+        delivery_address: String(delivery_address).trim(),
+        expected_delivery_date,
+        expected_delivery_time,
+        additional_notes,
+        remarks: remarks || null,
+
+        driver_photo_url,
+        dispatch_image_url: dispatch_image_urls.length
+          ? JSON.stringify(dispatch_image_urls)
+          : null,
+        dispatch_video_url,
+        e_way_bill_url,
+
+        created_by: user.id,
+        dispatched_by: user.id,
+      },
+      { transaction }
+    );
+
+    // ================= ITEMS =================
+    for (const row of parsedItems) {
+      const {
+        item_name,
+        article_code,
+        sku_code,
+        qty,
+        weight,
+        rate,
+        purity,
+        hsn_code,
+      } = row;
+
+      if (!item_name || !String(item_name).trim()) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: "item_name is required",
+        });
+      }
+
+      if (!sku_code || !String(sku_code).trim()) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `sku_code is required for item ${item_name}`,
+        });
+      }
+
+      if (!isPositiveNumber(qty)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Valid qty is required for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(rate)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Rate cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.gross_weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Gross weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.net_weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Net weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.stone_weight)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stone weight cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.stone_amount)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stone amount cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.making_charge)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Making charge cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.purchase_rate)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Purchase rate cannot be negative for item ${item_name}`,
+        });
+      }
+
+      if (!isValidNonNegativeNumber(row.sale_rate)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Sale rate cannot be negative for item ${item_name}`,
+        });
+      }
+
+      // ================= ITEM MASTER HANDLING BY SKU =================
+      const item = await Item.findOne({
+        where: {
+          sku_code: String(sku_code).trim(),
+          organization_id: user.organization_id,
+          is_active: true,
+        },
+        transaction,
+      });
+
+      if (!item) {
+        await safeRollback();
+        return res.status(404).json({
+          success: false,
+          message: `Item with SKU ${sku_code} not found in your inventory`,
+        });
+      }
+
+      // ================= CHECK OWN INVENTORY STOCK =================
+      const [stock] = await sequelize.query(
+        `
+        SELECT *
+        FROM stocks
+        WHERE item_id = :item_id
+        AND organization_id = :organization_id
+        FOR UPDATE
+        `,
+        {
+          replacements: {
+            item_id: item.id,
+            organization_id: user.organization_id,
+          },
+          type: QueryTypes.SELECT,
+          transaction,
+        }
+      );
+
+      if (!stock) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Stock not found for SKU ${sku_code}`,
+        });
+      }
+
+      if (Number(stock.available_qty || 0) < Number(qty)) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for SKU ${sku_code}. Available qty: ${stock.available_qty}`,
+        });
+      }
+
+      // ================= FIND AVAILABLE PARENT BATCH =================
+      const [parentBatch] = await sequelize.query(
+        `
+        SELECT 
+          id,
+          batch_no,
+          root_batch_id,
+          parent_batch_id,
+          item_id,
+          current_organization_id,
+          total_qty,
+          available_qty,
+          total_weight,
+          available_weight,
+          split_level,
+          status
+        FROM inventory_batches
+        WHERE item_id = :item_id
+        AND current_organization_id = :organization_id
+        AND COALESCE(available_qty, 0) >= :qty
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        FOR UPDATE
+        `,
+        {
+          replacements: {
+            item_id: item.id,
+            organization_id: user.organization_id,
+            qty: Number(qty),
+          },
+          type: QueryTypes.SELECT,
+          transaction,
+        }
+      );
+
+      if (!parentBatch) {
+        await safeRollback();
+        return res.status(400).json({
+          success: false,
+          message: `Available batch not found for SKU ${sku_code}`,
+        });
+      }
+
+      // ================= CREATE CHILD BATCH + BATCH SPLIT TRACKING =================
+      const childBatch = await InventoryTrackingService.distributeBatch(
+        {
+          parent_batch_id: parentBatch.id,
+          to_organization_id,
+          quantity: Number(qty),
+          weight: Number(weight || item.gross_weight || 0),
+          reference_type: "DISTRICT_TO_RETAIL_DIRECT_TRANSFER",
+          reference_id: transfer.id,
+          remarks: remarks || "District to retail direct transfer",
+          handled_by: user.id,
+        },
+        { transaction }
+      );
+
+      // ================= REDUCE STOCK INVENTORY AFTER TRANSFER =================
+      await sequelize.query(
+        `
+        UPDATE stocks
+        SET 
+          available_qty = available_qty - :qty,
+          transit_qty = COALESCE(transit_qty, 0) + :qty,
+          updated_at = NOW()
+        WHERE id = :stock_id
+        `,
+        {
+          replacements: {
+            qty: Number(qty),
+            stock_id: stock.id,
+          },
+          type: QueryTypes.UPDATE,
+          transaction,
+        }
+      );
+
+      await StockTransferItem.create(
+        {
+          transfer_id: transfer.id,
+
+          item_id: item.id,
+
+          batch_id: childBatch?.id || childBatch?.batch_id || null,
+          root_batch_id:
+            childBatch?.root_batch_id ||
+            parentBatch.root_batch_id ||
+            parentBatch.id,
+          parent_batch_id: parentBatch.id,
+
+          qty: Number(qty),
+
+          weight: Number(weight || item.gross_weight || 0),
+
+          rate: Number(rate || item.sale_rate || 0),
+
+          remarks: remarks || null,
+
+          external_item_data: {
+            item_id: item.id,
+
+            parent_batch_id: parentBatch.id,
+            parent_batch_no: parentBatch.batch_no,
+
+            batch_id: childBatch?.id || childBatch?.batch_id || null,
+            batch_no: childBatch?.batch_no || null,
+
+            root_batch_id:
+              childBatch?.root_batch_id ||
+              parentBatch.root_batch_id ||
+              parentBatch.id,
+
+            item_name: item.item_name,
+            article_code: item.article_code,
+            sku_code: item.sku_code,
+            metal_type: item.metal_type,
+            category: item.category,
+            subcategory: item.subcategory,
+            details: item.details,
+            purity: item.purity,
+            gross_weight: item.gross_weight,
+            net_weight: item.net_weight,
+            stone_weight: item.stone_weight,
+            stone_amount: item.stone_amount,
+            making_charge: item.making_charge,
+            purchase_rate: item.purchase_rate,
+            sale_rate: item.sale_rate,
+            hsn_code: item.hsn_code,
+            unit: item.unit,
+            organization_id: item.organization_id,
+          },
+        },
+        { transaction }
+      );
+    }
+
+    await transaction.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "District to retail item dispatched successfully",
+      data: {
+        transfer_id: transfer.id,
+        transfer_no: transfer.transfer_no,
+        status: "in_transit",
+      },
+    });
+  } catch (error) {
+    await safeRollback();
+
+    console.error("dispatchDistrictToRetailDirectTransfer error:", error);
 
     return res.status(500).json({
       success: false,

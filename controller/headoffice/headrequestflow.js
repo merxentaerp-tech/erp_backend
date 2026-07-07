@@ -1298,7 +1298,7 @@ const transferHasSelectedStore = (transfer, selectedStore) => {
   );
 };
 
-export const  getHeadAllTransfers = async (req, res) => {
+export const getHeadAllTransfers = async (req, res) => {
   try {
     const user = req.user;
 
@@ -1322,11 +1322,9 @@ export const  getHeadAllTransfers = async (req, res) => {
       status,
       search,
 
-      // dropdown selected values
       district_store_code,
       retail_store_code,
 
-      // optional exact side filters
       from_store_code,
       to_store_code,
     } = req.query;
@@ -1337,8 +1335,30 @@ export const  getHeadAllTransfers = async (req, res) => {
 
     const transferWhere = {};
 
+    const allowedStatuses = [
+      "draft",
+      "approved",
+      "dispatched",
+      "in_transit",
+      "received",
+      "cancelled",
+    ];
+
+    // ✅ FIX: my_transits DB status nahi hai, UI filter hai
     if (status && status !== "all") {
-      transferWhere.status = status;
+      if (status === "my_transits") {
+        transferWhere.status = {
+          [Op.in]: ["dispatched", "in_transit"],
+        };
+      } else if (allowedStatuses.includes(status)) {
+        transferWhere.status = status;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid transfer status",
+          allowed_statuses: ["all", "my_transits", ...allowedStatuses],
+        });
+      }
     }
 
     if (search) {
@@ -1497,7 +1517,6 @@ export const  getHeadAllTransfers = async (req, res) => {
       };
     });
 
-    // district dropdown filter
     if (selectedDistrictCode) {
       if (!selectedDistrictStore) {
         return res.status(404).json({
@@ -1511,7 +1530,6 @@ export const  getHeadAllTransfers = async (req, res) => {
       );
     }
 
-    // retail dropdown filter
     if (selectedRetailCode) {
       if (!selectedRetailStore) {
         return res.status(404).json({
@@ -1525,7 +1543,6 @@ export const  getHeadAllTransfers = async (req, res) => {
       );
     }
 
-    // exact from side filter
     if (selectedFromCode) {
       if (!selectedFromStore) {
         return res.status(404).json({
@@ -1541,7 +1558,6 @@ export const  getHeadAllTransfers = async (req, res) => {
       );
     }
 
-    // exact to side filter
     if (selectedToCode) {
       if (!selectedToStore) {
         return res.status(404).json({
@@ -1568,6 +1584,10 @@ export const  getHeadAllTransfers = async (req, res) => {
       in_transit: summarySource.filter((t) => t.status === "in_transit").length,
       received: summarySource.filter((t) => t.status === "received").length,
       cancelled: summarySource.filter((t) => t.status === "cancelled").length,
+
+      my_transits: summarySource.filter((t) =>
+        ["dispatched", "in_transit"].includes(t.status)
+      ).length,
 
       inTransit: summarySource.filter((t) => t.status === "in_transit").length,
 

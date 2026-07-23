@@ -188,7 +188,7 @@ app.use("/user", userRoutes);
 */
 app.use("/profile", profileRoutes);
 
-app.use("/audit", newAuditRoutes);
+// app.use("/audit", newAuditRoutes);
 
 app.use("/district", districtRoutes);
 

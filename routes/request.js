@@ -23,10 +23,11 @@ import {
   approveAndDispatchRequestfromretail,
   forwardRequestToDistrictDirectDelivery,downloadDeliveryChallanByTransfer,dispatchNewItemTransfer,
 
-  // ✅ District request ko selected retail store ko forward/transfer karne ke liye
+  //  District request ko selected retail store ko forward/transfer karne ke liye
   // Agar ye controller stockRequest.controller.js me export nahi hai,
   // to pehle us controller ko add/export karna padega.
   transferDistrictRequestToRetail,
+  dispatchDistrictToRetailDirectTransfer,
 } from "../controller/stockRequest.controller.js";
 
 import {
@@ -37,7 +38,7 @@ import {
   getAvailableStoresForHeadRequest,
   getAnyTransferDetailsForHead,
 } from "../controller/headoffice/headrequestflow.js";
-
+import {raiseTransferComplaint,getStoreComplaints, getHeadAllTransferComplaints,updateComplaintItemStatus,sendReplacementAgainstComplaint,getComplaintDetails} from "../controller/stockTransferComplaintController.js";
 const router = express.Router();
 
 /* =====================================================
@@ -104,7 +105,7 @@ router.get("/transfers/incoming", auth, getIncomingTransfers);
 
 router.get("/transfers/outgoing", auth, getOutgoingTransfers);
 
-router.put("/transfers/:transferId/receive", auth, receiveTransfer);
+router.put("/transfers/:transferId", auth, receiveTransfer);
 
 router.get("/transfers/:id/details", auth, getTransferDetails);
 
@@ -131,7 +132,7 @@ router.post(
 );
 
 /**
- * ✅ DISTRICT POPUP ROUTE
+ *  DISTRICT POPUP ROUTE
  *
  * District screen me jab Transfer button click hoga,
  * popup ke dropdown me retail stores dikhane ke liye ye API hit hogi.
@@ -144,9 +145,19 @@ router.get(
   auth,
   getRetailStoresUnderDistrict
 );
-
+router.post(
+  "/district-to-retail/direct-transfer",
+  auth,
+  upload.fields([
+    { name: "driver_photo", maxCount: 1 },
+    { name: "dispatch_images", maxCount: 10 },
+    { name: "dispatch_video", maxCount: 1 },
+    { name: "e_way_bill", maxCount: 1 },
+  ]),
+  dispatchDistrictToRetailDirectTransfer
+);
 /**
- * ✅ DISTRICT -> RETAIL TRANSFER / FORWARD FLOW
+ *  DISTRICT -> RETAIL TRANSFER / FORWARD FLOW
  *
  * District kisi received/original request ko selected retail store ko forward karega.
  *
@@ -170,7 +181,7 @@ router.post(
 ===================================================== */
 
 /**
- * ✅ Head store fetch ke liye separate route.
+ *  Head store fetch ke liye separate route.
  *
  * Pehle ye bhi /head/available-stores par tha,
  * isliye duplicate conflict aa raha tha.
@@ -182,7 +193,7 @@ router.post(
 );
 
 /**
- * ❌ OLD DUPLICATE ROUTE - commented
+ *  OLD DUPLICATE ROUTE - commented
  *
  * Ye route duplicate tha:
  * POST /head/available-stores
@@ -197,7 +208,7 @@ router.post(
 // );
 
 /**
- * ❌ OLD WRONG ROUTE - commented
+ *  OLD WRONG ROUTE - commented
  *
  * getRetailStoresUnderDistrict ko /head/available-stores par mount karna wrong tha.
  * District retail popup ke liye ab correct route hai:
@@ -228,7 +239,7 @@ router.post(
 );
 
 /**
- * ✅ Head available stores ke liye final route.
+ *  Head available stores ke liye final route.
  *
  * Full URL:
  * POST /request/head/available-stores
@@ -291,5 +302,40 @@ router.get(
   auth,
   downloadDeliveryChallanByTransfer
 );
-
+router.post(
+  "/transfers/:transferId/complaint",
+  auth,
+  upload.fields([
+    {
+      name: "images",
+      maxCount: 2,
+    },
+    {
+      name: "video",
+      maxCount: 1,
+    },
+  ]),
+  raiseTransferComplaint
+);
+router.get(
+  "/complaints/store",
+  auth,
+  getStoreComplaints
+);
+router.get(
+  "/complaints/head",
+  auth,
+  getHeadAllTransferComplaints
+);
+router.patch(
+  "/:complaintId/items/:transferItemId/status",
+  auth,
+  updateComplaintItemStatus
+);
+router.post(
+  "/complaints/:complaintId/items/:transferItemId/send-replacement",
+  auth,
+  sendReplacementAgainstComplaint
+);
+router.get("/:complaintId",auth,getComplaintDetails)
 export default router;

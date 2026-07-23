@@ -28,7 +28,7 @@ import transferLocationRoutes from "./routes/transferlocation.js";
 import staffRoutes from "./routes/staffroutes.js";
 import headLedgerRoutes from "./routes/headladger.js";
 import itemTrackerRoutes from "./routes/itemtracker.js";
-import newAuditRoutes from "./routes/auditRoutes.js";
+// import newAuditRoutes from "./routes/auditRoutes.js";
 
 // import { getGoldRate } from "./service/goldService.js";
 

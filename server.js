@@ -4,7 +4,6 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Sequelize } from "sequelize";
 import { Server } from "socket.io";
-import * as Sentry from "@sentry/node";
 import { nodeProfilingIntegration } from "@sentry/profiling-node";
 
 import completeAuditRoutes from "./routes/completeAuditRoutes.js";
@@ -274,7 +273,7 @@ app.get("/sentry-test", (req, res) => {
   ==========================================
 */
 
-Sentry.setupExpressErrorHandler(app);
+// Sentry.setupExpressErrorHandler(app);
 
 /*
   ==========================================

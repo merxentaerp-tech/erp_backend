@@ -4,26 +4,33 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Sequelize } from "sequelize";
 import { Server } from "socket.io";
+import * as Sentry from "@sentry/node";
+import { nodeProfilingIntegration } from "@sentry/profiling-node";
+
 import completeAuditRoutes from "./routes/completeAuditRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
-import item from "./routes/itemRoutes.js";
-import dashboard from "./routes/dashboardRoutes.js";
-import requestItem from "./routes/request.js";
-import stock from "./routes/stockRoute.js";
-import Profile from "./routes/userRoute.js";
-import Audit from "./routes/Audit.js";
-import District from "./routes/districtRoute.js";
-import storemanage from "./routes/store_managment.js";
-import ladger from "./routes/ledgerRoutes.js";
-import Bill from "./routes/billRoute.js";
-import Activity from "./routes/activityRoutes.js";
-import exchange from "./routes/Exchange.js";
-import tracklocation from "./routes/transferlocation.js";
-import staff from "./routes/staffroutes.js";
-import profile from "./routes/profileRoute.js";
-import ledger from "./routes/headladger.js";
-import itemTracker from "./routes/itemtracker.js";
-import { getGoldRate } from "./service/goldService.js";
+import itemRoutes from "./routes/itemRoutes.js";
+import dashboardRoutes from "./routes/dashboardRoutes.js";
+import requestItemRoutes from "./routes/request.js";
+import stockRoutes from "./routes/stockRoute.js";
+
+// Dono ko clear aur alag naam diya gaya hai
+import userRoutes from "./routes/userRoute.js";
+import profileRoutes from "./routes/profileRoute.js";
+
+import districtRoutes from "./routes/districtRoute.js";
+import storeManagementRoutes from "./routes/store_managment.js";
+import ledgerRoutes from "./routes/ledgerRoutes.js";
+import billRoutes from "./routes/billRoute.js";
+import activityRoutes from "./routes/activityRoutes.js";
+import exchangeRoutes from "./routes/Exchange.js";
+import transferLocationRoutes from "./routes/transferlocation.js";
+import staffRoutes from "./routes/staffroutes.js";
+import headLedgerRoutes from "./routes/headladger.js";
+import itemTrackerRoutes from "./routes/itemtracker.js";
+import newAuditRoutes from "./routes/auditRoutes.js";
+
+// import { getGoldRate } from "./service/goldService.js";
 
 import {
   getDashboardSummary,
@@ -37,9 +44,46 @@ import {
   registerBillingSocket,
 } from "./socket/billingSocket.js";
 
+import {
+  registerAuditSocket,
+} from "./socket/auditSocket.js";
+
 dotenv.config();
 
+/*
+  ==========================================
+  SENTRY CONFIGURATION
+  ==========================================
+*/
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+
+  integrations: [
+    nodeProfilingIntegration(),
+  ],
+
+  tracesSampleRate: 1.0,
+
+  profilesSampleRate: 1.0,
+
+  environment:
+    process.env.NODE_ENV || "development",
+});
+
+/*
+  ==========================================
+  EXPRESS APP
+  ==========================================
+*/
+
 const app = express();
+
+/*
+  ==========================================
+  CORS CONFIGURATION
+  ==========================================
+*/
 
 const corsOptions = {
   origin: [
@@ -55,22 +99,29 @@ const corsOptions = {
     "PUT",
     "DELETE",
     "PATCH",
+    "OPTIONS",
   ],
 
-allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "store_code",
-      "x-store-code",
-      "organization_id",
-      "x-organization-id",
-      "x-billing-session-id",
-    ],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "store_code",
+    "x-store-code",
+    "organization_id",
+    "x-organization-id",
+    "x-billing-session-id",
+  ],
 
   credentials: true,
 };
 
 app.use(cors(corsOptions));
+
+/*
+  ==========================================
+  BODY PARSERS
+  ==========================================
+*/
 
 app.use(express.json());
 
@@ -79,6 +130,12 @@ app.use(
     extended: true,
   })
 );
+
+/*
+  ==========================================
+  DATABASE CONNECTION
+  ==========================================
+*/
 
 const sequelize = new Sequelize(
   process.env.DATABASE_URL,
@@ -97,47 +154,84 @@ const sequelize = new Sequelize(
   }
 );
 
-/**
- * ROUTES
- */
+/*
+  ==========================================
+  API ROUTES
+  ==========================================
+*/
 
 app.use("/auth", authRoutes);
 
-app.use("/item", item);
+app.use("/item", itemRoutes);
 
-app.use("/dash", dashboard);
+app.use("/dash", dashboardRoutes);
 
-app.use("/request", requestItem);
+app.use("/request", requestItemRoutes);
 
-app.use("/stock", stock);
+app.use("/stock", stockRoutes);
 
-app.use("/profile", Profile);
+/*
+  userRoute.js ke routes
 
-app.use("/audit", Audit);
+  Pehle:
+  app.use("/profile", Profile);
 
-app.use("/District", District);
+  Ab:
+*/
+app.use("/user", userRoutes);
 
-app.use("/ladger", ladger);
+/*
+  profileRoute.js ke routes
 
-app.use("/bill", Bill);
+  Forgot Password endpoint:
+  POST /profile/forgot-password
+*/
+app.use("/profile", profileRoutes);
 
-app.use("/Activity", Activity);
+app.use("/audit", newAuditRoutes);
 
-app.use("/exchange", exchange);
+app.use("/district", districtRoutes);
 
-app.use("/track", tracklocation);
+app.use("/ladger", ledgerRoutes);
 
-app.use("/Profile", profile);
+app.use("/bill", billRoutes);
 
-app.use("/headstore/manage", storemanage);
+app.use("/activity", activityRoutes);
 
-app.use("/staff", staff);
-app.use("/complete-audit", completeAuditRoutes);
-app.use("/headledger", ledger);
-app.use("/item-tracker",itemTracker);
-/**
- * HEALTH CHECK
- */
+app.use("/exchange", exchangeRoutes);
+
+app.use(
+  "/complete-audit",
+  completeAuditRoutes
+);
+
+app.use(
+  "/track",
+  transferLocationRoutes
+);
+
+app.use(
+  "/headstore/manage",
+  storeManagementRoutes
+);
+
+app.use("/staff", staffRoutes);
+
+app.use(
+  "/headledger",
+  headLedgerRoutes
+);
+
+app.use(
+  "/item-tracker",
+  itemTrackerRoutes
+);
+
+/*
+  ==========================================
+  HEALTH CHECK
+  ==========================================
+*/
 
 app.get("/", (req, res) => {
   return res.status(200).json({
@@ -146,11 +240,75 @@ app.get("/", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 8000;
+/*
+  ==========================================
+  ROUTE NOT FOUND
+  ==========================================
+*/
 
-/**
- * SOCKET RESPONSE HELPER
- */
+app.use((req, res, next) => {
+  return res.status(404).json({
+    success: false,
+    message: "API route not found",
+    method: req.method,
+    path: req.originalUrl,
+  });
+});
+
+/*
+  ==========================================
+  SENTRY TEST ROUTE
+  Remove after testing
+  ==========================================
+*/
+
+/*
+app.get("/sentry-test", (req, res) => {
+  throw new Error("Sentry Test Error");
+});
+*/
+
+/*
+  ==========================================
+  SENTRY EXPRESS ERROR HANDLER
+  ==========================================
+*/
+
+Sentry.setupExpressErrorHandler(app);
+
+/*
+  ==========================================
+  GLOBAL ERROR HANDLER
+  ==========================================
+*/
+
+app.use((error, req, res, next) => {
+  console.error("GLOBAL SERVER ERROR:", error);
+
+  return res.status(
+    error.status || 500
+  ).json({
+    success: false,
+    message:
+      error.message ||
+      "Internal server error",
+  });
+});
+
+/*
+  ==========================================
+  PORT
+  ==========================================
+*/
+
+const PORT =
+  process.env.PORT || 8000;
+
+/*
+  ==========================================
+  SOCKET RESPONSE HELPER
+  ==========================================
+*/
 
 const makeSocketRes = (
   socket,
@@ -158,24 +316,34 @@ const makeSocketRes = (
 ) => {
   return {
     status: () =>
-      makeSocketRes(socket, eventName),
+      makeSocketRes(
+        socket,
+        eventName
+      ),
 
     json: (data) => {
-      socket.emit(eventName, data);
+      socket.emit(
+        eventName,
+        data
+      );
     },
   };
 };
 
-/**
- * LIVE DASHBOARD EMIT
- */
+/*
+  ==========================================
+  LIVE DASHBOARD EMIT
+  ==========================================
+*/
 
 const emitDashboardData = async (
   socket,
   user
 ) => {
   try {
-    if (!user) return;
+    if (!user) {
+      return;
+    }
 
     const fakeReq = {
       user,
@@ -190,7 +358,8 @@ const emitDashboardData = async (
     );
 
     if (
-      user.role === "district_manager" ||
+      user.role ===
+        "district_manager" ||
       String(
         user.organization_level || ""
       ).toLowerCase() === "district"
@@ -203,7 +372,6 @@ const emitDashboardData = async (
         )
       );
     }
-
   } catch (error) {
     console.error(
       "emitDashboardData error:",
@@ -212,25 +380,19 @@ const emitDashboardData = async (
   }
 };
 
-/**
- * START SERVER
- */
+/*
+  ==========================================
+  START SERVER
+  ==========================================
+*/
 
 async function startServer() {
   try {
-    /**
-     * DATABASE CONNECTION
-     */
-
     await sequelize.authenticate();
 
     console.log(
       "PostgreSQL connected successfully"
     );
-
-    /**
-     * EXPRESS SERVER
-     */
 
     const server = app.listen(
       PORT,
@@ -241,48 +403,50 @@ async function startServer() {
       }
     );
 
-    /**
-     * SOCKET SERVER
-     */
+    /*
+      ========================================
+      SOCKET.IO SETUP
+      ========================================
+    */
 
-    const io = new Server(server, {
-      cors: corsOptions,
-    });
-
-    /**
-     * GLOBAL SOCKET ACCESS
-     */
+    const io = new Server(
+      server,
+      {
+        cors: corsOptions,
+      }
+    );
 
     global.io = io;
-
-    /**
-     * SOCKET CONNECTION
-     */
 
     io.on(
       "connection",
       async (socket) => {
-
         console.log(
           "Client connected:",
           socket.id
         );
 
-        /**
-         * BILLING SOCKETS
-         */
+        registerBillingSocket(
+          socket
+        );
 
-        registerBillingSocket(socket);
+        registerAuditSocket(
+          socket
+        );
 
-        /**
-         * TRANSFER TRACKING JOIN
-         */
+        /*
+          ====================================
+          JOIN TRANSFER TRACKING
+          ====================================
+        */
 
         socket.on(
           "join-transfer-tracking",
           (transferId) => {
             try {
-              if (!transferId) return;
+              if (!transferId) {
+                return;
+              }
 
               const roomName =
                 `transfer_${transferId}`;
@@ -297,11 +461,11 @@ async function startServer() {
                 "transfer-tracking-joined",
                 {
                   success: true,
-                  transfer_id: transferId,
+                  transfer_id:
+                    transferId,
                   room: roomName,
                 }
               );
-
             } catch (error) {
               console.error(
                 "join-transfer-tracking error:",
@@ -311,15 +475,19 @@ async function startServer() {
           }
         );
 
-        /**
-         * TRANSFER TRACKING LEAVE
-         */
+        /*
+          ====================================
+          LEAVE TRANSFER TRACKING
+          ====================================
+        */
 
         socket.on(
           "leave-transfer-tracking",
           (transferId) => {
             try {
-              if (!transferId) return;
+              if (!transferId) {
+                return;
+              }
 
               const roomName =
                 `transfer_${transferId}`;
@@ -329,7 +497,6 @@ async function startServer() {
               console.log(
                 `Socket ${socket.id} left ${roomName}`
               );
-
             } catch (error) {
               console.error(
                 "leave-transfer-tracking error:",
@@ -339,31 +506,25 @@ async function startServer() {
           }
         );
 
-        /**
-         * DASHBOARD JOIN
-         */
+        /*
+          ====================================
+          JOIN DASHBOARD
+          ====================================
+        */
 
         socket.on(
           "join-dashboard",
           async (userData) => {
             try {
-
               socket.data.user =
                 userData;
-
-              /**
-               * LIVE DASHBOARD
-               */
 
               await emitDashboardData(
                 socket,
                 userData
               );
 
-              /**
-               * LIVE GOLD RATE
-               */
-
+              /*
               const goldRate =
                 await getGoldRate();
 
@@ -386,7 +547,7 @@ async function startServer() {
                     goldRate.timestamp,
                 }
               );
-
+              */
             } catch (error) {
               console.error(
                 "join-dashboard socket error:",
@@ -396,9 +557,11 @@ async function startServer() {
           }
         );
 
-        /**
-         * DISCONNECT
-         */
+        /*
+          ====================================
+          SOCKET DISCONNECT
+          ====================================
+        */
 
         socket.on(
           "disconnect",
@@ -412,78 +575,78 @@ async function startServer() {
       }
     );
 
-    /**
-     * LIVE UPDATE INTERVAL
-     */
+    /*
+      ========================================
+      LIVE DASHBOARD INTERVAL
+      ========================================
+    */
 
-    setInterval(async () => {
-      try {
+    setInterval(
+      async () => {
+        try {
+          /*
+          const goldRate =
+            await getGoldRate();
 
-        /**
-         * GOLD RATE UPDATE
-         */
+          io.emit(
+            "gold-rate-updated",
+            {
+              price_gram_24k:
+                goldRate.price_gram_24k,
 
-        const goldRate =
-          await getGoldRate();
+              price_gram_22k:
+                goldRate.price_gram_22k,
 
-        io.emit(
-          "gold-rate-updated",
-          {
-            price_gram_24k:
-              goldRate.price_gram_24k,
+              price_gram_18k:
+                goldRate.price_gram_18k,
 
-            price_gram_22k:
-              goldRate.price_gram_22k,
+              currency:
+                goldRate.currency,
 
-            price_gram_18k:
-              goldRate.price_gram_18k,
+              timestamp:
+                goldRate.timestamp,
+            }
+          );
+          */
 
-            currency:
-              goldRate.currency,
+          const sockets =
+            await io.fetchSockets();
 
-            timestamp:
-              goldRate.timestamp,
+          for (
+            const socket of sockets
+          ) {
+            const user =
+              socket.data.user;
+
+            if (!user) {
+              continue;
+            }
+
+            await emitDashboardData(
+              socket,
+              user
+            );
           }
-        );
 
-        /**
-         * DASHBOARD UPDATE
-         */
-
-        const sockets =
-          await io.fetchSockets();
-
-        for (const socket of sockets) {
-
-          const user =
-            socket.data.user;
-
-          if (!user) continue;
-
-          await emitDashboardData(
-            socket,
-            user
+          // console.log(
+          //   "Live dashboard data emitted"
+          // );
+        } catch (error) {
+          console.error(
+            "Live dashboard socket error:",
+            error.message
           );
         }
-
-        console.log(
-          "Live dashboard data emitted"
-        );
-
-      } catch (error) {
-        console.error(
-          "Live dashboard socket error:",
-          error.message
-        );
-      }
-    }, 30000);
-
+      },
+      30000
+    );
   } catch (error) {
-
     console.error(
       "Database connection failed:",
       error.message
     );
+
+    process.exit(1);
   }
 }
 

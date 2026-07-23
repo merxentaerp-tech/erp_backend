@@ -1,4 +1,4 @@
-import cloudinary from "./cloudinary";
+import cloudinary from "./cloudinary.js";
 
 export const uploadToCloudinary = async (
   filePath,
@@ -10,7 +10,7 @@ export const uploadToCloudinary = async (
       folder,
       resource_type: resourceType,
 
-      // ✅ public file URL
+      //  public file URL
       type: "upload",
 
       access_mode: "public",

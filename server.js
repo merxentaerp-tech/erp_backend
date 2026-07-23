@@ -4,7 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { Sequelize } from "sequelize";
 import { Server } from "socket.io";
-import * as Sentry from "@sentry/node";
+// import * as Sentry from "@sentry/node";
 // import { nodeProfilingIntegration } from "@sentry/profiling-node";
 
 import completeAuditRoutes from "./routes/completeAuditRoutes.js";

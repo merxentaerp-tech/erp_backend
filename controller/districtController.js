@@ -13,7 +13,7 @@ import InvoiceItem from "../model/InvoiceItem.js";
 import { getGoldRate } from "../service/goldService.js";
 // import { getGoldRate } from "../service/goldService.js";
 import axios from "axios";
-
+import redisClient from "../config/redis.js";
 
 
 
@@ -1629,7 +1629,7 @@ const getTableColumns = async (tableName) => {
 export const getDistrictDashboard = async (req, res) => {
   try {
     const user = req.user;
-
+    const startTime = Date.now();
     // =====================================================
     // AUTHENTICATION
     // =====================================================
@@ -1694,157 +1694,183 @@ export const getDistrictDashboard = async (req, res) => {
       currency: "INR",
       updated_at: null,
     };
+   const goldApiStart = Date.now();
 
-    try {
-      const [goldRes, silverRes, rateRes] =
-        await Promise.all([
-          axios.get(
-            "https://api.gold-api.com/price/XAU",
-            {
-              timeout: 10000,
-            }
-          ),
+const CACHE_KEY = "live_rates";
+const CACHE_TTL = 300; // 5 Minutes
 
-          axios.get(
-            "https://api.gold-api.com/price/XAG",
-            {
-              timeout: 10000,
-            }
-          ),
+try {
 
-          axios.get(
-            "https://open.er-api.com/v6/latest/USD",
-            {
-              timeout: 10000,
-            }
-          ),
-        ]);
+  // ===============================
+  // CHECK REDIS FIRST
+  // ===============================
 
-      console.log(
-        "GOLD API =>",
-        goldRes?.data
-      );
+  const cachedRates = await redisClient.get(CACHE_KEY);
 
-      console.log(
-        "SILVER API =>",
-        silverRes?.data
-      );
+  if (cachedRates) {
 
-      console.log(
-        "USD INR API =>",
-        rateRes?.data
-      );
+    console.log("✅ Live Rates Loaded From Redis");
 
-      const goldUsdPerOunce = Number(
-        goldRes?.data?.price || 0
-      );
+    liveRate = JSON.parse(cachedRates);
 
-      const silverUsdPerOunce = Number(
-        silverRes?.data?.price || 0
-      );
+  } else {
 
-      const usdToInr = Number(
-        rateRes?.data?.rates?.INR || 0
-      );
+    console.log("🌐 Fetching Live Rates From APIs");
 
-      if (
-        !goldUsdPerOunce ||
-        !silverUsdPerOunce ||
-        !usdToInr
-      ) {
-        throw new Error(
-          "Invalid live rate response"
-        );
-      }
+    const [goldRes, silverRes, rateRes] =
+      await Promise.all([
 
-      // 1 troy ounce = 31.1035 grams
-      const ounceToGram = 31.1035;
-
-      // GOLD
-      const gold24KPerGram =
-        (goldUsdPerOunce / ounceToGram) *
-        usdToInr;
-
-      const gold22KPerGram =
-        gold24KPerGram * (22 / 24);
-
-      const gold18KPerGram =
-        gold24KPerGram * (18 / 24);
-
-      // SILVER
-      const silver999PerGram =
-        (silverUsdPerOunce / ounceToGram) *
-        usdToInr;
-
-      const silver925PerGram =
-        silver999PerGram * 0.925;
-
-      liveRate = {
-        // Gold per 10 gram
-        gold_price: Number(
-          (gold24KPerGram * 10).toFixed(2)
+        axios.get(
+          "https://api.gold-api.com/price/XAU",
+          {
+            timeout: 10000,
+          }
         ),
 
-        // Silver per gram
-        silver_price: Number(
-          silver925PerGram.toFixed(2)
+        axios.get(
+          "https://api.gold-api.com/price/XAG",
+          {
+            timeout: 10000,
+          }
         ),
 
-        gold_rate_24k: Number(
-          gold24KPerGram.toFixed(2)
+        axios.get(
+          "https://open.er-api.com/v6/latest/USD",
+          {
+            timeout: 10000,
+          }
         ),
 
-        gold_rate_22k: Number(
-          gold22KPerGram.toFixed(2)
-        ),
+      ]);
 
-        gold_rate_18k: Number(
-          gold18KPerGram.toFixed(2)
-        ),
+    const goldUsdPerOunce =
+      Number(goldRes?.data?.price || 0);
 
-        silver_rate: Number(
-          silver925PerGram.toFixed(2)
-        ),
+    const silverUsdPerOunce =
+      Number(silverRes?.data?.price || 0);
 
-        gold_change_percent: Number(
-          goldRes?.data?.change_percent || 0
-        ),
+    const usdToInr =
+      Number(rateRes?.data?.rates?.INR || 0);
 
-        silver_change_percent: Number(
-          silverRes?.data?.change_percent || 0
-        ),
-
-        gold_trend:
-          Number(
-            goldRes?.data?.change_percent || 0
-          ) >= 0
-            ? "up"
-            : "down",
-
-        silver_trend:
-          Number(
-            silverRes?.data?.change_percent || 0
-          ) >= 0
-            ? "up"
-            : "down",
-
-        currency: "INR",
-
-        updated_at:
-          new Date().toISOString(),
-      };
-    } catch (err) {
-      console.log(
-        "Gold/Silver API Full Error =>",
-        err?.response?.data ||
-          err.message
-      );
+    if (
+      !goldUsdPerOunce ||
+      !silverUsdPerOunce ||
+      !usdToInr
+    ) {
+      throw new Error("Invalid live rate response");
     }
+
+    const ounceToGram = 31.1035;
+
+    const gold24KPerGram =
+      (goldUsdPerOunce / ounceToGram) *
+      usdToInr;
+
+    const gold22KPerGram =
+      gold24KPerGram * (22 / 24);
+
+    const gold18KPerGram =
+      gold24KPerGram * (18 / 24);
+
+    const silver999PerGram =
+      (silverUsdPerOunce / ounceToGram) *
+      usdToInr;
+
+    const silver925PerGram =
+      silver999PerGram * 0.925;
+
+    liveRate = {
+
+      gold_price: Number(
+        (gold24KPerGram * 10).toFixed(2)
+      ),
+
+      silver_price: Number(
+        silver925PerGram.toFixed(2)
+      ),
+
+      gold_rate_24k: Number(
+        gold24KPerGram.toFixed(2)
+      ),
+
+      gold_rate_22k: Number(
+        gold22KPerGram.toFixed(2)
+      ),
+
+      gold_rate_18k: Number(
+        gold18KPerGram.toFixed(2)
+      ),
+
+      silver_rate: Number(
+        silver925PerGram.toFixed(2)
+      ),
+
+      gold_change_percent: Number(
+        goldRes?.data?.change_percent || 0
+      ),
+
+      silver_change_percent: Number(
+        silverRes?.data?.change_percent || 0
+      ),
+
+      gold_trend:
+        Number(
+          goldRes?.data?.change_percent || 0
+        ) >= 0
+          ? "up"
+          : "down",
+
+      silver_trend:
+        Number(
+          silverRes?.data?.change_percent || 0
+        ) >= 0
+          ? "up"
+          : "down",
+
+      currency: "INR",
+
+      updated_at:
+        new Date().toISOString(),
+
+    };
+
+    // ===============================
+    // SAVE IN REDIS
+    // ===============================
+
+    await redisClient.setEx(
+      CACHE_KEY,
+      CACHE_TTL,
+      JSON.stringify(liveRate)
+    );
+
+    console.log(
+      "✅ Live Rates Saved In Redis"
+    );
+
+  }
+
+  console.log(
+    "Gold API Time:",
+    Date.now() - goldApiStart,
+    "ms"
+  );
+
+}
+catch (err) {
+
+  console.log(
+    "Gold/Silver API Error =>",
+    err?.response?.data ||
+      err.message
+  );
+
+}
 
     // =====================================================
     // DISTRICT RETAIL STORES
     // =====================================================
-
+    const districtStoreStart = Date.now();
     const districtStores =
       await Store.findAll({
         where: {
@@ -1923,7 +1949,11 @@ export const getDistrictDashboard = async (req, res) => {
 
         raw: true,
       });
-
+    console.log(
+   "District Store Query:",
+   Date.now() - districtStoreStart,
+   "ms"
+);
     const storeIds =
       districtStores
         .map((store) =>
@@ -1949,7 +1979,7 @@ export const getDistrictDashboard = async (req, res) => {
     // Frontend compatibility ke liye district_item_count me bhi
     // yahi quantity return ki jayegi.
     // =====================================================
-
+const stockSummaryStart = Date.now();
     const stockSummary =
   await sequelize.query(
     `
@@ -2034,14 +2064,18 @@ export const getDistrictDashboard = async (req, res) => {
       type: QueryTypes.SELECT,
     }
   );
-
+console.log(
+   "Stock Summary:",
+   Date.now() - stockSummaryStart,
+   "ms"
+);
 const stock =
   stockSummary?.[0] || {};
 
 // =====================================================
 // STORE PERFORMANCE
 // =====================================================
-
+const performanceStart = Date.now();
 const storePerformance =
   await sequelize.query(
     `
@@ -2087,10 +2121,15 @@ const storePerformance =
       type: QueryTypes.SELECT,
     }
   );
+  console.log(
+   "Store Performance:",
+   Date.now() - performanceStart,
+   "ms"
+);
     // =====================================================
     // PROFIT LOSS
     // =====================================================
-
+const profitStart = Date.now();
     const profitLoss =
       await sequelize.query(
         `
@@ -2149,7 +2188,11 @@ const storePerformance =
           type: QueryTypes.SELECT,
         }
       );
-
+     console.log(
+   "Profit Loss:",
+   Date.now() - profitStart,
+   "ms"
+);
     // =====================================================
     // PENDING TASKS
     // =====================================================
@@ -2233,6 +2276,19 @@ const storePerformance =
 
     const districtStockQuantity =
   Number(stock.district_stock || 0);
+  console.log(
+   "================================="
+);
+
+console.log(
+   "Total Dashboard Time:",
+   Date.now() - startTime,
+   "ms"
+);
+
+console.log(
+   "================================="
+);
     return res.status(200).json({
       success: true,
 
